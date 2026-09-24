@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { jobs, type DbOrTx } from '@castlane/database';
 import { newId } from '@castlane/domain';
+import { JOB_DEFINITIONS } from './jobs-registry';
 
 export type JobPool = 'light' | 'data' | 'media';
 
@@ -27,7 +28,9 @@ export const enqueueJob = async (db: DbOrTx, input: EnqueueJobInput): Promise<st
       id,
       workspaceId: input.workspaceId,
       type: input.type,
-      pool: input.pool ?? 'light',
+      // A job only runs in the pool it is defined for: default to that pool, never to a pool that
+      // would leave the job queued forever.
+      pool: input.pool ?? JOB_DEFINITIONS.get(input.type)?.pool ?? 'light',
       payload: input.payload ?? {},
       runAt: input.runAt ?? sql`now()`,
       priority: input.priority ?? 0,
