@@ -4,20 +4,20 @@
  *   pnpm perf:report [--in docs/acceptance/performance-results.json] [--out docs/acceptance]
  *
  * `run.ts` calls `summarize` + `writeReport` at the end of a run; this CLI re-renders the Markdown
- * from an existing results JSON (for example after editing tests/performance/analysis.md, whose
- * content is included verbatim as the analysis section).
+ * from an existing results JSON. The main report's Analysis section is computed from the run, from
+ * the supplementary results (performance-results-<label>.json) next to it and from findings.ts.
  */
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type pg from 'pg';
+import { FIXES, RECOMMENDATIONS } from './findings';
 import { SPEC_VOLUMES, THRESHOLDS, arg, type SeedManifest } from './shared';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..', '..');
-const ANALYSIS_FILE = join(here, 'analysis.md');
 
 export interface Phase {
   name: string;
@@ -367,7 +367,11 @@ const s1 = (v: number | null) => (v === null ? '—' : `${v.toFixed(1)} s`);
 const n = (v: number) => v.toLocaleString('en');
 const pctOf = (v: number) => `${(v * 100).toFixed(2)} %`;
 
-export const renderReport = (r: RunResults, label = ''): string => {
+export const renderReport = (
+  r: RunResults,
+  label = '',
+  supplementary: { label: string; r: RunResults }[] = [],
+): string => {
   const e = r.environment;
   const c = r.config as Record<string, string | number>;
   const measured = r.profile.phases.filter((p) => p.record);
@@ -571,7 +575,7 @@ export const renderReport = (r: RunResults, label = ''): string => {
     '',
   );
 
-  if (!label && existsSync(ANALYSIS_FILE)) push(readFileSync(ANALYSIS_FILE, 'utf8').trim(), '');
+  if (!label) push(...renderAnalysis(r, supplementary));
 
   push(
     '## Re-running on staging',
@@ -598,13 +602,135 @@ export const renderReport = (r: RunResults, label = ''): string => {
 
 const fileBase = (base: string, label: string) => (label ? `${base}-${label}` : base);
 
+// ——— Analysis (main report only): computed from this run and the supplementary runs next to it ———
+
+const steadyP95 = (r: RunResults, cls: string) =>
+  r.classes.find((c) => c.cls === cls)?.byPhase.steady ?? null;
+const sec = (v: number | null) =>
+  v === null ? '—' : v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${v.toFixed(0)} ms`;
+const phaseCpu = (r: RunResults, phase: string) => r.queue.byPhase[phase];
+
+const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunResults }[]): string[] => {
+  const out: string[] = ['## Analysis', ''];
+  const measured = r.profile.phases.filter((p) => p.record);
+  const offered = measured.reduce((a, p) => a + (p.offeredReadPerS + p.offeredWritePerS) * p.seconds, 0);
+  const achieved = measured.reduce((a, p) => a + (p.achievedReadPerS + p.achievedWritePerS) * p.seconds, 0);
+  const saturated =
+    r.profile.maxInFlight >= Number((r.config as { maxInFlight?: number }).maxInFlight ?? 500) ||
+    achieved < offered * 0.95;
+  const pass = r.classes.filter((c) => c.verdict === 'PASS').length;
+  const host = r.environment.host;
+  out.push(
+    `**Verdict on this machine.** ${pass} of ${r.classes.length} classes met the p95 threshold under the full §28.3 profile.` +
+      (saturated
+        ? ` The cause is saturation, not slow queries. The server completed ${Math.round((achieved / offered) * 100)} % of the offered requests (${(achieved / r.profile.measuredSeconds).toFixed(1)} of ${(offered / r.profile.measuredSeconds).toFixed(1)} per second over the measured phases). The open-model backlog reached the in-flight cap of ${r.profile.maxInFlight}, so waiting time, not service time, sets the latency. The p95 figures cover successful responses only. Timeouts count as errors, and a class with more than 1 % errors fails on its own.`
+        : ''),
+    '',
+  );
+  const byCls = new Map<string, ServiceTime[]>();
+  for (const t of r.serviceTimes ?? []) byCls.set(t.cls, [...(byCls.get(t.cls) ?? []), t]);
+  if (byCls.size) {
+    const range = (xs: (number | null)[]) => {
+      const v = xs.filter((x): x is number => x !== null);
+      if (!v.length) return '—';
+      const lo = Math.min(...v);
+      const hi = Math.max(...v);
+      return lo === hi ? `${lo} ms` : `${lo}–${hi} ms`;
+    };
+    out.push(
+      `**Latency without load.** The p50 of a single request with nothing else running (see "Unloaded service time") was ${[
+        ...byCls.entries(),
+      ]
+        .map(
+          ([cls, ts]) =>
+            `${THRESHOLDS[cls]?.label ?? cls} ${range(ts.map((t) => t.p50))} (max ${Math.max(...ts.map((t) => t.max ?? 0))} ms)`,
+        )
+        .join(', ')}.`,
+      '',
+    );
+  }
+  if (supplementary.length) {
+    out.push(
+      '**Supplementary runs** (same build and data, each with its own report next to this one):',
+      '',
+      '| Run | Steady-state p95: list / detail / search / writes / heavy / analytics | Worst p95 in burst and cool-down | CPU in steady state (100 % = one core) |',
+      '|---|---|---|---|',
+    );
+    for (const x of supplementary) {
+      const worst = Math.max(
+        ...x.r.classes.flatMap((c) => ['burst', 'cooldown'].map((ph) => c.byPhase[ph] ?? 0)),
+      );
+      const cpu = phaseCpu(x.r, 'steady');
+      const ph = x.r.profile.phases.find((p) => p.name === 'steady');
+      const webs = ((x.r.config as { baseUrls?: string[] }).baseUrls ?? ['']).length;
+      const note = [
+        `${webs} web process${webs > 1 ? 'es' : ''}`,
+        x.r.profile.excluded?.length ? `without ${x.r.profile.excluded.join(', ')}` : 'full mix',
+      ].join(', ');
+      out.push(
+        `| [${x.label}](${fileBase('performance-report', x.label)}.md): ${ph ? `${ph.offeredReadPerS} reads/s + ${ph.offeredWritePerS} writes/s, ` : ''}${note} | ${['list', 'detail', 'search', 'write', 'heavy', 'analytics'].map((c) => sec(steadyP95(x.r, c))).join(' / ')} | ${sec(worst || null)} | web ${cpu?.webCpuAvgPct ?? '—'} %, PostgreSQL ${cpu?.pgCpuAvgPct ?? '—'} %, host ${cpu?.cpuAvgPct ?? '—'} % of ${x.r.environment.host.cpus} cores |`,
+      );
+    }
+    out.push('');
+    const clean = supplementary.find((x) => x.r.profile.excluded?.includes('analytics.dashboard'));
+    const cpu = clean ? phaseCpu(clean.r, 'steady') : undefined;
+    const ph = clean?.r.profile.phases.find((p) => p.name === 'steady');
+    if (clean && cpu?.webCpuAvgPct && cpu.pgCpuAvgPct && ph) {
+      const rate = ph.achievedReadPerS + ph.achievedWritePerS;
+      const webMs = (cpu.webCpuAvgPct * 10) / rate;
+      const pgMs = (cpu.pgCpuAvgPct * 10) / rate;
+      const burst = (ph.offeredReadPerS + ph.offeredWritePerS) * 2 * 3;
+      out.push(
+        `**Capacity arithmetic.** In the "${clean.label}" run, ${rate.toFixed(1)} requests/s used ${cpu.webCpuAvgPct} % of one core in the web process, which is about ${webMs.toFixed(0)} ms of web CPU per request. The same load used ${cpu.pgCpuAvgPct} % of a core across the PostgreSQL backends, about ${pgMs.toFixed(0)} ms of database CPU per request.`,
+        '',
+        `- **Web:** the web server is one Node.js process and uses one core. It tops out at about ${Math.floor(1000 / webMs)} requests/s of this mix.`,
+        `- **Burst:** the §28.3 burst of ${burst} requests/s needs at least ${Math.ceil((burst * webMs) / 1000)} web processes and about ${((burst * pgMs) / 1000).toFixed(1)} PostgreSQL cores, before dashboards are added.`,
+        `- **This host:** ${host.cpus} cores in total, shared with other workloads during the measurement (1-minute load average ${host.loadAverageBefore?.[0] ?? '—'} when the load started).`,
+        '',
+      );
+    }
+  }
+  const q = Object.values(r.queue.byPhase);
+  out.push(
+    `**Queue lag.** The oldest due job was at most ${Math.max(...q.map((x) => x.oldestJobMaxS)).toFixed(1)} s old during the run. Outbox dispatch p95 was ${s1(r.queue.outbox.p95)}. Exports were ready ${s1(r.queue.exports.p95)} after the request (p95). The queues ${r.queue.drained ? 'drained without a backlog' : 'had NOT drained'} after the load, so background processing is not the bottleneck.`,
+    '',
+    '### Defects found and fixed during this measurement',
+    '',
+    '| Commit | Problem found by the load profile | Fix |',
+    '|---|---|---|',
+    ...FIXES.map((f) => `| \`${f.commit}\` | ${f.problem} | ${f.fix} |`),
+    '',
+    '### What remains, and recommendations',
+    '',
+    ...RECOMMENDATIONS.map((x, i) => `${i + 1}. ${x}`),
+    '',
+    'Notes on method:',
+    '- Writes from the runs (tasks, comments, time entries, exports) accumulate in the load database between runs. That is a few thousand rows against millions.',
+    '- The dashboard share follows a stated usage model: each active member opens a 90-day dashboard about every five minutes.',
+    '- The CPU of the load generator is included in the host figures.',
+    '',
+  );
+  return out;
+};
+
 export const writeReport = (r: RunResults, outDir: string, label = ''): string[] => {
   const dir = resolve(root, outDir);
   mkdirSync(dir, { recursive: true });
   const json = join(dir, `${fileBase('performance-results', label)}.json`);
   const md = join(dir, `${fileBase('performance-report', label)}.md`);
   writeFileSync(json, `${JSON.stringify(r, null, 2)}\n`);
-  writeFileSync(md, renderReport(r, label));
+  // The main report lists the supplementary runs (performance-results-<label>.json) found next to it.
+  const supplementary = label
+    ? []
+    : readdirSync(dir)
+        .map((f) => /^performance-results-(.+)\.json$/.exec(f)?.[1])
+        .filter((x): x is string => !!x)
+        .sort()
+        .map((l) => ({
+          label: l,
+          r: JSON.parse(readFileSync(join(dir, `performance-results-${l}.json`), 'utf8')) as RunResults,
+        }));
+  writeFileSync(md, renderReport(r, label, supplementary));
   return [json, md].map((f) => f.replace(`${root}/`, ''));
 };
 

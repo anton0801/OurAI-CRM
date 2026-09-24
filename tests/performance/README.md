@@ -94,8 +94,11 @@ Options: `--base-url` (default `http://127.0.0.1:3200`), `--origin` (the server'
 `--sessions`, `--reads`, `--writes`, `--burst-factor`, `--warmup`, `--steady`, `--burst`, `--cooldown` (seconds),
 `--max-in-flight`, `--timeout-ms`, `--drain`, `--seed` (request sequence), `--service-samples`, `--server-note` (free
 text for the report) and `--out` (default `docs/acceptance`). For a supplementary run, `--exclude <op,…>` leaves
-operations out of the mix and `--label <name>` writes `performance-report-<name>.md` instead of the main report. The analysis section of the report comes from
-`tests/performance/analysis.md`, if that file is present.
+operations out of the mix and `--label <name>` writes `performance-report-<name>.md` instead of the main report.
+
+The main report ends with an Analysis section. Its numbers are computed from the run and from any supplementary
+results (`performance-results-<label>.json`) in the same folder. The fixes and recommendations come from
+`tests/performance/findings.ts`. Run `pnpm perf:report` to re-render the main report after a supplementary run.
 
 ## Production configuration of the local stack
 
