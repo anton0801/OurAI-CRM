@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { newIdempotencyKey } from '@castlane/api-client';
-import { accountEndpoints as A, lookupEndpoints } from '@castlane/api-contracts';
-import { accountIdentityHistory, memberships, metricObservations, notifications, publications, shifts, socialAccounts } from '@castlane/database';
+import { accountEndpoints as A, lookupEndpoints, metricsEndpoints, taskEndpoints } from '@castlane/api-contracts';
+import { accountIdentityHistory, memberships, metricObservations, notifications, publications, shifts, socialAccounts, tasks } from '@castlane/database';
 import { addMember, assignToProject, clientFor, createProject, sessionFor } from '../../support';
 import { baseSetup, db, insertPublication, insertShift } from './support';
 
@@ -152,13 +152,19 @@ describe('accounts: lifecycle', () => {
 });
 
 describe('accounts: transfer between projects', () => {
-  it('is blocked while a shift is active (T031) and keeps old facts on the old project afterwards (T032)', async () => {
+  it('is blocked while a shift is active (T031); afterwards old facts keep the old project and new facts get the new one (T032)', async () => {
     const { ws, owner, project, W } = await baseSetup();
     const target = await createProject(db(), ws, { name: 'Target', type: 'influencer' });
     const a = await owner.call(A.create, { params: W, body: { ...createBody(project.id, ws.owner.membershipId), status: 'active' } });
     const P = { ...W, accountId: a.id };
     const shiftId = await insertShift(ws, { projectId: project.id, accountId: a.id, state: 'active' });
     const oldPub = await insertPublication(ws, { accountId: a.id, projectId: project.id, status: 'published' });
+    const snapshot = (followers: string) =>
+      owner.call(metricsEndpoints.create, {
+        params: W,
+        body: { entityType: 'account', entityId: a.id, kind: 'snapshot', observedAt: new Date().toISOString(), sourceType: 'manual', sourceNote: 'Profile page', values: [{ metricKey: 'account.followers', availability: 'known', value: followers }] },
+      });
+    const oldObservation = await snapshot('1200');
 
     const blocked = await owner.call(A.transferPreview, { params: P, query: { targetProjectId: target.id } });
     expect(blocked.blocked).toBe(true);
@@ -177,6 +183,15 @@ describe('accounts: transfer between projects', () => {
     expect(pub!.projectId).toBe(project.id);
     const [shift] = await db().select().from(shifts).where(eq(shifts.id, shiftId));
     expect(shift!.projectId).toBe(project.id);
+    // New facts recorded after the transfer are attributed to the new project; the old ones stay.
+    const newObservation = await snapshot('1350');
+    const newTask = await owner.call(taskEndpoints.create, { params: W, body: { title: 'Refresh the profile bio', projectId: target.id, accountId: a.id } });
+    const wrongProjectTask = await owner.attempt(taskEndpoints.create, { params: W, body: { title: 'Old project work on it', projectId: project.id, accountId: a.id } });
+    expect(wrongProjectTask.status).toBe(422);
+    const observations = await db().select().from(metricObservations).where(eq(metricObservations.accountId, a.id));
+    expect(Object.fromEntries(observations.map((o) => [o.id, o.projectId]))).toEqual({ [oldObservation.id]: project.id, [newObservation.id]: target.id });
+    expect((await db().select().from(tasks).where(eq(tasks.id, newTask.id)))[0]?.projectId).toBe(target.id);
+    expect((await db().select().from(publications).where(eq(publications.id, oldPub)))[0]?.projectId).toBe(project.id);
     const history = await owner.call(A.history, { params: P });
     expect(history.transfers[0]).toMatchObject({ fromProject: { id: project.id }, toProject: { id: target.id }, reason: 'Brand moved' });
     // A token cannot be replayed against the new version.
