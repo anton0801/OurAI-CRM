@@ -18,6 +18,8 @@ export const folders = pgTable(
     ...archivable(),
     parentId: uuid('parent_id'),
     name: text('name').notNull(),
+    /** Normalised name (case-insensitive uniqueness among active siblings). */
+    nameKey: text('name_key').notNull(),
     projectId: uuid('project_id'),
     depth: integer('depth').notNull().default(0),
   },
@@ -26,6 +28,9 @@ export const folders = pgTable(
     tfk('folders_parent_fk', t.workspaceId, t.parentId, t),
     tfk('folders_project_fk', t.workspaceId, t.projectId, projects),
     index('folders_parent_idx').on(t.workspaceId, t.parentId),
+    uniqueIndex('folders_sibling_name_uq')
+      .on(t.workspaceId, sql`coalesce(${t.parentId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.nameKey)
+      .where(sql`archived_at IS NULL`),
     rawCheck('folders_depth_ck', '"depth" BETWEEN 0 AND 5'),
   ],
 );
@@ -54,6 +59,8 @@ export const assets = pgTable(
     tfk('assets_folder_fk', t.workspaceId, t.folderId, folders),
     tfk('assets_project_fk', t.workspaceId, t.projectId, projects),
     index('assets_list_idx').on(t.workspaceId, t.updatedAt, t.id),
+    index('assets_folder_idx').on(t.workspaceId, t.folderId),
+    index('assets_project_idx').on(t.workspaceId, t.projectId),
     enumCheck('assets_kind_ck', 'kind', ASSET_KINDS),
     enumCheck('assets_sensitivity_ck', 'sensitivity', SENSITIVITIES),
   ],
@@ -93,6 +100,11 @@ export const assetVersions = pgTable(
     processedAt: ts('processed_at'),
     note: text('note'),
     reusedFromVersionId: uuid('reused_from_version_id'),
+    /** Delete Version (only when nothing holds it): hidden, blob purged by the retention job. */
+    deletedAt: ts('deleted_at'),
+    deletedBy: uuid('deleted_by'),
+    deleteReason: text('delete_reason'),
+    purgedAt: ts('purged_at'),
   },
   (t) => [
     tenantUnique('asset_versions', t),
@@ -191,9 +203,14 @@ export const articleCategories = pgTable(
     ...tenantBase(),
     ...archivable(),
     name: text('name').notNull(),
+    nameKey: text('name_key').notNull(),
+    description: text('description'),
     sortOrder: integer('sort_order').notNull().default(0),
   },
-  (t) => [tenantUnique('article_categories', t)],
+  (t) => [
+    tenantUnique('article_categories', t),
+    uniqueIndex('article_categories_name_uq').on(t.workspaceId, t.nameKey).where(sql`archived_at IS NULL`),
+  ],
 );
 
 export const articles = pgTable(
@@ -217,6 +234,7 @@ export const articles = pgTable(
     tenantUnique('articles', t),
     tfk('articles_category_fk', t.workspaceId, t.categoryId, articleCategories),
     tfk('articles_owner_fk', t.workspaceId, t.ownerMembershipId, memberships),
+    index('articles_list_idx').on(t.workspaceId, t.status, t.updatedAt, t.id),
     enumCheck('articles_status_ck', 'status', ARTICLE_STATUSES),
   ],
 );
@@ -274,13 +292,21 @@ export const readingAssignments = pgTable(
     articleVersionId: uuid('article_version_id').notNull(),
     membershipId: uuid('membership_id').notNull(),
     dueAt: ts('due_at'),
-    status: text('status', { enum: ['open', 'acknowledged', 'cancelled'] }).notNull().default('open'),
+    /** superseded = a newer published version replaced this request (the new request is a separate row). */
+    status: text('status', { enum: ['open', 'acknowledged', 'cancelled', 'superseded'] }).notNull().default('open'),
     acknowledgedAt: ts('acknowledged_at'),
+    /** How the request was created: direct member, role or project audience, or re-request after a major revision. */
+    source: text('source', { enum: ['member', 'role', 'project', 'revision'] }).notNull().default('member'),
+    assignedByMembershipId: uuid('assigned_by_membership_id'),
+    closedAt: ts('closed_at'),
+    closeReason: text('close_reason'),
   },
   (t) => [
     tenantUnique('reading_assignments', t),
     tfk('reading_assignments_version_fk', t.workspaceId, t.articleVersionId, articleVersions),
     tfk('reading_assignments_member_fk', t.workspaceId, t.membershipId, memberships),
     uniqueIndex('reading_assignments_uq').on(t.articleVersionId, t.membershipId),
+    index('reading_assignments_member_idx').on(t.workspaceId, t.membershipId, t.status),
+    index('reading_assignments_article_idx').on(t.workspaceId, t.articleId, t.status),
   ],
 );
