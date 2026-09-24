@@ -1,3 +1,6 @@
+// The ambient pdfkit typing lives next to this file; reference it so consumers with their own
+// tsconfig include (the Next.js production type check of apps/web) see it as well.
+/// <reference path="./pdfkit.d.ts" />
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
