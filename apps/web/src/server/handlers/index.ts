@@ -6,3 +6,4 @@ import './auth';
 import './shell';
 import './organization';
 import './media';
+import './knowledge';

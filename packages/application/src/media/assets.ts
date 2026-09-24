@@ -250,14 +250,15 @@ export const listAssets = async (
   requirePermission(ctx, 'assets.read');
   const size = clampPageSize(input.pageSize);
   const sortKey = input.sort ?? 'updatedAt';
-  const col = SORTS[sortKey];
+  // Names sort case-insensitively (what people expect in a file browser).
+  const col: SQL | (typeof SORTS)[keyof typeof SORTS] = sortKey === 'name' ? sql`lower(${assets.name})` : SORTS[sortKey];
   const dir = input.direction ?? 'desc';
-  const cmp = dir === 'asc' ? gt : lt;
+  const op = sql.raw(dir === 'asc' ? '>' : '<');
   const c = input.cursor ? decodeCursor(input.cursor) : null;
   let cursorCond: SQL | undefined;
   if (c) {
     const v = sortKey === 'name' ? String(c.v[0]) : new Date(String(c.v[0]));
-    cursorCond = or(cmp(col, v as never), and(eq(col, v as never), cmp(assets.id, c.id)));
+    cursorCond = sql`(${col} ${op} ${v} OR (${col} = ${v} AND ${assets.id} ${op} ${c.id}))`;
   }
   const rows = await ctx.app.db
     .select()
@@ -268,7 +269,7 @@ export const listAssets = async (
   const hasMore = rows.length > size;
   const page = hasMore ? rows.slice(0, size) : rows;
   const last = page[page.length - 1];
-  const lastValue = last ? (sortKey === 'name' ? last.name : (last[sortKey] as Date).toISOString()) : null;
+  const lastValue = last ? (sortKey === 'name' ? last.name.toLowerCase() : (last[sortKey] as Date).toISOString()) : null;
   return { items: await toAssetView(ctx, page), hasMore, nextCursor: hasMore && last ? encodeCursor({ v: [lastValue], id: last.id }) : null };
 };
 

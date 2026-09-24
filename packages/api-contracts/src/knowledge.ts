@@ -27,8 +27,9 @@ export const richBlock = z.discriminatedUnion('type', [
   z.object({ type: z.literal('checklist'), items: z.array(z.object({ id: z.string().min(1).max(40), content: inlines })).min(1).max(500) }),
   z.object({ type: z.literal('quote'), content: inlines }),
   z.object({ type: z.literal('table'), header: z.boolean(), rows: z.array(z.array(inlines).min(1).max(20)).min(1).max(500) }),
-  z.object({ type: z.literal('image'), assetId: uuid, alt: z.string().max(300), caption: z.string().max(500).optional() }),
-  z.object({ type: z.literal('file'), assetId: uuid, label: z.string().max(200).optional() }),
+  /** `versionId` is pinned by the server when the version is published (frozen file reference). */
+  z.object({ type: z.literal('image'), assetId: uuid, versionId: uuid.optional(), alt: z.string().max(300), caption: z.string().max(500).optional() }),
+  z.object({ type: z.literal('file'), assetId: uuid, versionId: uuid.optional(), label: z.string().max(200).optional() }),
 ]);
 export type RichBlock = z.infer<typeof richBlock>;
 
@@ -183,7 +184,7 @@ export type CompareResult = z.infer<typeof compareResult>;
 
 const scopeInput = { scopeType: z.enum(ARTICLE_SCOPE_TYPES), scopeId: uuid.nullable().optional() };
 
-export const ARTICLE_SORTS = ['updatedAt', 'title', 'publishedAt'] as const;
+export const ARTICLE_SORTS = ['updatedAt', 'title'] as const;
 
 export const knowledgeEndpoints = {
   listCategories: endpoint({

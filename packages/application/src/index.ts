@@ -3,3 +3,4 @@ export * from './identity';
 export * from './platform';
 export * from './organization';
 export * from './media';
+export * from './knowledge';
