@@ -14,7 +14,7 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { arg } from './shared';
@@ -82,14 +82,19 @@ const shutdown = (code = 0) => {
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
-start('web', process.execPath, [server], {
+const web = start('web', process.execPath, [server], {
   PORT: String(port),
   HOSTNAME: '127.0.0.1',
   CASTLANE_PROCESS: 'web',
 });
-start('worker', 'pnpm', ['--filter', '@castlane/worker', 'exec', 'tsx', 'src/index.ts'], {
+const worker = start('worker', 'pnpm', ['--filter', '@castlane/worker', 'exec', 'tsx', 'src/index.ts'], {
   CASTLANE_PROCESS: 'worker',
 });
+// The runner reads the process ids to attribute CPU time to web and worker (process trees).
+writeFileSync(
+  join(logs, 'stack.json'),
+  JSON.stringify({ webPid: web.pid, workerPid: worker.pid, port, databaseUrl }),
+);
 
 const ready = async () => {
   for (let i = 0; i < 120; i++) {

@@ -20,7 +20,7 @@
  * everything created in the measured window are read from the database. Results are written to
  * docs/acceptance/performance-results.json and rendered to docs/acceptance/performance-report.md.
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import { performance } from 'node:perf_hooks';
 import pg from 'pg';
@@ -83,6 +83,8 @@ const cfg = {
   exclude: (arg('exclude') ?? '').split(',').filter(Boolean),
   /** Sequential requests per operation before the load (unloaded service time); 0 skips. */
   serviceSamples: num('service-samples', 5),
+  /** Process ids written by perf:stack, to attribute CPU time to web and worker. */
+  stackFile: arg('stack-file') ?? 'var/perf/stack.json',
 };
 
 /** Sessions per role for 50 concurrent sessions (scaled proportionally for other counts). */
@@ -750,9 +752,81 @@ const cpuTimes = () => {
   }
 };
 
-const startSampler = (pool: pg.Pool, phaseOf: () => Phase, t0: number) => {
+/** CPU ticks (utime + stime, 1/100 s) of a process and all its descendants. */
+const treeTicks = (rootPid: number): number | null => {
+  try {
+    const stats = new Map<number, { ppid: number; ticks: number }>();
+    for (const d of readdirSync('/proc')) {
+      if (!/^\d+$/.test(d)) continue;
+      try {
+        const raw = readFileSync(`/proc/${d}/stat`, 'utf8');
+        const f = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
+        stats.set(Number(d), { ppid: Number(f[1]), ticks: Number(f[11]) + Number(f[12]) });
+      } catch {
+        // process exited while scanning
+      }
+    }
+    if (!stats.has(rootPid)) return null;
+    let sum = 0;
+    for (const [pid, s] of stats) {
+      let cur: number | undefined = pid;
+      for (let depth = 0; cur && depth < 20; depth++) {
+        if (cur === rootPid) {
+          sum += s.ticks;
+          break;
+        }
+        cur = stats.get(cur)?.ppid;
+      }
+    }
+    return sum;
+  } catch {
+    return null;
+  }
+};
+
+/** CPU ticks per process id (PostgreSQL backends of the load database). */
+const pidTicks = (pids: number[]) => {
+  const out = new Map<number, number>();
+  for (const pid of pids) {
+    try {
+      const raw = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const f = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
+      out.set(pid, Number(f[11]) + Number(f[12]));
+    } catch {
+      // backend gone
+    }
+  }
+  return out;
+};
+
+const readStack = (): { webPid?: number; workerPid?: number } => {
+  try {
+    return JSON.parse(readFileSync(cfg.stackFile, 'utf8')) as { webPid?: number; workerPid?: number };
+  } catch {
+    return {};
+  }
+};
+
+const startSampler = async (pool: pg.Pool, phaseOf: () => Phase, t0: number) => {
   const samples: Sample[] = [];
   let lastCpu = cpuTimes();
+  const stack = readStack();
+  const procTicks = async () => {
+    const backends = (
+      await pool.query(
+        `SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid()`,
+      )
+    ).rows.map((r: { pid: number }) => r.pid);
+    const self = process.cpuUsage();
+    return {
+      at: performance.now(),
+      web: stack.webPid ? treeTicks(stack.webPid) : null,
+      worker: stack.workerPid ? treeTicks(stack.workerPid) : null,
+      pg: pidTicks(backends),
+      runner: (self.user + self.system) / 10_000,
+    };
+  };
+  let lastProc = await procTicks();
   let busy = false;
   const timer = setInterval(async () => {
     if (busy) return;
@@ -768,6 +842,23 @@ const startSampler = (pool: pg.Pool, phaseOf: () => Phase, t0: number) => {
             (SELECT count(*) FROM outbox_events WHERE dispatched_at IS NULL) AS pending_outbox,
             (SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND state = 'active') AS active_db_backends`)
       ).rows[0] as Record<string, string | null>;
+      const proc = await procTicks();
+      const secs = (proc.at - lastProc.at) / 1000;
+      const pctOf = (a: number | null, b: number | null) =>
+        a === null || b === null || secs <= 0 ? null : Math.round(((a - b) / secs) * 10) / 10;
+      // Backends present in both samples (a new connection's earlier ticks are not in this interval).
+      let pgDelta = 0;
+      for (const [pid, ticks] of proc.pg) {
+        const before = lastProc.pg.get(pid);
+        if (before !== undefined) pgDelta += ticks - before;
+      }
+      const procCpu = {
+        webPct: pctOf(proc.web, lastProc.web),
+        workerPct: pctOf(proc.worker, lastProc.worker),
+        pgPct: pctOf(pgDelta, 0),
+        runnerPct: pctOf(proc.runner, lastProc.runner),
+      };
+      lastProc = proc;
       const cpu = cpuTimes();
       const cpuBusyPct =
         cpu && lastCpu && cpu.total > lastCpu.total
@@ -784,6 +875,7 @@ const startSampler = (pool: pg.Pool, phaseOf: () => Phase, t0: number) => {
         pendingOutbox: Number(r.pending_outbox),
         activeDbBackends: Number(r.active_db_backends),
         cpuBusyPct,
+        ...procCpu,
         inFlight,
       });
     } catch {
@@ -904,7 +996,7 @@ const main = async () => {
   const measuredFrom = { wall: 0, db: new Date(0) };
   let current: Phase = phases[0]!;
   const start = performance.now();
-  const sampler = startSampler(pool, () => current, start);
+  const sampler = await startSampler(pool, () => current, start);
   const sentByPhase: Record<string, { read: number; write: number }> = {};
   for (const a of arrivals) {
     const due = start + a.at * 1000;

@@ -46,6 +46,11 @@ export interface Sample {
   pendingOutbox: number;
   activeDbBackends: number;
   cpuBusyPct: number | null;
+  /** CPU of the web process tree, the worker process tree, the load database's PostgreSQL backends and the runner (100 % = one core). */
+  webPct?: number | null;
+  workerPct?: number | null;
+  pgPct?: number | null;
+  runnerPct?: number | null;
   inFlight: number;
 }
 
@@ -136,6 +141,11 @@ export interface RunResults {
         pendingOutboxMax: number;
         cpuAvgPct: number | null;
         cpuMaxPct: number | null;
+        webCpuAvgPct?: number | null;
+        webCpuMaxPct?: number | null;
+        workerCpuAvgPct?: number | null;
+        pgCpuAvgPct?: number | null;
+        runnerCpuAvgPct?: number | null;
       }
     >;
     drained: boolean;
@@ -188,6 +198,16 @@ const stats = (rs: Rec[]): Stats => {
 };
 
 const ERROR_BUDGET = 0.01;
+
+const numbers = (xs: (number | null | undefined)[]) => xs.filter((x): x is number => typeof x === 'number');
+const avgOf = (xs: (number | null | undefined)[]) => {
+  const v = numbers(xs);
+  return v.length ? round(v.reduce((a, b) => a + b, 0) / v.length) : null;
+};
+const maxOf = (xs: (number | null | undefined)[]) => {
+  const v = numbers(xs);
+  return v.length ? Math.max(...v) : null;
+};
 
 export const summarize = (input: {
   cfg: Record<string, unknown>;
@@ -248,6 +268,11 @@ export const summarize = (input: {
       pendingOutboxMax: Math.max(...ss.map((s) => s.pendingOutbox)),
       cpuAvgPct: cpu.length ? round(cpu.reduce((a, b) => a + b, 0) / cpu.length) : null,
       cpuMaxPct: cpu.length ? Math.max(...cpu) : null,
+      webCpuAvgPct: avgOf(ss.map((x) => x.webPct)),
+      webCpuMaxPct: maxOf(ss.map((x) => x.webPct)),
+      workerCpuAvgPct: avgOf(ss.map((x) => x.workerPct)),
+      pgCpuAvgPct: avgOf(ss.map((x) => x.pgPct)),
+      runnerCpuAvgPct: avgOf(ss.map((x) => x.runnerPct)),
     };
   }
   const volumes = Object.entries(SPEC_VOLUMES).map(([key, spec]) => ({
@@ -425,6 +450,19 @@ export const renderReport = (r: RunResults, label = ''): string => {
     push(
       `| ${ph} | ${s1(q.oldestJobMaxS)} | ${s1(q.oldestJobP95S)} | ${q.queuedJobsMax} | ${s1(q.oldestOutboxMaxS)} | ${s1(q.oldestOutboxP95S)} | ${q.pendingOutboxMax} | ${q.cpuAvgPct ?? '—'} % / ${q.cpuMaxPct ?? '—'} % |`,
     );
+  if (Object.values(r.queue.byPhase).some((q) => q.webCpuAvgPct !== undefined && q.webCpuAvgPct !== null)) {
+    push(
+      '',
+      'CPU by process during the run (100 % = one core; sampled every 2 s from /proc):',
+      '',
+      '| Phase | Web server avg / max | Worker avg | PostgreSQL (load DB backends) avg | Load generator avg | Whole host avg |',
+      '|---|---|---|---|---|---|',
+      ...Object.entries(r.queue.byPhase).map(
+        ([ph, q]) =>
+          `| ${ph} | ${q.webCpuAvgPct ?? '—'} % / ${q.webCpuMaxPct ?? '—'} % | ${q.workerCpuAvgPct ?? '—'} % | ${q.pgCpuAvgPct ?? '—'} % | ${q.runnerCpuAvgPct ?? '—'} % | ${q.cpuAvgPct ?? '—'} % of ${r.environment.host.cpus} cores |`,
+      ),
+    );
+  }
   const o = r.queue.outbox;
   const x = r.queue.exports;
   push(
