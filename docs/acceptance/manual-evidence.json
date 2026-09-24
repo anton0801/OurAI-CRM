@@ -1,0 +1,6 @@
+{
+  "T170": {
+    "status": "not_met",
+    "evidence": "Measured with the load harness (tests/performance, `pnpm perf:seed` / `perf:stack` / `perf:run`) at full §28.3 volume on the 4-CPU development container, not the staging hardware: 0 of 6 threshold classes met under the full profile (p95 17–28 s; single requests 22–96 ms unloaded). Queue lag stayed within 2 s. Report: docs/acceptance/performance-report.md (+ half-rate and two-process variants). Re-run on staging before sign-off."
+  }
+}

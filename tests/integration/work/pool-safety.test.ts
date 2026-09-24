@@ -16,7 +16,7 @@ import { member, newTask, workFixture, type WorkFixture } from './helpers';
  * run here with a single-connection pool: any query issued on the pool instead of the open
  * transaction cannot get a connection and fails.
  */
-describe('critical writes hold one connection (pool safety, T170)', () => {
+describe('critical writes hold one connection (pool safety; found by the load profile)', () => {
   let original: AppServices;
   let single: DatabaseHandle;
   let f: WorkFixture;
