@@ -271,9 +271,15 @@ describe('semantic layer: comparison, scope and finance', () => {
       for (const c of d.charts) for (const p of c.points) for (const v of Object.values(p.values)) expect(v.value === null || Number(v.value) === 0).toBe(true);
     }
     await insertPublication(f, { publishedAt: at(2, 12) });
-    const d = await f.owner.call(A.dashboard, { params: { ...f.p, tab: 'production' }, query: { preset: 'last_30_days' } });
+    // Dashboards are served from the read model; "Recalculate now" computes from the source records.
+    const d = await f.owner.call(A.dashboard, { params: { ...f.p, tab: 'production' }, query: { preset: 'last_30_days', refresh: true } });
     expect(d.empty).toBe(false);
+    expect(d.snapshot?.live).toBe(true);
     expect(kpi(d, 'M01').value.value).toBe('1');
+    // The read model now holds the recalculated figures.
+    const served = await f.owner.call(A.dashboard, { params: { ...f.p, tab: 'production' }, query: { preset: 'last_30_days' } });
+    expect(served.snapshot?.live).toBe(false);
+    expect(kpi(served, 'M01').value.value).toBe('1');
   });
 });
 

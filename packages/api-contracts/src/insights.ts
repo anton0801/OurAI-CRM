@@ -432,6 +432,14 @@ export const analyticsDashboard = z.object({
   /** No source records at all in scope: show the explanatory empty state, never fake charts (T169). */
   empty: z.boolean(),
   availableTabs: z.array(z.enum(ANALYTICS_TABS)),
+  /**
+   * Read model the figures were served from (spec §28.3): when they were computed and whether a
+   * refresh is pending because source data changed since. `live` = computed for this request.
+   */
+  snapshot: z
+    .object({ computedAt: isoDateTime, ageSeconds: z.number().int(), refreshPending: z.boolean(), live: z.boolean() })
+    .nullable()
+    .optional(),
 });
 export type AnalyticsDashboard = z.infer<typeof analyticsDashboard>;
 
@@ -927,7 +935,13 @@ export const analyticsEndpoints = {
     tags: ['Analytics'],
     ...W,
     params: wsId({ tab: z.enum(ANALYTICS_TABS) }),
-    query: periodQuery.extend({ ...analyticsFilterShape, grain: z.enum(TIME_GRAINS).optional(), chartMetric: z.string().max(10).optional() }),
+    query: periodQuery.extend({
+      ...analyticsFilterShape,
+      grain: z.enum(TIME_GRAINS).optional(),
+      chartMetric: z.string().max(10).optional(),
+      /** Compute from the source records now (and update the read model) instead of serving the stored figures. */
+      refresh: boolQuery.optional(),
+    }),
     response: analyticsDashboard,
     rateLimit: 'expensive',
   }),

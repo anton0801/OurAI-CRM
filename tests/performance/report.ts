@@ -49,6 +49,8 @@ export interface Sample {
   /** CPU of the web process tree, the worker process tree, the load database's PostgreSQL backends and the runner (100 % = one core). */
   webPct?: number | null;
   workerPct?: number | null;
+  /** Load balancer (Caddy) in front of several web processes. */
+  proxyPct?: number | null;
   pgPct?: number | null;
   runnerPct?: number | null;
   inFlight: number;
@@ -86,7 +88,8 @@ export interface Environment {
     cpus: number;
     memoryGiB: number;
     os: string;
-    /** 1/5/15-minute load average when the load started and when the run ended. */
+    /** 1/5/15-minute load average when the runner started (before warm-ups), when the load started and when the run ended. */
+    loadAverageAtStart?: number[];
     loadAverageBefore?: number[];
     loadAverage: number[];
   };
@@ -120,6 +123,22 @@ export interface RunResults {
   };
   /** Sequential requests per operation before the load (no concurrency). */
   serviceTimes?: ServiceTime[];
+  /** Dashboard views before the load that fill the analytics read model. */
+  readModelWarmup?: {
+    requests: number;
+    computedLive: number;
+    errors: number;
+    seconds: number;
+    maxMs: number;
+  };
+  /** Dashboards answered during the recorded phases. */
+  readModelServed?: {
+    snapshot: number;
+    live: number;
+    refreshPending: number;
+    ageP50S: number | null;
+    ageMaxS: number | null;
+  };
   classes: (Stats & {
     cls: string;
     label: string;
@@ -144,6 +163,7 @@ export interface RunResults {
         webCpuAvgPct?: number | null;
         webCpuMaxPct?: number | null;
         workerCpuAvgPct?: number | null;
+        proxyCpuAvgPct?: number | null;
         pgCpuAvgPct?: number | null;
         runnerCpuAvgPct?: number | null;
       }
@@ -226,6 +246,8 @@ export const summarize = (input: {
   mix: RunResults['profile']['mix'];
   excluded: string[];
   serviceTimes: ServiceTime[];
+  readModelWarmup?: RunResults['readModelWarmup'];
+  readModelServed?: RunResults['readModelServed'];
 }): RunResults => {
   const { records, phases } = input;
   const measured = phases.filter((p) => p.record);
@@ -271,6 +293,7 @@ export const summarize = (input: {
       webCpuAvgPct: avgOf(ss.map((x) => x.webPct)),
       webCpuMaxPct: maxOf(ss.map((x) => x.webPct)),
       workerCpuAvgPct: avgOf(ss.map((x) => x.workerPct)),
+      proxyCpuAvgPct: avgOf(ss.map((x) => x.proxyPct)),
       pgCpuAvgPct: avgOf(ss.map((x) => x.pgPct)),
       runnerCpuAvgPct: avgOf(ss.map((x) => x.runnerPct)),
     };
@@ -309,6 +332,8 @@ export const summarize = (input: {
       excluded: input.excluded,
     },
     serviceTimes: input.serviceTimes,
+    readModelWarmup: input.readModelWarmup,
+    readModelServed: input.readModelServed,
     classes,
     ops: ops.sort((a, b) => a.cls.localeCompare(b.cls) || a.op.localeCompare(b.op)),
     queue: { samples: input.samples.length, byPhase, ...input.queue },
@@ -392,9 +417,14 @@ export const renderReport = (
           '> verdict comes from the full profile in `performance-report.md`.',
           '',
         ]
-      : []),
+      : label
+        ? [
+            `> **Other run (\`${label}\`), kept for comparison.** The acceptance verdict comes from \`performance-report.md\`.`,
+            '',
+          ]
+        : []),
     '> **Where this was measured.** This run used the development container described under Environment, not the fixed staging',
-    '> hardware that spec §28.3 names. PostgreSQL, the web server, the worker and the load generator shared the same',
+    '> hardware that spec §28.3 names. PostgreSQL, the web server process(es), the worker and the load generator shared the same',
     `> ${e.host.cpus} CPUs. The numbers show how this build behaves under the §28.3 profile with §28.3 data volumes on this`,
     '> machine. They do not certify staging, so repeat the run on staging before sign-off (see “Re-running on staging”).',
     '',
@@ -423,6 +453,22 @@ export const renderReport = (
   for (const x of r.classes)
     push(`| ${x.label} | ${measured.map((p) => ms(x.byPhase[p.name] ?? null)).join(' | ')} |`);
   push('');
+
+  if (r.readModelWarmup?.requests) {
+    const w = r.readModelWarmup;
+    push(
+      '## Analytics read model warm-up',
+      '',
+      `Before the measured load every session opened each of its dashboard tabs once (spec §28.3: analytics are measured "after warmed read models"): ${w.requests} dashboard views in ${w.seconds} s, ${w.computedLive} of them computed live because no snapshot existed for that access scope yet (slowest ${ms(w.maxMs)}), ${w.errors} errors. Members with the same effective access share one snapshot per tab. The worker refreshes stale snapshots in the background (\`analytics.refreshSnapshots\` in the job table below).`,
+      '',
+    );
+    const sv = r.readModelServed;
+    if (sv && sv.snapshot + sv.live > 0)
+      push(
+        `During the measured load, ${sv.snapshot} of ${sv.snapshot + sv.live} dashboard requests were answered from the read model and ${sv.live} were computed live. The figures served were ${sv.ageP50S ?? '—'} s old at the median and ${sv.ageMaxS ?? '—'} s at most; ${sv.refreshPending} were marked "refresh pending" because newer records existed. The analytics p95 above therefore measures dashboards served from the read model, as §28.3 specifies, not the cost of computing one.`,
+        '',
+      );
+  }
 
   if (r.serviceTimes?.length) {
     push(
@@ -459,11 +505,11 @@ export const renderReport = (
       '',
       'CPU by process during the run (100 % = one core; sampled every 2 s from /proc):',
       '',
-      '| Phase | Web server(s) avg / max | Worker avg | PostgreSQL (load DB backends) avg | Load generator avg | Whole host avg |',
-      '|---|---|---|---|---|---|',
+      '| Phase | Web server(s) avg / max | Load balancer avg | Worker avg | PostgreSQL (load DB backends) avg | Load generator avg | Whole host avg |',
+      '|---|---|---|---|---|---|---|',
       ...Object.entries(r.queue.byPhase).map(
         ([ph, q]) =>
-          `| ${ph} | ${q.webCpuAvgPct ?? '—'} % / ${q.webCpuMaxPct ?? '—'} % | ${q.workerCpuAvgPct ?? '—'} % | ${q.pgCpuAvgPct ?? '—'} % | ${q.runnerCpuAvgPct ?? '—'} % | ${q.cpuAvgPct ?? '—'} % of ${r.environment.host.cpus} cores |`,
+          `| ${ph} | ${q.webCpuAvgPct ?? '—'} % / ${q.webCpuMaxPct ?? '—'} % | ${q.proxyCpuAvgPct ?? '—'} % | ${q.workerCpuAvgPct ?? '—'} % | ${q.pgCpuAvgPct ?? '—'} % | ${q.runnerCpuAvgPct ?? '—'} % | ${q.cpuAvgPct ?? '—'} % of ${r.environment.host.cpus} cores |`,
       ),
     );
   }
@@ -563,7 +609,7 @@ export const renderReport = (
     '## Environment',
     '',
     `- Host: ${e.host.cpuModel}, ${e.host.cpus} CPUs, ${e.host.memoryGiB} GiB RAM, ${e.host.os}`,
-    `- Host load average (1 / 5 / 15 min): ${e.host.loadAverageBefore ? `${e.host.loadAverageBefore.join(' / ')} when the load started, ` : ''}${e.host.loadAverage.join(' / ')} when the run ended (the run itself contributes to it)`,
+    `- Host load average (1 / 5 / 15 min): ${e.host.loadAverageAtStart ? `${e.host.loadAverageAtStart.join(' / ')} when the runner started, before the warm-ups, ` : ''}${e.host.loadAverageBefore ? `${e.host.loadAverageBefore.join(' / ')} when the measured load started, ` : ''}${e.host.loadAverage.join(' / ')} when the run ended (the run itself contributes to the later values)`,
     `- Node.js ${e.node}; ${e.postgres.version.split(' on ')[0]}; settings ${Object.entries(
       e.postgres.settings,
     )
@@ -571,7 +617,7 @@ export const renderReport = (
       .join(', ')}`,
     `- Database size after the run: ${(e.postgres.databaseBytes / 1024 ** 3).toFixed(2)} GiB`,
     `- Server under test: ${c.serverNote}`,
-    `- Target ${[(r.config as { baseUrls?: string[]; baseUrl?: string }).baseUrls ?? [c.baseUrl]].flat().join(', ')} (${[(r.config as { baseUrls?: string[] }).baseUrls ?? [c.baseUrl]].flat().length} web server process(es), sessions spread over them); the load generator ran on the same host`,
+    `- Target ${[(r.config as { baseUrls?: string[]; baseUrl?: string }).baseUrls ?? [c.baseUrl]].flat().join(', ')} (${webProcessesOf(r)} web server process(es)${(r.config as { loadBalancer?: boolean }).loadBalancer ? ' behind the load balancer' : ', sessions spread over them'}); the load generator ran on the same host`,
     '',
   );
 
@@ -601,6 +647,10 @@ export const renderReport = (
 };
 
 const fileBase = (base: string, label: string) => (label ? `${base}-${label}` : base);
+const webProcessesOf = (r: RunResults): number => {
+  const c = r.config as { webProcesses?: number | null; baseUrls?: string[] };
+  return c.webProcesses ?? c.baseUrls?.length ?? 1;
+};
 
 // ——— Analysis (main report only): computed from this run and the supplementary runs next to it ———
 
@@ -620,13 +670,28 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
     achieved < offered * 0.95;
   const pass = r.classes.filter((c) => c.verdict === 'PASS').length;
   const host = r.environment.host;
-  out.push(
-    `**Verdict on this machine.** ${pass} of ${r.classes.length} classes met the p95 threshold under the full §28.3 profile.` +
-      (saturated
-        ? ` The cause is saturation, not slow queries. The server completed ${Math.round((achieved / offered) * 100)} % of the offered requests (${(achieved / r.profile.measuredSeconds).toFixed(1)} of ${(offered / r.profile.measuredSeconds).toFixed(1)} per second over the measured phases). The open-model backlog reached the in-flight cap of ${r.profile.maxInFlight}, so waiting time, not service time, sets the latency. The p95 figures cover successful responses only. Timeouts count as errors, and a class with more than 1 % errors fails on its own.`
-        : ''),
-    '',
-  );
+  const cap = Number((r.config as { maxInFlight?: number }).maxInFlight ?? 500);
+  const steady = r.profile.phases.find((p) => p.name === 'steady');
+  const burst = r.profile.phases.find((p) => p.name === 'burst');
+  const steadyOk = r.classes.every((c) => c.byPhase.steady != null && c.byPhase.steady <= c.threshold);
+  const qp = r.queue.byPhase;
+  const verdict = [`**Verdict on this machine.** ${pass} of ${r.classes.length} classes met the p95 threshold over all measured phases of the full §28.3 profile.`];
+  if (steadyOk && steady)
+    verdict.push(
+      `In the steady state (${steady.offeredReadPerS} reads/s + ${steady.offeredWritePerS} writes/s for ${steady.seconds} s) every class met its threshold: ${r.classes.map((c) => `${c.label} ${ms(c.byPhase.steady ?? null)}`).join(', ')} (p95), with the host at ${qp.steady?.cpuAvgPct ?? '—'} % of its ${host.cpus} cores.`,
+    );
+  if (saturated && burst) {
+    const bOff = burst.offeredReadPerS + burst.offeredWritePerS;
+    const bAch = burst.achievedReadPerS + burst.achievedWritePerS;
+    verdict.push(
+      `The ×${burst.factor} burst (${bOff} requests/s) was more than this host can serve: it completed ${bAch.toFixed(1)} requests/s while the host ran at ${qp.burst?.cpuAvgPct ?? '—'} % CPU. The open-model backlog${r.profile.maxInFlight >= cap ? ` reached the runner's in-flight cap of ${cap} and` : ''} carried into the cool-down, so waiting time, not service time, sets the p95 of the burst and the cool-down, and with it the p95 over all phases.`,
+    );
+  } else if (saturated)
+    verdict.push(
+      `The cause is saturation, not slow queries. The server completed ${Math.round((achieved / offered) * 100)} % of the offered requests (${(achieved / r.profile.measuredSeconds).toFixed(1)} of ${(offered / r.profile.measuredSeconds).toFixed(1)} per second over the measured phases), so waiting time, not service time, sets the latency.`,
+    );
+  verdict.push('The p95 figures cover successful responses only. Timeouts count as errors, and a class with more than 1 % errors fails on its own.');
+  out.push(verdict.join(' '), '');
   const byCls = new Map<string, ServiceTime[]>();
   for (const t of r.serviceTimes ?? []) byCls.set(t.cls, [...(byCls.get(t.cls) ?? []), t]);
   if (byCls.size) {
@@ -651,31 +716,49 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
   }
   if (supplementary.length) {
     out.push(
-      '**Supplementary runs** (same build and data, each with its own report next to this one):',
+      '**Other runs** on the same data and host (each with its own report next to this one), compared with this run:',
       '',
-      '| Run | Steady-state p95: list / detail / search / writes / heavy / analytics | Worst p95 in burst and cool-down | CPU in steady state (100 % = one core) |',
-      '|---|---|---|---|',
+      '| Run | Commit | Steady-state p95: list / detail / search / writes / heavy / analytics | Worst p95 in burst and cool-down | CPU in steady state (100 % = one core) |',
+      '|---|---|---|---|---|',
     );
-    for (const x of supplementary) {
+    for (const x of [{ label: '', r }, ...supplementary]) {
       const worst = Math.max(
         ...x.r.classes.flatMap((c) => ['burst', 'cooldown'].map((ph) => c.byPhase[ph] ?? 0)),
       );
       const cpu = phaseCpu(x.r, 'steady');
       const ph = x.r.profile.phases.find((p) => p.name === 'steady');
-      const webs = ((x.r.config as { baseUrls?: string[] }).baseUrls ?? ['']).length;
+      const webs = webProcessesOf(x.r);
       const note = [
         `${webs} web process${webs > 1 ? 'es' : ''}`,
         x.r.profile.excluded?.length ? `without ${x.r.profile.excluded.join(', ')}` : 'full mix',
       ].join(', ');
       out.push(
-        `| [${x.label}](${fileBase('performance-report', x.label)}.md): ${ph ? `${ph.offeredReadPerS} reads/s + ${ph.offeredWritePerS} writes/s, ` : ''}${note} | ${['list', 'detail', 'search', 'write', 'heavy', 'analytics'].map((c) => sec(steadyP95(x.r, c))).join(' / ')} | ${sec(worst || null)} | web ${cpu?.webCpuAvgPct ?? '—'} %, PostgreSQL ${cpu?.pgCpuAvgPct ?? '—'} %, host ${cpu?.cpuAvgPct ?? '—'} % of ${x.r.environment.host.cpus} cores |`,
+        `| ${x.label ? `[${x.label}](${fileBase('performance-report', x.label)}.md)` : '**This run**'}: ${ph ? `${ph.offeredReadPerS} reads/s + ${ph.offeredWritePerS} writes/s, ` : ''}${note} | \`${x.r.environment.commit}\` | ${['list', 'detail', 'search', 'write', 'heavy', 'analytics'].map((c) => sec(steadyP95(x.r, c))).join(' / ')} | ${sec(worst || null)} | web ${cpu?.webCpuAvgPct ?? '—'} %, PostgreSQL ${cpu?.pgCpuAvgPct ?? '—'} %, host ${cpu?.cpuAvgPct ?? '—'} % of ${x.r.environment.host.cpus} cores |`,
       );
     }
     out.push('');
-    const clean = supplementary.find((x) => x.r.profile.excluded?.includes('analytics.dashboard'));
+  }
+  {
+    const clean = steadyOk ? { label: '', r } : supplementary.find((x) => x.r.profile.excluded?.includes('analytics.dashboard'));
     const cpu = clean ? phaseCpu(clean.r, 'steady') : undefined;
     const ph = clean?.r.profile.phases.find((p) => p.name === 'steady');
-    if (clean && cpu?.webCpuAvgPct && cpu.pgCpuAvgPct && ph) {
+    const bf = clean?.r.profile.phases.find((p) => p.name === 'burst')?.factor ?? 3;
+    if (clean && !clean.label && cpu?.webCpuAvgPct && cpu.pgCpuAvgPct && cpu.cpuAvgPct && ph) {
+      const rate = ph.achievedReadPerS + ph.achievedWritePerS;
+      const webMs = (cpu.webCpuAvgPct * 10) / rate;
+      const pgMs = (cpu.pgCpuAvgPct * 10) / rate;
+      const hostMs = (cpu.cpuAvgPct * host.cpus * 10) / rate;
+      const burstRate = (ph.offeredReadPerS + ph.offeredWritePerS) * bf;
+      const webs = webProcessesOf(r);
+      out.push(
+        `**Capacity arithmetic.** The steady state was not saturated, so its CPU use is the cost of the mix. ${rate.toFixed(1)} requests/s used ${cpu.webCpuAvgPct} % of a core in the web processes (about ${webMs.toFixed(0)} ms of web CPU per request), ${cpu.pgCpuAvgPct} % in the PostgreSQL backends of the load database (about ${pgMs.toFixed(0)} ms per request) and ${cpu.cpuAvgPct} % of the host's ${host.cpus} cores in total (about ${hostMs.toFixed(0)} ms per request). The total includes the worker (dashboard refreshes, exports), the load balancer, the load generator, PostgreSQL's parallel-query and background processes and the kernel.`,
+        '',
+        `- **Burst:** ${burstRate} requests/s at these costs needs about ${((burstRate * hostMs) / 1000).toFixed(1)} cores: ${((burstRate * webMs) / 1000).toFixed(1)} for the web processes, ${((burstRate * pgMs) / 1000).toFixed(1)} for PostgreSQL backends and the rest for everything else. This host has ${host.cpus}, shared by all of it.`,
+        `- **Web:** one web process uses at most one core and serves about ${Math.floor(1000 / webMs)} requests/s of this mix, so ${webs} process${webs > 1 ? 'es' : ''} can take about ${Math.floor((1000 / webMs) * webs)} requests/s once ${webs > 1 ? 'they have' : 'it has'} the cores.`,
+        `- **This host:** 1-minute load average ${host.loadAverageAtStart?.[0] ?? host.loadAverageBefore?.[0] ?? '—'} when the runner started and ${host.loadAverageBefore?.[0] ?? '—'} when the measured load started (after the read-model warm-up); no other workload was running on it.`,
+        '',
+      );
+    } else if (clean && cpu?.webCpuAvgPct && cpu.pgCpuAvgPct && ph) {
       const rate = ph.achievedReadPerS + ph.achievedWritePerS;
       const webMs = (cpu.webCpuAvgPct * 10) / rate;
       const pgMs = (cpu.pgCpuAvgPct * 10) / rate;
@@ -683,7 +766,7 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
       out.push(
         `**Capacity arithmetic.** In the "${clean.label}" run, ${rate.toFixed(1)} requests/s used ${cpu.webCpuAvgPct} % of one core in the web process, which is about ${webMs.toFixed(0)} ms of web CPU per request. The same load used ${cpu.pgCpuAvgPct} % of a core across the PostgreSQL backends, about ${pgMs.toFixed(0)} ms of database CPU per request.`,
         '',
-        `- **Web:** the web server is one Node.js process and uses one core. It tops out at about ${Math.floor(1000 / webMs)} requests/s of this mix.`,
+        `- **Web:** a web server process uses one core. One process tops out at about ${Math.floor(1000 / webMs)} requests/s of this mix.`,
         `- **Burst:** the §28.3 burst of ${burst} requests/s needs at least ${Math.ceil((burst * webMs) / 1000)} web processes and about ${((burst * pgMs) / 1000).toFixed(1)} PostgreSQL cores, before dashboards are added.`,
         `- **This host:** ${host.cpus} cores in total, shared with other workloads during the measurement (1-minute load average ${host.loadAverageBefore?.[0] ?? '—'} when the load started).`,
         '',
@@ -691,8 +774,11 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
     }
   }
   const q = Object.values(r.queue.byPhase);
+  const later = ['burst', 'cooldown'].map((ph) => qp[ph]).filter((x) => !!x);
   out.push(
-    `**Queue lag.** The oldest due job was at most ${Math.max(...q.map((x) => x.oldestJobMaxS)).toFixed(1)} s old during the run. Outbox dispatch p95 was ${s1(r.queue.outbox.p95)}. Exports were ready ${s1(r.queue.exports.p95)} after the request (p95). The queues ${r.queue.drained ? 'drained without a backlog' : 'had NOT drained'} after the load, so background processing is not the bottleneck.`,
+    qp.steady && later.length && saturated
+      ? `**Queue lag.** In the steady state the oldest due job was at most ${qp.steady.oldestJobMaxS.toFixed(1)} s old and the oldest undispatched outbox event ${qp.steady.oldestOutboxMaxS.toFixed(1)} s. While the host was saturated (burst and cool-down) they reached ${Math.max(...later.map((x) => x.oldestJobMaxS)).toFixed(1)} s and ${Math.max(...later.map((x) => x.oldestOutboxMaxS)).toFixed(1)} s. Over the run, outbox dispatch p95 was ${s1(r.queue.outbox.p95)} and exports were ready ${s1(r.queue.exports.p95)} after the request (p95). The queues ${r.queue.drained ? `drained ${r.queue.drainSeconds} s after the load ended` : 'had NOT drained after the load'}.`
+      : `**Queue lag.** The oldest due job was at most ${Math.max(...q.map((x) => x.oldestJobMaxS)).toFixed(1)} s old during the run. Outbox dispatch p95 was ${s1(r.queue.outbox.p95)}. Exports were ready ${s1(r.queue.exports.p95)} after the request (p95). The queues ${r.queue.drained ? 'drained without a backlog' : 'had NOT drained'} after the load.`,
     '',
     '### Defects found and fixed during this measurement',
     '',

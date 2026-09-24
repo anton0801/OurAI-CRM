@@ -1,0 +1,5 @@
+CREATE INDEX "content_items_recent_idx" ON "content_items" USING btree ("workspace_id","updated_at" DESC NULLS LAST,"id" DESC NULLS FIRST) WHERE deleted_at IS NULL AND archived_at IS NULL;--> statement-breakpoint
+CREATE INDEX "tasks_publication_idx" ON "tasks" USING btree ("workspace_id","publication_id") WHERE publication_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "tasks_account_idx" ON "tasks" USING btree ("workspace_id","account_id") WHERE account_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "publications_status_when_idx" ON "publications" USING btree ("workspace_id","status",coalesce("actual_published_at", "scheduled_at", "created_at"),"id");--> statement-breakpoint
+CREATE INDEX "publications_account_content_idx" ON "publications" USING btree ("account_id","workspace_id","content_item_id") WHERE deleted_at IS NULL AND status <> 'cancelled';

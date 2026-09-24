@@ -1,6 +1,6 @@
 import { analyticsEndpoints as A, metricsEndpoints as M, reportEndpoints as R } from '@castlane/api-contracts';
 import {
-  analyticsDashboard,
+  servedAnalyticsDashboard,
   analyticsDrillDown,
   analyticsQuery,
   approveMetricCorrection,
@@ -81,7 +81,7 @@ route(M.publicationMetrics, ({ ctx, input }) => getPublicationMetrics(ctx, input
 route(M.contentResults, ({ ctx, input }) => getContentMetricResults(ctx, input.params.contentItemId));
 
 // ——— Analytics (S51) ———
-route(A.dashboard, ({ ctx, input }) => analyticsDashboard(ctx, input.params.tab, input.query));
+route(A.dashboard, ({ ctx, input }) => servedAnalyticsDashboard(ctx, input.params.tab, input.query));
 route(A.query, ({ ctx, input }) => analyticsQuery(ctx, input.body));
 route(A.drillDown, ({ ctx, input }) => analyticsDrillDown(ctx, input.query));
 

@@ -1,13 +1,35 @@
 'use client';
+import { useState } from 'react';
 import Link from 'next/link';
+import { useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
 import { ChartLineUp, Info } from '@phosphor-icons/react';
 import { analyticsEndpoints as A, type AnalyticsDashboard, type AnalyticsKpi } from '@castlane/api-contracts';
 import { ANALYTICS_TABS, CONTENT_FORMATS, PERIOD_PRESETS, PLATFORMS, TIME_GRAINS } from '@castlane/domain';
-import { Banner, Button, Checkbox, DateInput, Drawer, EmptyState, MultiSelect, PageHeader, PermissionDenied, Select, Skeleton, TabPanel, Tabs, Toolbar, Tooltip, cn, formatDateTime, formatNumber } from '@castlane/ui';
+import {
+  Banner,
+  Button,
+  Checkbox,
+  DateInput,
+  Drawer,
+  EmptyState,
+  MultiSelect,
+  PageHeader,
+  PermissionDenied,
+  Select,
+  Skeleton,
+  TabPanel,
+  Tabs,
+  Toolbar,
+  Tooltip,
+  cn,
+  formatDateTime,
+  formatNumber,
+} from '@castlane/ui';
 import { EntitySelect, MultiEntitySelect } from '@/components/common/entity-select';
 import { QueryState } from '@/components/common/query-state';
-import { useApiQuery } from '@/lib/hooks';
+import { api } from '@/lib/api';
+import { keyFor, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useUrlState } from '@/lib/url-state';
 import { useCan, useWorkspace, useWsPath } from '@/lib/workspace-context';
@@ -16,7 +38,21 @@ import '../metrics/labels';
 import { AnalyticsChartView, AnalyticsTableView } from './views';
 
 type Tab = (typeof ANALYTICS_TABS)[number];
-type Keys = 'tab' | 'preset' | 'from' | 'to' | 'compare' | 'directionId' | 'projectIds' | 'accountIds' | 'platforms' | 'formats' | 'grain' | 'drill' | 'dgroup' | 'dkey';
+type Keys =
+  | 'tab'
+  | 'preset'
+  | 'from'
+  | 'to'
+  | 'compare'
+  | 'directionId'
+  | 'projectIds'
+  | 'accountIds'
+  | 'platforms'
+  | 'formats'
+  | 'grain'
+  | 'drill'
+  | 'dgroup'
+  | 'dkey';
 
 /** Client-side hint of the tabs a member may open (the server decides; 403 is shown otherwise). */
 const TAB_PERMISSION: Record<Tab, string> = {
@@ -29,7 +65,8 @@ const TAB_PERMISSION: Record<Tab, string> = {
 };
 
 const EMPTY_COPY: Record<Tab, string> = {
-  production: 'Published placements, approved content and tasks appear here once they exist in the selected period.',
+  production:
+    'Published placements, approved content and tasks appear here once they exist in the selected period.',
   accounts: 'Follower snapshots and period results appear here once they are recorded in the Metrics Inbox.',
   content: 'Publication results appear here once values are recorded at their checkpoints.',
   ofm: 'Shifts, shift reports and OFM period results appear here once they are recorded.',
@@ -44,8 +81,12 @@ export const AnalyticsScreen = () => {
   const wsPath = useWsPath();
   const { state, set, list } = useUrlState<Keys>({ preset: 'last_30_days', compare: 'true' });
   const allowed = ANALYTICS_TABS.filter((t) => can(TAB_PERMISSION[t]));
-  const tab: Tab = (allowed as string[]).includes(state.tab ?? '') ? (state.tab as Tab) : (allowed[0] ?? 'production');
-  const preset = ((PERIOD_PRESETS as readonly string[]).includes(state.preset ?? '') ? state.preset : 'last_30_days') as (typeof PERIOD_PRESETS)[number];
+  const tab: Tab = (allowed as string[]).includes(state.tab ?? '')
+    ? (state.tab as Tab)
+    : (allowed[0] ?? 'production');
+  const preset = (
+    (PERIOD_PRESETS as readonly string[]).includes(state.preset ?? '') ? state.preset : 'last_30_days'
+  ) as (typeof PERIOD_PRESETS)[number];
   const custom = preset === 'custom';
   const query = {
     preset,
@@ -60,9 +101,30 @@ export const AnalyticsScreen = () => {
     grain: state.grain as (typeof TIME_GRAINS)[number] | undefined,
   };
   const ready = !custom || (!!state.from && !!state.to);
-  const q = useApiQuery(A.dashboard, { params: { workspaceId: workspace.id, tab }, query }, { enabled: allowed.length > 0 && ready });
+  const input = { params: { workspaceId: workspace.id, tab }, query };
+  const q = useApiQuery(A.dashboard, input, { enabled: allowed.length > 0 && ready });
+  // Figures come from the analytics read model; "Recalculate now" computes them from the source records.
+  const qc = useQueryClient();
+  const [recalculating, setRecalculating] = useState(false);
+  const recalculate = async () => {
+    setRecalculating(true);
+    try {
+      qc.setQueryData(
+        keyFor(A.dashboard, input),
+        await api.call(A.dashboard, { ...input, query: { ...query, refresh: true } }),
+      );
+    } finally {
+      setRecalculating(false);
+    }
+  };
   if (!allowed.length) return <PermissionDenied description="You do not have access to analytics." />;
-  const filtered = !!(query.directionId || query.projectIds.length || query.accountIds.length || query.platforms.length || query.formats.length);
+  const filtered = !!(
+    query.directionId ||
+    query.projectIds.length ||
+    query.accountIds.length ||
+    query.platforms.length ||
+    query.formats.length
+  );
   const tabs = q.data?.availableTabs ?? allowed;
 
   return (
@@ -80,51 +142,142 @@ export const AnalyticsScreen = () => {
       />
       <Toolbar>
         <div className="w-full sm:w-[170px]">
-          <Select aria-label="Period" value={preset} onChange={(v) => v && set({ preset: v })} options={PERIOD_PRESETS.map((p) => ({ value: p, label: label('periodPreset', p) }))} />
+          <Select
+            aria-label="Period"
+            value={preset}
+            onChange={(v) => v && set({ preset: v })}
+            options={PERIOD_PRESETS.map((p) => ({ value: p, label: label('periodPreset', p) }))}
+          />
         </div>
         {custom ? (
           <>
-            <DateInput aria-label="From" className="w-[150px]" value={state.from ?? ''} onChange={(e) => set({ from: e.target.value || null })} />
-            <DateInput aria-label="To" className="w-[150px]" value={state.to ?? ''} onChange={(e) => set({ to: e.target.value || null })} />
+            <DateInput
+              aria-label="From"
+              className="w-[150px]"
+              value={state.from ?? ''}
+              onChange={(e) => set({ from: e.target.value || null })}
+            />
+            <DateInput
+              aria-label="To"
+              className="w-[150px]"
+              value={state.to ?? ''}
+              onChange={(e) => set({ to: e.target.value || null })}
+            />
           </>
         ) : null}
         <div className="w-full sm:w-[170px]">
-          <EntitySelect type="direction" aria-label="Direction" placeholder="All directions" value={state.directionId} onChange={(v) => set({ directionId: v })} clearable />
+          <EntitySelect
+            type="direction"
+            aria-label="Direction"
+            placeholder="All directions"
+            value={state.directionId}
+            onChange={(v) => set({ directionId: v })}
+            clearable
+          />
         </div>
         <div className="w-full sm:w-[200px]">
-          <MultiEntitySelect type="project" aria-label="Projects" placeholder="All projects" value={list('projectIds')} onChange={(v) => set({ projectIds: v.join(',') || null })} />
+          <MultiEntitySelect
+            type="project"
+            aria-label="Projects"
+            placeholder="All projects"
+            value={list('projectIds')}
+            onChange={(v) => set({ projectIds: v.join(',') || null })}
+          />
         </div>
         <div className="w-full sm:w-[200px]">
-          <MultiEntitySelect type="account" aria-label="Accounts" placeholder="All accounts" value={list('accountIds')} onChange={(v) => set({ accountIds: v.join(',') || null })} />
+          <MultiEntitySelect
+            type="account"
+            aria-label="Accounts"
+            placeholder="All accounts"
+            value={list('accountIds')}
+            onChange={(v) => set({ accountIds: v.join(',') || null })}
+          />
         </div>
         <div className="w-full sm:w-[160px]">
-          <MultiSelect aria-label="Platforms" placeholder="All platforms" value={list('platforms')} onChange={(v) => set({ platforms: v.join(',') || null })} options={PLATFORMS.map((p) => ({ value: p, label: label('platform', p) }))} />
+          <MultiSelect
+            aria-label="Platforms"
+            placeholder="All platforms"
+            value={list('platforms')}
+            onChange={(v) => set({ platforms: v.join(',') || null })}
+            options={PLATFORMS.map((p) => ({ value: p, label: label('platform', p) }))}
+          />
         </div>
         <div className="w-full sm:w-[160px]">
-          <MultiSelect aria-label="Content types" placeholder="All content types" value={list('formats')} onChange={(v) => set({ formats: v.join(',') || null })} options={CONTENT_FORMATS.map((f) => ({ value: f, label: label('contentFormat', f) }))} />
+          <MultiSelect
+            aria-label="Content types"
+            placeholder="All content types"
+            value={list('formats')}
+            onChange={(v) => set({ formats: v.join(',') || null })}
+            options={CONTENT_FORMATS.map((f) => ({ value: f, label: label('contentFormat', f) }))}
+          />
         </div>
         <div className="w-full sm:w-[130px]">
-          <Select aria-label="Chart grain" placeholder="Auto grain" clearable value={state.grain ?? null} onChange={(v) => set({ grain: v })} options={TIME_GRAINS.map((g) => ({ value: g, label: `By ${label('timeGrain', g).toLowerCase()}` }))} />
+          <Select
+            aria-label="Chart grain"
+            placeholder="Auto grain"
+            clearable
+            value={state.grain ?? null}
+            onChange={(v) => set({ grain: v })}
+            options={TIME_GRAINS.map((g) => ({
+              value: g,
+              label: `By ${label('timeGrain', g).toLowerCase()}`,
+            }))}
+          />
         </div>
-        <Checkbox checked={query.compare} onCheckedChange={(v) => set({ compare: v ? null : 'false' })} label="Compare with previous period" />
+        <Checkbox
+          checked={query.compare}
+          onCheckedChange={(v) => set({ compare: v ? null : 'false' })}
+          label="Compare with previous period"
+        />
         {filtered ? (
-          <Button variant="ghost" size="sm" onClick={() => set({ directionId: null, projectIds: null, accountIds: null, platforms: null, formats: null })}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() =>
+              set({ directionId: null, projectIds: null, accountIds: null, platforms: null, formats: null })
+            }
+          >
             Clear Filters
           </Button>
         ) : null}
       </Toolbar>
-      <Tabs label="Dashboards" value={tab} onValueChange={(v) => set({ tab: v, drill: null, dgroup: null, dkey: null })} items={ANALYTICS_TABS.map((t) => ({ value: t, label: label('analyticsTab', t), hidden: !tabs.includes(t) }))}>
+      <Tabs
+        label="Dashboards"
+        value={tab}
+        onValueChange={(v) => set({ tab: v, drill: null, dgroup: null, dkey: null })}
+        items={ANALYTICS_TABS.map((t) => ({
+          value: t,
+          label: label('analyticsTab', t),
+          hidden: !tabs.includes(t),
+        }))}
+      >
         <TabPanel value={tab}>
           {!ready ? (
             <Banner tone="info">Choose the start and end dates of the custom period.</Banner>
           ) : (
             <QueryState query={q} skeleton={<DashboardSkeleton />}>
-              {q.data ? <Dashboard d={q.data} tab={tab} onDrill={(metric) => set({ drill: metric, dgroup: null, dkey: null })} /> : null}
+              {q.data ? (
+                <Dashboard
+                  d={q.data}
+                  tab={tab}
+                  onDrill={(metric) => set({ drill: metric, dgroup: null, dkey: null })}
+                  onRecalculate={recalculate}
+                  recalculating={recalculating}
+                />
+              ) : null}
             </QueryState>
           )}
         </TabPanel>
       </Tabs>
-      {state.drill ? <DrillDownDrawer metric={state.drill} query={query} groupDimension={state.dgroup} groupKey={state.dkey} onClose={() => set({ drill: null, dgroup: null, dkey: null })} /> : null}
+      {state.drill ? (
+        <DrillDownDrawer
+          metric={state.drill}
+          query={query}
+          groupDimension={state.dgroup}
+          groupKey={state.dkey}
+          onClose={() => set({ drill: null, dgroup: null, dkey: null })}
+        />
+      ) : null}
     </div>
   );
 };
@@ -140,11 +293,29 @@ const DashboardSkeleton = () => (
   </div>
 );
 
-const Dashboard = ({ d, tab, onDrill }: { d: AnalyticsDashboard; tab: Tab; onDrill: (metric: string) => void }) => {
+const Dashboard = ({
+  d,
+  tab,
+  onDrill,
+  onRecalculate,
+  recalculating,
+}: {
+  d: AnalyticsDashboard;
+  tab: Tab;
+  onDrill: (metric: string) => void;
+  onRecalculate: () => void;
+  recalculating: boolean;
+}) => {
   const { user } = useWorkspace();
   const can = useCan();
   const router = useRouter();
   const wsPath = useWsPath();
+  const recalc =
+    d.snapshot && !d.snapshot.live && d.snapshot.refreshPending ? (
+      <Button variant="ghost" size="sm" onClick={onRecalculate} disabled={recalculating}>
+        {recalculating ? 'Recalculating…' : 'Recalculate now'}
+      </Button>
+    ) : null;
   if (d.empty)
     return (
       <EmptyState
@@ -158,23 +329,41 @@ const Dashboard = ({ d, tab, onDrill }: { d: AnalyticsDashboard; tab: Tab; onDri
                 Add Metrics
               </Button>
             ) : null}
-            {tab === 'accounts' || tab === 'content' ? <Button onClick={() => router.push(wsPath('/metrics'))}>Open Metrics Inbox</Button> : null}
-            {tab === 'production' && can('content.read') ? <Button onClick={() => router.push(wsPath('/content'))}>Open Content Pipeline</Button> : null}
-            {tab === 'ofm' && can('ofm.overview.read') ? <Button onClick={() => router.push(wsPath('/ofm'))}>Open OFM</Button> : null}
-            {tab === 'team' && can('tasks.read') ? <Button onClick={() => router.push(wsPath('/tasks'))}>Open Tasks</Button> : null}
-            {tab === 'finance' && can('finance.create') ? <Button onClick={() => router.push(wsPath('/finance/entries/new'))}>Add Entry</Button> : null}
+            {tab === 'accounts' || tab === 'content' ? (
+              <Button onClick={() => router.push(wsPath('/metrics'))}>Open Metrics Inbox</Button>
+            ) : null}
+            {tab === 'production' && can('content.read') ? (
+              <Button onClick={() => router.push(wsPath('/content'))}>Open Content Pipeline</Button>
+            ) : null}
+            {tab === 'ofm' && can('ofm.overview.read') ? (
+              <Button onClick={() => router.push(wsPath('/ofm'))}>Open OFM</Button>
+            ) : null}
+            {tab === 'team' && can('tasks.read') ? (
+              <Button onClick={() => router.push(wsPath('/tasks'))}>Open Tasks</Button>
+            ) : null}
+            {tab === 'finance' && can('finance.create') ? (
+              <Button onClick={() => router.push(wsPath('/finance/entries/new'))}>Add Entry</Button>
+            ) : null}
+            {recalc}
           </>
         }
       />
     );
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-[12px] text-fg-2">
-        {d.period.fromDate} – {d.period.toDate} ({d.period.zone})
-        {d.comparison ? ` · compared with ${d.comparison.fromDate} – ${d.comparison.toDate}` : ''}
-        {d.period.elapsedOnly ? ' · unfinished period: elapsed part only' : ''} · as of {formatDateTime(d.asOf, user.timezone)}
-        {d.freshness ? ` · last observation ${sourceAge(d.freshness.lastObservedAt)}` : ''}
-      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="text-[12px] text-fg-2">
+          {d.period.fromDate} – {d.period.toDate} ({d.period.zone})
+          {d.comparison ? ` · compared with ${d.comparison.fromDate} – ${d.comparison.toDate}` : ''}
+          {d.period.elapsedOnly ? ' · unfinished period: elapsed part only' : ''} · as of{' '}
+          {formatDateTime(d.asOf, user.timezone)}
+          {d.freshness ? ` · last observation ${sourceAge(d.freshness.lastObservedAt)}` : ''}
+          {d.snapshot && !d.snapshot.live
+            ? ` · figures computed ${sourceAge(d.snapshot.computedAt)}${d.snapshot.refreshPending ? ' (newer records exist; refresh pending)' : ''}`
+            : ''}
+        </p>
+        {recalc}
+      </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {d.kpis.map((k) => (
           <KpiTile key={k.metricId} k={k} onDrill={() => onDrill(k.metricId)} />
@@ -206,8 +395,16 @@ const deltaText = (k: AnalyticsKpi) => {
   const n = Number(d.abs);
   const sign = n > 0 ? '+' : n < 0 ? '−' : '±';
   const abs = formatNumber(Math.abs(n), { maximumFractionDigits: 2 });
-  const text = d.unitLabel === 'pp' ? `${sign}${abs} pp vs previous` : `${sign}${abs}${d.pct !== null ? ` (${sign}${formatNumber(Math.abs(Number(d.pct)), { maximumFractionDigits: 1 })}%)` : ''} vs previous`;
-  const tone = n === 0 || k.higherIsBetter === null ? ('flat' as const) : (n > 0) === k.higherIsBetter ? ('up' as const) : ('down' as const);
+  const text =
+    d.unitLabel === 'pp'
+      ? `${sign}${abs} pp vs previous`
+      : `${sign}${abs}${d.pct !== null ? ` (${sign}${formatNumber(Math.abs(Number(d.pct)), { maximumFractionDigits: 1 })}%)` : ''} vs previous`;
+  const tone =
+    n === 0 || k.higherIsBetter === null
+      ? ('flat' as const)
+      : n > 0 === k.higherIsBetter
+        ? ('up' as const)
+        : ('down' as const);
   return { text, tone };
 };
 
@@ -230,18 +427,44 @@ const KpiTile = ({ k, onDrill }: { k: AnalyticsKpi; onDrill: () => void }) => {
             </span>
           }
         >
-          <button type="button" aria-label={`How ${k.label} is calculated`} className="rounded-full text-fg-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-[var(--c-focus)]">
+          <button
+            type="button"
+            aria-label={`How ${k.label} is calculated`}
+            className="rounded-full text-fg-2 hover:text-fg focus-visible:outline-2 focus-visible:outline-[var(--c-focus)]"
+          >
             <Info size={16} />
           </button>
         </Tooltip>
       </div>
-      <span className={cn('text-[24px] font-semibold leading-8', k.value.value === null && 'text-[15px] font-normal')}>
+      <span
+        className={cn(
+          'text-[24px] font-semibold leading-8',
+          k.value.value === null && 'text-[15px] font-normal',
+        )}
+      >
         <MetricValueText value={k.value} />
       </span>
-      {delta && delta.tone !== 'none' ? <span className={cn('text-[12px]', delta.tone === 'up' ? 'text-primary' : delta.tone === 'down' ? 'text-danger' : 'text-fg-2')}>{delta.text}</span> : delta ? <span className="text-[12px] text-fg-muted">{delta.text}</span> : null}
-      {k.value.sampleSize !== undefined ? <span className="text-[12px] text-fg-2">Sample: {k.value.sampleSize}</span> : null}
+      {delta && delta.tone !== 'none' ? (
+        <span
+          className={cn(
+            'text-[12px]',
+            delta.tone === 'up' ? 'text-primary' : delta.tone === 'down' ? 'text-danger' : 'text-fg-2',
+          )}
+        >
+          {delta.text}
+        </span>
+      ) : delta ? (
+        <span className="text-[12px] text-fg-muted">{delta.text}</span>
+      ) : null}
+      {k.value.sampleSize !== undefined ? (
+        <span className="text-[12px] text-fg-2">Sample: {k.value.sampleSize}</span>
+      ) : null}
       {k.drillable ? (
-        <button type="button" onClick={onDrill} className="mt-auto self-start text-[12px] font-medium text-primary hover:underline">
+        <button
+          type="button"
+          onClick={onDrill}
+          className="mt-auto self-start text-[12px] font-medium text-primary hover:underline"
+        >
           Drill Down
         </button>
       ) : null}
@@ -264,26 +487,42 @@ const DrillDownDrawer = ({
   onClose: () => void;
 }) => {
   const { workspace, user } = useWorkspace();
-  const q = useApiQuery(A.drillDown, { params: { workspaceId: workspace.id }, query: { ...(query as object), metric, groupDimension: groupDimension as never, groupKey } as never });
+  const q = useApiQuery(A.drillDown, {
+    params: { workspaceId: workspace.id },
+    query: { ...(query as object), metric, groupDimension: groupDimension as never, groupKey } as never,
+  });
   const d = q.data;
   return (
-    <Drawer open onOpenChange={(v) => !v && onClose()} width={760} title={d ? `${d.label}: source records` : 'Source records'} description={d?.description}>
+    <Drawer
+      open
+      onOpenChange={(v) => !v && onClose()}
+      width={760}
+      title={d ? `${d.label}: source records` : 'Source records'}
+      description={d?.description}
+    >
       <QueryState query={q}>
         {d ? (
           d.items.length ? (
             <div className="flex flex-col gap-2">
               <ul className="flex flex-col divide-y divide-line rounded-[12px] border border-line">
                 {d.items.map((i) => (
-                  <li key={`${i.entityType}:${i.entityId}`} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[13px]">
+                  <li
+                    key={`${i.entityType}:${i.entityId}`}
+                    className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-[13px]"
+                  >
                     <span className="min-w-0">
                       <Link href={i.href} className="font-medium text-fg hover:underline">
                         {i.label}
                       </Link>
                       <span className="block text-fg-2">
-                        {[i.sublabel, i.at ? formatDateTime(i.at, user.timezone) : null].filter(Boolean).join(' · ')}
+                        {[i.sublabel, i.at ? formatDateTime(i.at, user.timezone) : null]
+                          .filter(Boolean)
+                          .join(' · ')}
                       </span>
                     </span>
-                    {i.value !== null ? <span className="font-mono tabular-nums text-fg">{formatNumber(i.value)}</span> : null}
+                    {i.value !== null ? (
+                      <span className="font-mono tabular-nums text-fg">{formatNumber(i.value)}</span>
+                    ) : null}
                   </li>
                 ))}
               </ul>
@@ -293,11 +532,12 @@ const DrillDownDrawer = ({
               </p>
             </div>
           ) : (
-            <p className="text-[13px] text-fg-2">{d.hidden ? `${d.hidden} record(s) you cannot open are not listed.` : NO_DATA}</p>
+            <p className="text-[13px] text-fg-2">
+              {d.hidden ? `${d.hidden} record(s) you cannot open are not listed.` : NO_DATA}
+            </p>
           )
         ) : null}
       </QueryState>
     </Drawer>
   );
 };
-

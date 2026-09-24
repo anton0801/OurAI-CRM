@@ -31,6 +31,12 @@ const logs = resolve(root, arg('logs') ?? 'var/perf');
 const origin = arg('origin') ?? process.env.PERF_APP_ORIGIN ?? 'https://perf.castlane.invalid';
 /** Web server processes on consecutive ports (the Next.js server uses one CPU core per process). */
 const webInstances = Math.max(1, Number(arg('web-instances') ?? 1));
+/**
+ * Caddy binary: with it, the web processes listen on the following ports and Caddy balances them on
+ * `--port` with the directives of infra/caddy/Caddyfile (sticky cookie, active health checks), over
+ * plain HTTP.
+ */
+const caddyBin = arg('caddy') ?? process.env.CADDY_BIN;
 /** Extra Node.js flags for the web processes, e.g. "--cpu-prof --cpu-prof-dir=var/perf/prof". */
 const webNodeArgs = (arg('web-node-args') ?? '').split(' ').filter(Boolean);
 
@@ -86,28 +92,50 @@ const shutdown = (code = 0) => {
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
+const firstWebPort = caddyBin ? port + 1 : port;
 const webs = Array.from({ length: webInstances }, (_, i) =>
   start(webInstances > 1 ? `web-${i + 1}` : 'web', process.execPath, [...webNodeArgs, server], {
-    PORT: String(port + i),
+    PORT: String(firstWebPort + i),
     HOSTNAME: '127.0.0.1',
     CASTLANE_PROCESS: 'web',
   }),
 );
-const ports = webs.map((_, i) => port + i);
+const webPorts = webs.map((_, i) => firstWebPort + i);
+let proxy: ChildProcess | null = null;
+if (caddyBin) {
+  // Same load-balancing directives as infra/caddy/Caddyfile, without TLS.
+  const caddyfile = join(logs, 'Caddyfile');
+  writeFileSync(
+    caddyfile,
+    `{\n\tadmin off\n\tauto_https off\n}\n:${port} {\n\treverse_proxy ${webPorts.map((p) => `127.0.0.1:${p}`).join(' ')} {\n` +
+      `\t\tlb_policy cookie castlane_upstream\n\t\tlb_try_duration 5s\n\t\tlb_try_interval 250ms\n` +
+      `\t\thealth_uri /api/v1/health/ready\n\t\thealth_interval 10s\n\t\thealth_timeout 3s\n\t\thealth_status 2xx\n` +
+      `\t\tfail_duration 30s\n\t\tflush_interval -1\n\t}\n}\n`,
+  );
+  proxy = start('caddy', caddyBin, ['run', '--config', caddyfile, '--adapter', 'caddyfile'], {});
+}
+const ports = caddyBin ? [port] : webPorts;
 const worker = start('worker', 'pnpm', ['--filter', '@castlane/worker', 'exec', 'tsx', 'src/index.ts'], {
   CASTLANE_PROCESS: 'worker',
 });
 // The runner reads the process ids to attribute CPU time to web and worker (process trees).
 writeFileSync(
   join(logs, 'stack.json'),
-  JSON.stringify({ webPids: webs.map((w) => w.pid), workerPid: worker.pid, ports, databaseUrl }),
+  JSON.stringify({
+    webPids: webs.map((w) => w.pid),
+    workerPid: worker.pid,
+    proxyPid: proxy?.pid ?? null,
+    ports,
+    webPorts,
+    databaseUrl,
+  }),
 );
 
 const ready = async () => {
   for (let i = 0; i < 120; i++) {
     const ok = (
       await Promise.all(
-        ports.map((p) =>
+        [...new Set([...webPorts, ...ports])].map((p) =>
           fetch(`http://127.0.0.1:${p}/api/v1/health/live`)
             .then((r) => r.ok)
             .catch(() => false),
@@ -126,6 +154,6 @@ void ready().then((ok) => {
     return;
   }
   console.log(
-    `ready: ${ports.map((p) => `http://127.0.0.1:${p}`).join(', ')} (APP_ORIGIN ${origin}, database ${databaseUrl.replace(/\/\/[^@]*@/, '//…@')})`,
+    `ready: ${ports.map((p) => `http://127.0.0.1:${p}`).join(', ')}${caddyBin ? ` (Caddy → ${webPorts.length} web processes)` : ''} (APP_ORIGIN ${origin}, database ${databaseUrl.replace(/\/\/[^@]*@/, '//…@')})`,
   );
 });

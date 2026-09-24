@@ -321,3 +321,36 @@ export const reportSchedules = pgTable(
   },
   (t) => [tenantUnique('report_schedules', t), tfk('report_schedules_report_fk', t.workspaceId, t.reportId, savedReports)],
 );
+
+/**
+ * Read model of the analytics dashboards (spec §28.3 "standard 90-day analytics after warmed read
+ * models"): the computed dashboard of one tab and input for one access scope. Served instead of a
+ * live computation while its period is current; marked stale by an outbox consumer when data of
+ * the workspace changes and refreshed by the worker (analytics.refreshSnapshots). `computedAt` is
+ * shown to members as the age of the figures.
+ */
+export const analyticsDashboardSnapshots = pgTable(
+  'analytics_dashboard_snapshots',
+  {
+    ...tenantBase(),
+    tab: text('tab').notNull(),
+    /** sha256 of tab, normalised input, access-scope signature and time zone. */
+    cacheKey: text('cache_key').notNull(),
+    input: json<Record<string, unknown>>('input').notNull(),
+    scopeSignature: text('scope_signature').notNull(),
+    timezone: text('timezone').notNull(),
+    /** Member whose access the worker uses to refresh (any member with the same scope signature). */
+    membershipId: uuid('membership_id').notNull(),
+    payload: json<Record<string, unknown>>('payload').notNull(),
+    computedAt: ts('computed_at').notNull(),
+    computeMs: integer('compute_ms').notNull(),
+    stale: boolean('stale').notNull().default(false),
+    lastRequestedAt: ts('last_requested_at').notNull(),
+  },
+  (t) => [
+    tenantUnique('analytics_dashboard_snapshots', t),
+    tfk('analytics_dashboard_snapshots_member_fk', t.workspaceId, t.membershipId, memberships),
+    uniqueIndex('analytics_dashboard_snapshots_key_uq').on(t.workspaceId, t.cacheKey),
+    index('analytics_dashboard_snapshots_refresh_idx').on(t.workspaceId, t.stale, t.lastRequestedAt),
+  ],
+);

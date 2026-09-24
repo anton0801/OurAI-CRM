@@ -212,6 +212,20 @@ export const workspaces = pgTable(
   (t) => [enumCheck('workspaces_setup_step_ck', 'setup_step', SETUP_STEPS)],
 );
 
+/**
+ * Access revision of a workspace: bumped by database triggers (sql/post/011_access_revision.sql) in
+ * the same transaction as any change to role grants, denies, project teams, account and OFM
+ * assignments, roles, or the project → direction / account → project structure. Cached access
+ * snapshots are keyed by it, so a committed change is visible on the very next request.
+ */
+export const workspaceAccessRevisions = pgTable('workspace_access_revisions', {
+  workspaceId: uuid('workspace_id')
+    .primaryKey()
+    .references(() => workspaces.id),
+  revision: bigint('revision', { mode: 'number' }).notNull().default(0),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+});
+
 /** Tenant-owned table config helper: every tenant table exposes (workspace_id, id) as unique. */
 export const tenantUnique = (table: string, t: { workspaceId: any; id: any }) =>
   unique(`${table}_ws_id_uq`.slice(0, 63)).on(t.workspaceId, t.id);

@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, max, min, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, ilike, inArray, isNull, lt, min, or, sql, type SQL } from 'drizzle-orm';
 import { can } from '@castlane/authorization';
 import {
   auditEvents,
@@ -89,12 +89,16 @@ const summaryExtras = async (ctx: QueryContext, rows: ProjectRow[]) => {
         .from(publications)
         .where(and(eq(publications.workspaceId, ws), inArray(publications.projectId, ids), eq(publications.status, 'scheduled'), gt(publications.scheduledAt, ctx.app.clock.now())))
         .groupBy(publications.projectId),
+    // Latest usable observation per project: one backward probe of metric_observations_project_idx
+    // per project instead of aggregating every observation of the page's projects.
     () =>
       db
-        .select({ projectId: metricObservations.projectId, last: max(metricObservations.observedAt) })
-        .from(metricObservations)
-        .where(and(eq(metricObservations.workspaceId, ws), inArray(metricObservations.projectId, ids), sql`${metricObservations.qualityState} NOT IN ('superseded', 'rejected')`))
-        .groupBy(metricObservations.projectId),
+        .select({
+          projectId: projects.id,
+          last: sql<Date | null>`(SELECT o.observed_at FROM metric_observations o WHERE o.workspace_id = "projects"."workspace_id" AND o.project_id = "projects"."id" AND o.quality_state NOT IN ('superseded', 'rejected') ORDER BY o.observed_at DESC LIMIT 1)`.mapWith(metricObservations.observedAt),
+        })
+        .from(projects)
+        .where(and(eq(projects.workspaceId, ws), inArray(projects.id, ids))),
     () => db.select({ id: directions.id, name: directions.name }).from(directions).where(eq(directions.workspaceId, ws)),
     () => loadMemberRefs(db, ws, rows.map((r) => r.ownerMembershipId)),
   ] as const);
