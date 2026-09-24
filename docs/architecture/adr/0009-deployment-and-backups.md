@@ -8,10 +8,11 @@ Status: accepted (2026-09-24)
 ## Decision
 * Artifacts: two container images (web — Next.js standalone output; worker — bundled Node script)
   built from the same commit, plus a one-shot `migrate` command run before rollout.
-* Reference deployment: `infra/docker-compose.yml` (PostgreSQL 16, MinIO/S3, ClamAV, SMTP relay
-  placeholder, web, worker) and container-platform manifests. Secrets come from the environment;
+* Reference deployment: `infra/docker-compose.yml` (PostgreSQL 16 with WAL archiving, managed S3 or a
+  bundled S3-compatible store, ClamAV, external SMTP, web, worker, one-shot migrate) and
+  `infra/docker-compose.local.yml` for a production-like local stack with a mail sink. Secrets come from the environment;
   `.env.example` documents every variable.
-* Backups: PostgreSQL base backups + WAL archiving (point-in-time recovery, 35-day retention by
+* Backups: PostgreSQL base backups + WAL archiving (point-in-time recovery, 30-day retention by
   default) and nightly logical dumps; object storage with versioning and a lifecycle policy.
   The restore runbook restores database and objects to the same point and verifies checksums.
 * Observability: structured JSON logs with request ids and redaction, `/api/v1/health/live` and

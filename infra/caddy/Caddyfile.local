@@ -1,0 +1,11 @@
+# Local HTTPS with Caddy's internal CA (accept the certificate once in the browser).
+localhost:8443 {
+	tls internal
+	encode zstd gzip
+	request_body {
+		max_size 64MB
+	}
+	reverse_proxy web:3000 {
+		flush_interval -1
+	}
+}

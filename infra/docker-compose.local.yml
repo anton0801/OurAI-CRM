@@ -1,0 +1,131 @@
+# Production-like LOCAL stack: web + worker behind HTTPS (Caddy internal CA), PostgreSQL,
+# S3-compatible storage (SeaweedFS), ClamAV and a mail sink (Mailpit UI on http://localhost:8025).
+# Only for a developer machine — the credentials below are local placeholders.
+#
+#   docker compose -f infra/docker-compose.local.yml up -d --build
+#   docker compose -f infra/docker-compose.local.yml run --rm migrate
+#   docker compose -f infra/docker-compose.local.yml run --rm worker node dist/cli/bootstrap-owner.js --email owner@example.test --name "Owner"
+#   open https://localhost:8443   (accept the local Caddy certificate)
+name: castlane-local
+
+x-app-env: &app-env
+  NODE_ENV: production
+  APP_ORIGIN: https://localhost:8443
+  DATABASE_URL: postgres://castlane:castlane-local-db@postgres:5432/castlane
+  SESSION_SECRET: local-only-session-secret-not-for-production-000001
+  MFA_ENCRYPTION_KEY: local-only-mfa-encryption-key-not-for-production-01
+  STORAGE_DRIVER: s3
+  STORAGE_ENDPOINT: http://s3:8333
+  STORAGE_REGION: us-east-1
+  STORAGE_BUCKET_PRIVATE: castlane-private
+  STORAGE_ACCESS_KEY_ID: castlane-local
+  STORAGE_SECRET_ACCESS_KEY: castlane-local-secret
+  STORAGE_FORCE_PATH_STYLE: "true"
+  SCANNER_MODE: clamd
+  CLAMD_HOST: clamav
+  CLAMD_PORT: 3310
+  MAIL_TRANSPORT: smtp
+  SMTP_HOST: mailpit
+  SMTP_PORT: 1025
+  SMTP_SECURE: "false"
+  SMTP_FROM: "Castlane Local <no-reply@castlane.local>"
+  TRUST_PROXY: "true"
+  LOG_LEVEL: info
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: castlane
+      POSTGRES_USER: castlane
+      POSTGRES_PASSWORD: castlane-local-db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U castlane -d castlane"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  s3:
+    image: chrislusf/seaweedfs:4.47
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    volumes:
+      - objects:/data
+      - ./seaweedfs/s3.local.json:/etc/seaweedfs/s3.json:ro
+
+  s3-init:
+    image: amazon/aws-cli:2.37.1
+    depends_on: [s3]
+    restart: on-failure
+    environment:
+      AWS_ACCESS_KEY_ID: castlane-local
+      AWS_SECRET_ACCESS_KEY: castlane-local-secret
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        aws --endpoint-url http://s3:8333 s3api head-bucket --bucket castlane-private 2>/dev/null ||
+        aws --endpoint-url http://s3:8333 s3api create-bucket --bucket castlane-private
+
+  clamav:
+    image: clamav/clamav:1.4
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+
+  mailpit:
+    image: axllent/mailpit:v1.31.2
+    ports:
+      - "127.0.0.1:8025:8025"
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: infra/docker/worker.Dockerfile
+    image: castlane-worker:local
+    profiles: ["tools"]
+    command: ["node", "dist/cli/migrate.js"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/docker/web.Dockerfile
+    image: castlane-web:local
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    image: castlane-worker:local
+    build:
+      context: ..
+      dockerfile: infra/docker/worker.Dockerfile
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2.11.4
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - ./caddy/Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [web]
+
+volumes:
+  pgdata:
+  objects:
+  caddy-data:

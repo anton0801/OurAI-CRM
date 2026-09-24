@@ -1,0 +1,13 @@
+# Production TLS-terminating reverse proxy. Caddy obtains and renews a public certificate for
+# CASTLANE_SITE_ADDRESS automatically (ports 80/443 must reach this host).
+{$CASTLANE_SITE_ADDRESS} {
+	encode zstd gzip
+	request_body {
+		# Upload parts are 8 MiB; keep headroom for multipart overhead.
+		max_size 64MB
+	}
+	reverse_proxy web:3000 {
+		# Server-sent events: never buffer.
+		flush_interval -1
+	}
+}

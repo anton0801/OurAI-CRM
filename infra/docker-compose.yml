@@ -127,8 +127,6 @@ services:
     image: castlane-web:${CASTLANE_VERSION:-local}
     restart: unless-stopped
     environment: *app-env
-    ports:
-      - "127.0.0.1:3000:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,7 +144,22 @@ services:
       clamav:
         condition: service_healthy
 
+  # TLS termination (automatic HTTPS for CASTLANE_SITE_ADDRESS, e.g. crm.example.com).
+  caddy:
+    image: caddy:2.11.4
+    restart: unless-stopped
+    environment:
+      CASTLANE_SITE_ADDRESS: ${CASTLANE_SITE_ADDRESS:?set the public host name}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [web]
+
 volumes:
   pgdata:
   walarchive:
   objects:
+  caddy-data:

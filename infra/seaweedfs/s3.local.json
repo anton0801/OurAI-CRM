@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "castlane-local",
+      "credentials": [{ "accessKey": "castlane-local", "secretKey": "castlane-local-secret" }],
+      "actions": ["Read", "Write", "List", "Tagging", "Admin"]
+    }
+  ]
+}
