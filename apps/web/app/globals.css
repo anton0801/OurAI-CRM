@@ -1,0 +1,83 @@
+@import 'tailwindcss';
+@import '../../../packages/ui/src/tokens.css';
+
+@source '../../../packages/ui/src';
+@source '../src';
+@source './';
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@theme inline {
+  --color-canvas: var(--c-canvas);
+  --color-surface: var(--c-surface);
+  --color-surface-2: var(--c-surface-2);
+  --color-sidebar: var(--c-sidebar);
+  --color-fg: var(--c-fg);
+  --color-fg-2: var(--c-fg-2);
+  --color-fg-muted: var(--c-fg-muted);
+  --color-line: var(--c-line);
+  --color-primary: var(--c-primary);
+  --color-on-primary: var(--c-on-primary);
+  --color-primary-hover: var(--c-primary-hover);
+  --color-selection: var(--c-selection);
+  --color-danger: var(--c-danger);
+  --color-danger-soft: var(--c-danger-soft);
+  --color-warning: var(--c-warning);
+  --color-warning-soft: var(--c-warning-soft);
+  --color-info: var(--c-info);
+  --color-info-soft: var(--c-info-soft);
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans', Arial, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--c-canvas);
+  color: var(--c-fg);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 22px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.font-mono,
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--c-focus);
+  outline-offset: 2px;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes dialogIn {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.98); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes drawerIn {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes toastIn {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

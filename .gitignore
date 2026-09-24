@@ -1,0 +1,16 @@
+node_modules/
+.next/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+!.env.example
+/var/
+/storage-data/
+/test-results/
+/playwright-report/
+tests/e2e/.auth/
+.DS_Store
+*.log

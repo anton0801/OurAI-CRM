@@ -1,0 +1,25 @@
+{
+  "name": "@castlane/tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@castlane/analytics": "workspace:*",
+    "@castlane/api-client": "workspace:*",
+    "@castlane/api-contracts": "workspace:*",
+    "@castlane/application": "workspace:*",
+    "@castlane/authorization": "workspace:*",
+    "@castlane/database": "workspace:*",
+    "@castlane/domain": "workspace:*",
+    "@castlane/storage": "workspace:*",
+    "@castlane/test-fixtures": "workspace:*",
+    "drizzle-orm": "0.45.3",
+    "otpauth": "9.5.2",
+    "pg": "8.23.0",
+    "sharp": "0.35.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/pg": "8.23.1"
+  }
+}

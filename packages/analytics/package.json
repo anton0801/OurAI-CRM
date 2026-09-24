@@ -1,0 +1,12 @@
+{
+  "name": "@castlane/analytics",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {"@castlane/domain": "workspace:*", "@castlane/database": "workspace:*", "@castlane/authorization": "workspace:*", "drizzle-orm": "0.45.3", "big.js": "7.0.1"},
+  "devDependencies": {"@types/big.js": "7.0.0"}
+}

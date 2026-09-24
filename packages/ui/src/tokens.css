@@ -1,0 +1,95 @@
+/*
+ * Chart series (validated with the dataviz palette checker: lightness band, chroma, CVD ΔE ≥ 8,
+ * normal-vision ΔE ≥ 15, contrast ≥ 3:1) — order: emerald, blue, amber, rose, slate.
+ *
+ * Castlane design tokens (section 3). One accent (muted emerald); semantic status colours are
+ * separate. Dark mode follows the system unless the user picked a theme (data-theme on <html>).
+ */
+:root {
+  --c-canvas: #f5f7f6;
+  --c-surface: #ffffff;
+  --c-surface-2: #eef2ef;
+  --c-sidebar: #edf2ee;
+  --c-fg: #17251d;
+  --c-fg-2: #526458;
+  --c-fg-muted: #68766e;
+  --c-line: #d9e2dc;
+  --c-primary: #176b50;
+  --c-on-primary: #ffffff;
+  --c-primary-hover: #12543e;
+  --c-selection: #e0f1e8;
+  --c-danger: #a52b37;
+  --c-danger-soft: #fcecef;
+  --c-warning: #875312;
+  --c-warning-soft: #fff2da;
+  --c-info: #315e87;
+  --c-info-soft: #eaf2f9;
+  --c-chart-1: #12855a;
+  --c-chart-2: #2e67d1;
+  --c-chart-3: #c98a0c;
+  --c-chart-4: #e37aa0;
+  --c-chart-5: #355c93;
+  --c-focus: #176b50;
+  --shadow-overlay: 0 12px 32px rgba(23, 37, 29, 0.16), 0 2px 6px rgba(23, 37, 29, 0.08);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --c-canvas: #111715;
+    --c-surface: #18211d;
+    --c-surface-2: #202c26;
+    --c-sidebar: #131c17;
+    --c-fg: #eef4f0;
+    --c-fg-2: #adbcb2;
+    --c-fg-muted: #93a399;
+    --c-line: #34453b;
+    --c-primary: #7ecba8;
+    --c-on-primary: #11251b;
+    --c-primary-hover: #98dbbb;
+    --c-selection: #244236;
+    --c-danger: #ffadb5;
+    --c-danger-soft: #42272c;
+    --c-warning: #eac17d;
+    --c-warning-soft: #3b3224;
+    --c-info: #a5c6e9;
+    --c-info-soft: #253442;
+    --c-chart-1: #2a9d6c;
+    --c-chart-2: #5588e0;
+    --c-chart-3: #a97810;
+    --c-chart-4: #d46c96;
+    --c-chart-5: #4a6cc0;
+    --c-focus: #7ecba8;
+    --shadow-overlay: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --c-canvas: #111715;
+  --c-surface: #18211d;
+  --c-surface-2: #202c26;
+  --c-sidebar: #131c17;
+  --c-fg: #eef4f0;
+  --c-fg-2: #adbcb2;
+  --c-fg-muted: #93a399;
+  --c-line: #34453b;
+  --c-primary: #7ecba8;
+  --c-on-primary: #11251b;
+  --c-primary-hover: #98dbbb;
+  --c-selection: #244236;
+  --c-danger: #ffadb5;
+  --c-danger-soft: #42272c;
+  --c-warning: #eac17d;
+  --c-warning-soft: #3b3224;
+  --c-info: #a5c6e9;
+  --c-info-soft: #253442;
+  --c-chart-1: #2a9d6c;
+  --c-chart-2: #5588e0;
+  --c-chart-3: #a97810;
+  --c-chart-4: #d46c96;
+  --c-chart-5: #4a6cc0;
+  --c-focus: #7ecba8;
+  --shadow-overlay: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}

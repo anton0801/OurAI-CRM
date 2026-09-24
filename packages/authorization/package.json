@@ -1,0 +1,12 @@
+{
+  "name": "@castlane/authorization",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {"@castlane/domain": "workspace:*"},
+  "devDependencies": {}
+}

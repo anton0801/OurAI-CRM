@@ -1,0 +1,26 @@
+{
+  "name": "@castlane/ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "2.1.10",
+    "clsx": "2.1.1",
+    "radix-ui": "1.6.7",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "@tanstack/react-virtual": "3.14.13"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "next": "16.3.6"
+  },
+  "peerDependencies": {
+    "next": "16.3.6"
+  }
+}

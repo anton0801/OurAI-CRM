@@ -1,0 +1,47 @@
+{
+  "name": "castlane-crm",
+  "private": true,
+  "version": "1.0.0",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22.12.0 <23"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @castlane/web --filter @castlane/worker dev",
+    "dev:web": "pnpm --filter @castlane/web dev",
+    "dev:worker": "pnpm --filter @castlane/worker dev",
+    "build": "pnpm --filter @castlane/web build && pnpm --filter @castlane/worker build",
+    "start:web": "pnpm --filter @castlane/web start",
+    "start:worker": "pnpm --filter @castlane/worker start",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:e2e": "playwright test -c tests/e2e/playwright.config.ts",
+    "db:generate": "pnpm --filter @castlane/database generate",
+    "db:migrate": "tsx --env-file-if-exists=.env packages/database/src/cli/migrate.ts",
+    "db:reset": "tsx --env-file-if-exists=.env packages/database/src/cli/reset.ts",
+    "bootstrap:owner": "tsx --env-file-if-exists=.env apps/worker/src/cli/bootstrap-owner.ts",
+    "fixtures:load": "tsx --env-file-if-exists=.env packages/test-fixtures/src/cli/load-demo.ts",
+    "openapi:generate": "tsx packages/api-contracts/src/cli/generate-openapi.ts",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "22.20.4",
+    "@vitest/coverage-v8": "5.0.1",
+    "fast-check": "4.10.2",
+    "prettier": "3.9.9",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "5.0.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@node-rs/argon2",
+      "esbuild",
+      "sharp"
+    ]
+  },
+  "type": "module"
+}

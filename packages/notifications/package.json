@@ -1,0 +1,12 @@
+{
+  "name": "@castlane/notifications",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {"nodemailer": "10.0.10", "@castlane/domain": "workspace:*"},
+  "devDependencies": {"@types/nodemailer": "8.0.2"}
+}

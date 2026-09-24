@@ -1,0 +1,12 @@
+{
+  "name": "@castlane/application",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {"@castlane/domain": "workspace:*", "@castlane/database": "workspace:*", "@castlane/authorization": "workspace:*", "@castlane/api-contracts": "workspace:*", "@castlane/storage": "workspace:*", "@castlane/notifications": "workspace:*", "@castlane/analytics": "workspace:*", "@node-rs/argon2": "2.2.1", "otpauth": "9.5.2", "qrcode": "1.5.4", "zod": "4.6.5", "drizzle-orm": "0.45.3", "pg": "8.23.0", "big.js": "7.0.1", "luxon": "3.7.2", "sanitize-html": "2.17.7", "papaparse": "5.7.0", "exceljs": "4.4.0", "pdfkit": "0.20.2", "archiver": "8.0.0", "sharp": "0.35.4"},
+  "devDependencies": {"@types/qrcode": "1.5.6", "@types/sanitize-html": "2.16.1", "@types/papaparse": "5.5.2", "@types/archiver": "8.0.0", "@types/pg": "8.23.1", "@types/luxon": "3.7.5", "@types/big.js": "7.0.0"}
+}

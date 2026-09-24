@@ -1,0 +1,28 @@
+{
+  "name": "@castlane/worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx --env-file-if-exists=../../.env watch src/index.ts",
+    "build": "node build.mjs",
+    "start": "node --env-file-if-exists=../../.env dist/index.js"
+  },
+  "dependencies": {
+    "@castlane/application": "workspace:*",
+    "@castlane/database": "workspace:*",
+    "@castlane/domain": "workspace:*",
+    "@castlane/notifications": "workspace:*",
+    "@castlane/storage": "workspace:*",
+    "@castlane/authorization": "workspace:*",
+    "@castlane/test-fixtures": "workspace:*",
+    "drizzle-orm": "0.45.3",
+    "pg": "8.23.0",
+    "sharp": "0.35.4",
+    "@node-rs/argon2": "2.2.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15"
+  }
+}

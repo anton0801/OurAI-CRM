@@ -1,0 +1,9 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+  - "tests"
+onlyBuiltDependencies:
+  - "@node-rs/argon2"
+  - esbuild
+  - sharp
+  - unrs-resolver

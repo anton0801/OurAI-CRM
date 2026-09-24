@@ -1,0 +1,48 @@
+/**
+ * Canonical in-app routes per entity type (deep links from search, notifications, audit and
+ * activity feeds). Paths are relative to the workspace prefix /w/{workspaceId}.
+ */
+export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: string | null }) => string> = {
+  project: (id) => `/projects/${id}`,
+  direction: (id) => `/directions?open=${id}`,
+  character: (id, c) => (c?.projectId ? `/projects/${c.projectId}/characters/${id}` : `/projects`),
+  account: (id) => `/accounts/${id}`,
+  reference: (id) => `/references?open=${id}`,
+  content_item: (id) => `/content/${id}`,
+  review: (id) => `/reviews/${id}`,
+  task: (id) => `/tasks/${id}`,
+  publication: (id) => `/publications/${id}`,
+  campaign: (id) => `/campaigns/${id}`,
+  experiment: (id) => `/experiments?open=${id}`,
+  asset: (id) => `/library/assets/${id}`,
+  article: (id) => `/knowledge/${id}`,
+  shift: (id) => `/ofm/shifts/${id}`,
+  handover: (id) => `/ofm/handovers?open=${id}`,
+  ofm_contact: (id) => `/ofm/contacts/${id}`,
+  operation: (id) => `/ofm/operations?open=${id}`,
+  quality_review: (id) => `/ofm/quality?open=${id}`,
+  metric_checkpoint: (id) => `/metrics?open=${id}`,
+  metric_observation: (id) => `/metrics/${id}`,
+  goal: (id) => `/goals?open=${id}`,
+  saved_report: (id) => `/reports/${id}`,
+  report_snapshot: (id) => `/reports/snapshots/${id}`,
+  financial_entry: (id) => `/finance/entries/${id}`,
+  settlement: (id) => `/finance/settlements?open=${id}`,
+  budget: (id) => `/finance/budgets?open=${id}`,
+  compensation_run: (id) => `/finance/compensation/runs/${id}`,
+  partner: (id) => `/partners?open=${id}`,
+  deal: (id) => `/deals/${id}`,
+  member: (id) => `/team/${id}`,
+  membership: (id) => `/team/${id}`,
+  invitation: () => `/team?tab=invitations`,
+  automation_rule: (id) => `/automations/${id}`,
+  import_job: (id) => `/imports?open=${id}`,
+  export_job: (id) => `/exports?open=${id}`,
+  incident: (id) => `/operations/health?open=${id}`,
+  template: (id) => `/settings/templates?open=${id}`,
+};
+
+export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {
+  const f = ENTITY_ROUTES[entityType];
+  return `/w/${workspaceId}${f ? f(entityId, ctx) : '/overview'}`;
+};

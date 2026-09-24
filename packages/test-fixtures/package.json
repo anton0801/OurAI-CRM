@@ -1,0 +1,12 @@
+{
+  "name": "@castlane/test-fixtures",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {"@castlane/domain": "workspace:*", "@castlane/database": "workspace:*", "@castlane/application": "workspace:*", "@castlane/authorization": "workspace:*", "drizzle-orm": "0.45.3", "pg": "8.23.0"},
+  "devDependencies": {}
+}

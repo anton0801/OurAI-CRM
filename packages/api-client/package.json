@@ -1,0 +1,12 @@
+{
+  "name": "@castlane/api-client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {"@castlane/api-contracts": "workspace:*", "zod": "4.6.5"},
+  "devDependencies": {}
+}
