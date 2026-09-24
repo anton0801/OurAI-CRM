@@ -40,7 +40,7 @@ const projectForTask = async (ctx: CommandContext, projectId: string, action: 't
 
 /** An assignee/reviewer must be an active member who can access the task (project team or the assignment itself). */
 const assertAssignable = async (ctx: CommandContext, membershipId: string, scope: ReturnType<typeof taskScope>, field: string) => {
-  const r = await memberCan(ctx.app.db, ctx.actor.workspaceId, membershipId, 'tasks.read', { ...scope, assignedMembershipIds: [membershipId] }, ctx.app.clock.now());
+  const r = await memberCan(ctx.tx, ctx.actor.workspaceId, membershipId, 'tasks.read', { ...scope, assignedMembershipIds: [membershipId] }, ctx.app.clock.now());
   if (!r.active) throw fieldFail(field, 'INACTIVE', 'Choose an active member.');
   if (!r.ok) throw fieldFail(field, 'NO_ACCESS', `${r.name ?? 'This member'} cannot access this project. Add them to the project team first.`);
 };
