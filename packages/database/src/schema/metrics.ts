@@ -97,6 +97,8 @@ export const metricObservations = pgTable(
     tenantUnique('metric_observations', t),
     index('metric_observations_entity_idx').on(t.workspaceId, t.entityType, t.entityId, t.observedAt),
     index('metric_observations_account_idx').on(t.workspaceId, t.accountId, t.observedAt),
+    /** Metrics freshness per project (project list/detail). */
+    index('metric_observations_project_idx').on(t.workspaceId, t.projectId, t.observedAt),
     uniqueIndex('metric_observations_dedupe_uq')
       .on(t.workspaceId, t.dedupeKey)
       .where(sql`quality_state NOT IN ('superseded', 'rejected', 'pending_correction')`),
