@@ -69,6 +69,7 @@ const PREFIXES: Record<string, string[]> = {
   fx_rate: ['finance.'],
   period_lock: ['finance.'],
   finance_category: ['finance.'],
+  tracking_link: ['trackingLinks.', 'campaigns.'], plan_baseline: ['planBaselines.', 'calendar.'], // publishing
 };
 
 export const useLiveEvents = (workspaceId: string) => {

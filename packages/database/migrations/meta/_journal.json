@@ -64,6 +64,13 @@
       "when": 1790234877442,
       "tag": "0008_low_eddie_brock",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790235383964,
+      "tag": "0009_sleepy_colossus",
+      "breakpoints": true
     }
   ]
 }

@@ -8,3 +8,4 @@ import './tasks/register-slots';
 import './ofm/register-slots';
 import './finance/register-slots';
 import './content/register-slots';
+import './publications/register-slots';

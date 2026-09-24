@@ -120,6 +120,9 @@ export const publications = pgTable(
     tfk('publications_owner_fk', t.workspaceId, t.ownerMembershipId, memberships),
     tfk('publications_campaign_fk', t.workspaceId, t.primaryCampaignId, campaigns),
     uniqueIndex('publications_post_url_uq').on(t.accountId, t.normalizedPostUrl).where(sql`normalized_post_url IS NOT NULL`),
+    /** A confirmed external post URL identifies exactly one placement in the workspace (T066). */
+    uniqueIndex('publications_post_url_ws_uq').on(t.workspaceId, t.normalizedPostUrl).where(sql`normalized_post_url IS NOT NULL`),
+    index('publications_account_schedule_idx').on(t.workspaceId, t.accountId, t.scheduledAt),
     index('publications_account_published_idx').on(t.accountId, t.actualPublishedAt),
     index('publications_schedule_idx').on(t.workspaceId, t.status, t.scheduledAt),
     enumCheck('publications_status_ck', 'status', PUBLICATION_STATUSES),

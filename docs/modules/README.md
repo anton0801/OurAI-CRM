@@ -14,3 +14,4 @@ and known limits. The code is the source of truth; these notes point to it.
 | Platform | S10, S11, S54, S66, S69–S72 | [platform.md](platform.md) |
 | OFM operations | S40–S48 | [ofm.md](ofm.md) |
 | Finance | S55–S60 | [finance.md](finance.md) |
+| Publications, calendar, campaigns, experiments | S31–S35 | [publishing.md](publishing.md) |

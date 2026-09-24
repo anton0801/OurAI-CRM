@@ -66,6 +66,8 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   period_lock: () => `/finance/periods`,
   finance_category: () => `/finance/categories`,
   content_version: (id) => `/content/versions/${id}`,
+  tracking_link: (id) => `/campaigns?link=${id}`,
+  plan_baseline: () => `/calendar?view=plan`,
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {

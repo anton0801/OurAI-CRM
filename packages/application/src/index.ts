@@ -12,3 +12,4 @@ export * from './team';
 export * from './ofm';
 export * from './finance';
 export * from './production';
+export * from './publishing';
