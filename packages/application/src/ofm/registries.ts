@@ -118,6 +118,18 @@ defineResponsibilityProvider({
   kind: 'ofm.shifts',
   label: 'Scheduled OFM shifts',
   unassignedBehaviour: 'Cancelled with the reason “Member deactivated” (history kept).',
+  // A running shift is the member's own time record: it is ended by them or a supervisor, never handed over.
+  async blocker(ctx, membershipId) {
+    const running = await dbOf(ctx)
+      .select({ id: shifts.id, start: shifts.actualStart, accountId: shifts.primaryAccountId })
+      .from(shifts)
+      .where(and(eq(shifts.workspaceId, ctx.actor.workspaceId), eq(shifts.membershipId, membershipId), inArray(shifts.state, ['active', 'paused'])));
+    if (!running.length) return null;
+    const accounts = await loadAccountInfos(dbOf(ctx), ctx.actor.workspaceId, running.map((r) => r.accountId));
+    const first = running[0]!;
+    const where = accounts.get(first.accountId) ? accountLabel(accounts.get(first.accountId)!) : 'an OFM account';
+    return `The member is on an active OFM shift (${where}${running.length > 1 ? ` and ${running.length - 1} more` : ''}). End the shift first, then deactivate.`;
+  },
   async list(ctx, membershipId) {
     const rows = await dbOf(ctx)
       .select()

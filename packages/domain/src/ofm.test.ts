@@ -152,13 +152,22 @@ describe('quality score (M31)', () => {
     expect(r.applicableWeight).toBe('50');
   });
 
+  it('all criteria not applicable: no score, not zero', () => {
+    const r = qualityScore(DEFAULT_OFM_RUBRIC, DEFAULT_OFM_RUBRIC.map((c) => ({ key: c.key, score: null })));
+    expect(r).toMatchObject({ total: null, applicableCriteria: 0, notApplicableCriteria: DEFAULT_OFM_RUBRIC.length });
+  });
+
   it('property: total lies in [0, 100] and equals the manual formula', () => {
     fc.assert(
       fc.property(fc.array(fc.option(fc.integer({ min: 0, max: 4 }), { nil: null }), { minLength: 4, maxLength: 4 }), (vals) => {
         const scores = DEFAULT_OFM_RUBRIC.map((c, i) => ({ key: c.key, score: vals[i] ?? null }));
         const r = qualityScore(DEFAULT_OFM_RUBRIC, scores);
         const applicable = vals.filter((v): v is number => v !== null);
-        if (applicable.length === 0) return expect(r.total).toBeNull();
+        if (applicable.length === 0) {
+          // Nothing applicable: no score at all (never 0).
+          expect(r.total).toBeNull();
+          return;
+        }
         const expected = new Big(applicable.reduce((a, b) => a + b, 0)).div(4 * applicable.length).times(100).round(2, 2).toFixed(2);
         expect(r.total).toBe(expected);
         expect(Number(r.total)).toBeGreaterThanOrEqual(0);
