@@ -43,6 +43,10 @@ export const ProjectEditor = ({ project }: { project?: ProjectDetail }) => {
   const wsPath = useWsPath();
   const { workspace, membershipId } = useWorkspace();
   const [conflict, setConflict] = useState(false);
+  // If-Match carries the version this form was opened with. Live updates refresh `project` in the
+  // background; saving against that newer version would overwrite changes the member never saw.
+  // Only after the Conflict dialog (Keep Editing) does the form move to the latest version.
+  const [baseVersion, setBaseVersion] = useState(project?.rowVersion);
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: project
@@ -99,7 +103,7 @@ export const ProjectEditor = ({ project }: { project?: ProjectDetail }) => {
           router.push(wsPath(`/projects/${project.id}`));
           return;
         }
-        const r = await update.run({ params: { workspaceId: workspace.id, projectId: project.id }, body: patch }, { ifMatch: project.rowVersion });
+        const r = await update.run({ params: { workspaceId: workspace.id, projectId: project.id }, body: patch }, { ifMatch: baseVersion ?? project.rowVersion });
         router.push(wsPath(`/projects/${r.id}`));
       } else {
         const r = await create.run({ params: { workspaceId: workspace.id }, body: { ...body, type: v.type, activate: v.activate && !!body.briefSummary } });
@@ -208,7 +212,14 @@ export const ProjectEditor = ({ project }: { project?: ProjectDetail }) => {
           </Button>
         </div>
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog
+        open={conflict}
+        onOpenChange={(o) => {
+          setConflict(o);
+          if (!o) setBaseVersion(project?.rowVersion);
+        }}
+        onReload={() => window.location.reload()}
+      />
     </div>
   );
 };

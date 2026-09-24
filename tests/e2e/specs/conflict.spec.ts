@@ -36,9 +36,15 @@ test('second save gets the conflict dialog and keeps the typed input (T162)', as
     await b.getByLabel(/^Description/).fill(bDescription);
     const renamed = `${name} (renamed by A)`;
     await a.getByLabel(/^Name/).fill(renamed);
+    // B's page gets A's change as a live update and refetches the project in the background; the
+    // form must still save against the version B opened. (Waited for when it arrives in time.)
+    const liveRefresh = b
+      .waitForResponse((r) => r.url().endsWith(`/projects/${project.id}`) && r.request().method() === 'GET', { timeout: 10_000 })
+      .catch(() => null);
     await a.getByRole('button', { name: 'Save Changes' }).click();
     await a.waitForURL(new RegExp(`/projects/${project.id}$`));
     await expect(a.getByRole('heading', { level: 1, name: renamed })).toBeVisible();
+    await liveRefresh;
 
     // B saves on the stale version → 412 → Conflict dialog; B's input is still there.
     const saveB = b.getByRole('button', { name: 'Save Changes' });
