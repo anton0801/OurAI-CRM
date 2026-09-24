@@ -9,6 +9,7 @@ import { campaignEndpoints as C, type CampaignDetail } from '@castlane/api-contr
 import { isApiError } from '@castlane/api-client';
 import { Banner, Button, DateInput, Drawer, Field, IconButton, Input, Textarea } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect, MultiEntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { AssetThumb, FileUploader } from '@/components/media/file-uploader';
@@ -61,22 +62,22 @@ export const CampaignFormDrawer = ({
   const router = useRouter();
   const wsPath = useWsPath();
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const valuesOf = (campaign: CampaignDetail): FormValues => ({
+    name: campaign.name,
+    objective: campaign.objective,
+    ownerMembershipId: campaign.owner.membershipId,
+    startDate: campaign.startDate,
+    endDate: campaign.endDate,
+    projectIds: campaign.projects.map((p) => p.id),
+    partnerId: campaign.partner?.id ?? null,
+    goals: campaign.goals,
+    tags: campaign.tags.join(', '),
+    coverAssetId: campaign.coverAssetId,
+  });
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: campaign
-      ? {
-          name: campaign.name,
-          objective: campaign.objective,
-          ownerMembershipId: campaign.owner.membershipId,
-          startDate: campaign.startDate,
-          endDate: campaign.endDate,
-          projectIds: campaign.projects.map((p) => p.id),
-          partnerId: campaign.partner?.id ?? null,
-          goals: campaign.goals,
-          tags: campaign.tags.join(', '),
-          coverAssetId: campaign.coverAssetId,
-        }
+      ? valuesOf(campaign)
       : {
           name: '',
           objective: '',
@@ -90,6 +91,8 @@ export const CampaignFormDrawer = ({
           coverAssetId: null,
         },
   });
+  // Edits apply to the record as the form opened; only changed fields are sent (T162).
+  const edit = useEditBase(campaign, { onReload: (x) => form.reset(valuesOf(x)) });
   const goals = useFieldArray({ control: form.control, name: 'goals' });
   const create = useApiMutation(C.create, { invalidate: CAMPAIGN_INVALIDATE, silentErrors: true, successMessage: 'Campaign created' });
   const update = useApiMutation(C.update, { invalidate: CAMPAIGN_INVALIDATE, silentErrors: true, successMessage: 'Campaign saved' });
@@ -99,7 +102,7 @@ export const CampaignFormDrawer = ({
 
   const submit = form.handleSubmit(async (v) => {
     setError(null);
-    const body = {
+    const bodyOf = (v: FormValues) => ({
       name: v.name.trim(),
       objective: v.objective.trim(),
       ownerMembershipId: v.ownerMembershipId,
@@ -110,10 +113,13 @@ export const CampaignFormDrawer = ({
       goals: v.goals.map((g) => ({ metricKey: g.metricKey.trim(), target: g.target.trim(), unit: g.unit.trim() })),
       tags: splitTags(v.tags),
       coverAssetId: v.coverAssetId,
-    };
+    });
+    const body = bodyOf(v);
     try {
       if (campaign) {
-        await update.run({ params: { workspaceId: workspace.id, campaignId: campaign.id }, body }, { ifMatch: campaign.rowVersion });
+        const changed = changedFields(bodyOf(valuesOf(edit.start ?? campaign)), body);
+        if (changed.includes('startDate') || changed.includes('endDate')) changed.push('startDate', 'endDate');
+        await update.run({ params: { workspaceId: workspace.id, campaignId: campaign.id }, body: pickChanged(body, changed) }, { ifMatch: edit.version });
         form.reset(v);
         onOpenChange(false);
       } else {
@@ -123,8 +129,8 @@ export const CampaignFormDrawer = ({
         router.push(wsPath(`/campaigns/${r.id}`));
       }
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The campaign could not be saved.');
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The campaign could not be saved.');
     }
   });
   const pending = create.isPending || update.isPending;
@@ -230,7 +236,7 @@ export const CampaignFormDrawer = ({
           </div>
         </form>
       </Drawer>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };

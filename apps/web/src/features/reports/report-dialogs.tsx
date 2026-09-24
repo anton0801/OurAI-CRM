@@ -5,62 +5,71 @@ import { isApiError } from '@castlane/api-client';
 import { REPORT_CADENCES } from '@castlane/domain';
 import { Badge, Banner, Button, Checkbox, Dialog, Field, Input, Panel, RadioGroup, Select, formatDateTime } from '@castlane/ui';
 import { MultiMemberSelect } from '@/components/common/pickers';
+import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { label } from '@/lib/labels';
 import { useWorkspace } from '@/lib/workspace-context';
 import { errorMessage, useInsightsMutation } from '../metrics/common';
 
 /** Share Internally: recipients see the report and run it in their own scope — no data access is granted. */
-export const ShareDialog = ({ report, onClose, onConflict }: { report: ReportDetail; onClose: () => void; onConflict: () => void }) => {
+export const ShareDialog = ({ report, onClose }: { report: ReportDetail; onClose: () => void }) => {
   const { workspace } = useWorkspace();
   const [sharing, setSharing] = useState<'private' | 'shared'>(report.sharing);
   const [members, setMembers] = useState<string[]>(report.sharedWith.map((m) => m.membershipId));
   const [error, setError] = useState<string | null>(null);
+  // Sharing is changed against the report as the dialog opened (T162).
+  const edit = useEditBase(report, {
+    onReload: (x) => {
+      setSharing(x.sharing);
+      setMembers(x.sharedWith.map((m) => m.membershipId));
+    },
+  });
   const share = useInsightsMutation(R.share, { successMessage: 'Sharing updated' });
   const submit = async () => {
     setError(null);
     try {
-      await share.run({ params: { workspaceId: workspace.id, reportId: report.id }, body: { sharing, memberIds: sharing === 'shared' ? members : [] } }, { ifMatch: report.rowVersion });
+      await share.run({ params: { workspaceId: workspace.id, reportId: report.id }, body: { sharing, memberIds: sharing === 'shared' ? members : [] } }, { ifMatch: edit.version });
       onClose();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') {
-        onClose();
-        onConflict();
-      } else setError(isApiError(e) && e.fieldErrors.length ? e.fieldErrors[0]!.message : errorMessage(e));
+      if (!edit.catchConflict(e)) setError(isApiError(e) && e.fieldErrors.length ? e.fieldErrors[0]!.message : errorMessage(e));
     }
   };
   return (
-    <Dialog
-      open
-      onOpenChange={(v) => !v && onClose()}
-      title="Share Report"
-      description="Members you share with can open and run this report. Each of them sees only the data they already have access to."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" loading={share.isPending} onClick={() => void submit()}>
-            Save Sharing
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        <RadioGroup
-          label="Sharing"
-          value={sharing}
-          onValueChange={setSharing}
-          options={[
-            { value: 'private', label: 'Private', description: 'Only you can open the report.' },
-            { value: 'shared', label: 'Shared with members', description: 'Chosen members can open and run it with their own access.' },
-          ]}
-        />
-        {sharing === 'shared' ? (
-          <Field label="Members" required>
-            <MultiMemberSelect value={members} onChange={setMembers} placeholder="Choose members" />
-          </Field>
-        ) : null}
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(v) => !v && onClose()}
+        title="Share Report"
+        description="Members you share with can open and run this report. Each of them sees only the data they already have access to."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="primary" loading={share.isPending} onClick={() => void submit()}>
+              Save Sharing
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <RadioGroup
+            label="Sharing"
+            value={sharing}
+            onValueChange={setSharing}
+            options={[
+              { value: 'private', label: 'Private', description: 'Only you can open the report.' },
+              { value: 'shared', label: 'Shared with members', description: 'Chosen members can open and run it with their own access.' },
+            ]}
+          />
+          {sharing === 'shared' ? (
+            <Field label="Members" required>
+              <MultiMemberSelect value={members} onChange={setMembers} placeholder="Choose members" />
+            </Field>
+          ) : null}
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

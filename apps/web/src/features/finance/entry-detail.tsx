@@ -28,6 +28,7 @@ import {
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useUrlState } from '@/lib/url-state';
@@ -336,7 +337,7 @@ const EntryView = ({ entry: e, onEdit, refetch }: { entry: EntryDetail; onEdit: 
         }
       />
       {dialog === 'allocate' ? <AllocateDialog entry={e} onClose={() => setDialog(null)} onConflict={() => { setDialog(null); setConflict(true); }} /> : null}
-      {dialog === 'attributions' ? <AttributionsDialog entry={e} onClose={() => setDialog(null)} onConflict={() => { setDialog(null); setConflict(true); }} /> : null}
+      {dialog === 'attributions' ? <AttributionsDialog entry={e} onClose={() => setDialog(null)} /> : null}
       <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => { setConflict(false); refetch(); }} />
       {guard.dialog}
     </div>
@@ -605,67 +606,74 @@ const AllocateDialog = ({ entry, onClose, onConflict }: { entry: EntryDetail; on
 
 type AttrRow = { key: string; membershipId: string | null; sharePercent: string };
 
-const AttributionsDialog = ({ entry, onClose, onConflict }: { entry: EntryDetail; onClose: () => void; onConflict: () => void }) => {
+const AttributionsDialog = ({ entry, onClose }: { entry: EntryDetail; onClose: () => void }) => {
   const params = useFinanceParams();
   const [rows, setRows] = useState<AttrRow[]>(
     entry.attributions.length ? entry.attributions.map((a) => ({ key: rowKey(), membershipId: a.member.membershipId, sharePercent: a.sharePercent })) : [{ key: rowKey(), membershipId: null, sharePercent: '100' }],
   );
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Saved against the entry as the dialog opened; a conflict keeps the rows (T162).
+  const edit = useEditBase(entry, {
+    onReload: (x) => setRows(x.attributions.length ? x.attributions.map((a) => ({ key: rowKey(), membershipId: a.member.membershipId, sharePercent: a.sharePercent })) : [{ key: rowKey(), membershipId: null, sharePercent: '100' }]),
+  });
   const m = useFinanceMutation(F.entriesSetAttributions, { invalidate: ['finance.'], silentErrors: true, successMessage: 'Attribution saved' });
   const total = rows.reduce((a, r) => a + (Number(r.sharePercent) || 0), 0);
   const valid = rows.every((r) => r.membershipId && Number(r.sharePercent) > 0) && Math.abs(total - 100) < 1e-9;
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Revenue Attribution"
-      description="Shares of this revenue used by revenue-share compensation rules. Changes after a run was approved become adjustments in the next open run."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={m.isPending}
-            disabled={!valid}
-            onClick={() =>
-              void m
-                .run({ params: { ...params, entryId: entry.id }, body: { attributions: rows.map((r) => ({ membershipId: r.membershipId!, sharePercent: r.sharePercent })), reason: reason.trim() || undefined } }, { ifMatch: entry.rowVersion })
-                .then(onClose)
-                .catch((e) => (isConflict(e) ? onConflict() : setError(apiMessage(e))))
-            }
-          >
-            Save Attribution
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {rows.map((r, i) => (
-          <div key={r.key} className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <div className="min-w-0 flex-1">
-              <MemberSelect aria-label={`Member ${i + 1}`} value={r.membershipId} onChange={(v) => setRows(rows.map((x, j) => (j === i ? { ...x, membershipId: v } : x)))} />
-            </div>
-            <div className="relative w-full sm:w-[120px]">
-              <Input aria-label={`Share ${i + 1}`} inputMode="decimal" className="pr-8 text-right font-mono" value={r.sharePercent} onChange={(e) => decimalOk(e.target.value) && setRows(rows.map((x, j) => (j === i ? { ...x, sharePercent: e.target.value } : x)))} />
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] text-fg-2">%</span>
-            </div>
-            <Button size="sm" variant="ghost" disabled={rows.length === 1} onClick={() => setRows(rows.filter((_, j) => j !== i))}>
-              Remove
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Revenue Attribution"
+        description="Shares of this revenue used by revenue-share compensation rules. Changes after a run was approved become adjustments in the next open run."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={m.isPending}
+              disabled={!valid}
+              onClick={() =>
+                void m
+                  .run({ params: { ...params, entryId: entry.id }, body: { attributions: rows.map((r) => ({ membershipId: r.membershipId!, sharePercent: r.sharePercent })), reason: reason.trim() || undefined } }, { ifMatch: edit.version })
+                  .then(onClose)
+                  .catch((e) => (edit.catchConflict(e) ? undefined : setError(apiMessage(e))))
+              }
+            >
+              Save Attribution
             </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {rows.map((r, i) => (
+            <div key={r.key} className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="min-w-0 flex-1">
+                <MemberSelect aria-label={`Member ${i + 1}`} value={r.membershipId} onChange={(v) => setRows(rows.map((x, j) => (j === i ? { ...x, membershipId: v } : x)))} />
+              </div>
+              <div className="relative w-full sm:w-[120px]">
+                <Input aria-label={`Share ${i + 1}`} inputMode="decimal" className="pr-8 text-right font-mono" value={r.sharePercent} onChange={(e) => decimalOk(e.target.value) && setRows(rows.map((x, j) => (j === i ? { ...x, sharePercent: e.target.value } : x)))} />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] text-fg-2">%</span>
+              </div>
+              <Button size="sm" variant="ghost" disabled={rows.length === 1} onClick={() => setRows(rows.filter((_, j) => j !== i))}>
+                Remove
+              </Button>
+            </div>
+          ))}
+          <div className="flex items-center justify-between">
+            <Button size="sm" onClick={() => setRows([...rows, { key: rowKey(), membershipId: null, sharePercent: '' }])}>
+              Add Member
+            </Button>
+            <span className={Math.abs(total - 100) < 1e-9 ? 'text-[12px] text-fg-2' : 'text-[12px] text-warning'}>Total {total}% of 100%</span>
           </div>
-        ))}
-        <div className="flex items-center justify-between">
-          <Button size="sm" onClick={() => setRows([...rows, { key: rowKey(), membershipId: null, sharePercent: '' }])}>
-            Add Member
-          </Button>
-          <span className={Math.abs(total - 100) < 1e-9 ? 'text-[12px] text-fg-2' : 'text-[12px] text-warning'}>Total {total}% of 100%</span>
+          <Field label="Reason" helper="Recorded with a manual attribution.">
+            <Textarea value={reason} maxLength={2000} onChange={(e) => setReason(e.target.value)} className="min-h-[64px]" />
+          </Field>
         </div>
-        <Field label="Reason" helper="Recorded with a manual attribution.">
-          <Textarea value={reason} maxLength={2000} onChange={(e) => setReason(e.target.value)} className="min-h-[64px]" />
-        </Field>
-      </div>
-    </Dialog>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };

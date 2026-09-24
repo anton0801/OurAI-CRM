@@ -9,6 +9,7 @@ import { experimentEndpoints as X, type ExperimentDetail } from '@castlane/api-c
 import { isApiError } from '@castlane/api-client';
 import { Banner, Button, DateTimeInput, Drawer, Field, IconButton, Input, Select, Textarea } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { AssetThumb, FileUploader } from '@/components/media/file-uploader';
@@ -57,25 +58,25 @@ export const ExperimentFormDrawer = ({
   const wsPath = useWsPath();
   const tz = user.timezone;
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
   const metrics = useApiQuery(X.metrics, { params: { workspaceId: workspace.id } });
   const running = experiment?.status === 'running';
+  const valuesOf = (experiment: ExperimentDetail): FormValues => ({
+    hypothesis: experiment.hypothesis,
+    projectId: experiment.project.id,
+    ownerMembershipId: experiment.owner.membershipId,
+    primaryMetricKey: experiment.primaryMetricKey,
+    observationWindowHours: String(experiment.observationWindowHours),
+    minimumSample: String(experiment.minimumSample),
+    startAt: toLocalInput(experiment.startAt, tz),
+    endAt: toLocalInput(experiment.endAt, tz),
+    limitations: experiment.limitations ?? '',
+    variants: experiment.variants.map((v) => ({ id: v.id, name: v.name, description: v.description ?? '', thumbnailAssetId: v.thumbnailAssetId })),
+    reason: '',
+  });
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: experiment
-      ? {
-          hypothesis: experiment.hypothesis,
-          projectId: experiment.project.id,
-          ownerMembershipId: experiment.owner.membershipId,
-          primaryMetricKey: experiment.primaryMetricKey,
-          observationWindowHours: String(experiment.observationWindowHours),
-          minimumSample: String(experiment.minimumSample),
-          startAt: toLocalInput(experiment.startAt, tz),
-          endAt: toLocalInput(experiment.endAt, tz),
-          limitations: experiment.limitations ?? '',
-          variants: experiment.variants.map((v) => ({ id: v.id, name: v.name, description: v.description ?? '', thumbnailAssetId: v.thumbnailAssetId })),
-          reason: '',
-        }
+      ? valuesOf(experiment)
       : {
           hypothesis: '',
           projectId: initialProjectId ?? '',
@@ -93,6 +94,8 @@ export const ExperimentFormDrawer = ({
           reason: '',
         },
   });
+  // Edits apply to the record as the form opened; only changed fields are sent (T162).
+  const edit = useEditBase(experiment, { onReload: (x) => form.reset(valuesOf(x)) });
   const variants = useFieldArray({ control: form.control, name: 'variants' });
   const create = useApiMutation(X.create, { invalidate: EXPERIMENT_INVALIDATE, silentErrors: true, successMessage: 'Experiment created as Draft' });
   const update = useApiMutation(X.update, { invalidate: EXPERIMENT_INVALIDATE, silentErrors: true, successMessage: running ? 'Plan revision saved' : 'Experiment saved' });
@@ -112,20 +115,26 @@ export const ExperimentFormDrawer = ({
       form.setError('endAt', { message: 'The end must be after the start.' });
       return;
     }
-    const body = {
+    const bodyOf = (v: FormValues) => ({
       hypothesis: v.hypothesis.trim(),
       ownerMembershipId: v.ownerMembershipId,
       primaryMetricKey: v.primaryMetricKey,
       observationWindowHours: Number(v.observationWindowHours),
       minimumSample: Number(v.minimumSample),
-      startAt,
-      endAt,
+      startAt: v.startAt ? fromLocalInput(v.startAt, tz) : null,
+      endAt: v.endAt ? fromLocalInput(v.endAt, tz) : null,
       limitations: v.limitations.trim() || null,
       variants: v.variants.map((x) => ({ ...(x.id ? { id: x.id } : {}), name: x.name.trim(), description: x.description.trim() || null, thumbnailAssetId: x.thumbnailAssetId })),
-    };
+    });
+    const body = bodyOf(v);
     try {
       if (experiment) {
-        await update.run({ params: { workspaceId: workspace.id, experimentId: experiment.id }, body: { ...body, ...(running ? { reason: v.reason.trim() } : {}) } }, { ifMatch: experiment.rowVersion });
+        const changed = changedFields(bodyOf(valuesOf(edit.start ?? experiment)), body);
+        if (changed.includes('startAt') || changed.includes('endAt')) changed.push('startAt', 'endAt');
+        await update.run(
+          { params: { workspaceId: workspace.id, experimentId: experiment.id }, body: { ...pickChanged(body, changed), ...(running ? { reason: v.reason.trim() } : {}) } },
+          { ifMatch: edit.version },
+        );
         form.reset(v);
         onOpenChange(false);
       } else {
@@ -135,8 +144,8 @@ export const ExperimentFormDrawer = ({
         router.push(wsPath(`/experiments/${r.id}`));
       }
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The experiment could not be saved.');
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The experiment could not be saved.');
     }
   });
   const pending = create.isPending || update.isPending;
@@ -277,7 +286,7 @@ export const ExperimentFormDrawer = ({
           ) : null}
         </form>
       </Drawer>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };

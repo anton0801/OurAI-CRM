@@ -9,6 +9,7 @@ import { isApiError } from '@castlane/api-client';
 import { LIMITS, PLATFORMS } from '@castlane/domain';
 import { Banner, Button, Field, Input, PageHeader, Panel, RadioGroup, Select, Textarea } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { useDebounced } from '@/components/common/use-debounced';
@@ -55,9 +56,28 @@ export const AccountEditor = ({ account }: { account?: AccountDetail }) => {
   const params = useSearchParams();
   const wsPath = useWsPath();
   const { workspace, membershipId } = useWorkspace();
-  const [conflict, setConflict] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [assignOpen, setAssignOpen] = useState(false);
+  const valuesOf = (account: AccountDetail): FormValues => ({
+    platform: account.platform,
+    profileUrl: account.originalUrl,
+    projectId: account.project.id,
+    ownerMembershipId: account.owner.membershipId,
+    handle: account.handle ?? '',
+    displayName: account.displayName ?? '',
+    language: account.language ?? '',
+    markets: account.markets.join(', '),
+    purpose: account.purpose ?? '',
+    status: 'preparing',
+    notes: account.notes ?? '',
+    tags: account.tags.join(', '),
+    avatarAssetId: account.avatarAssetId,
+    metricsCadence: account.metricsCadence,
+    metricsDayOfWeek: String(account.metricsDayOfWeek),
+    metricsTime: account.metricsTime,
+    captionMaxLength: account.captionMaxLength ? String(account.captionMaxLength) : '',
+    identityChangeReason: '',
+  });
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: account
@@ -95,6 +115,8 @@ export const AccountEditor = ({ account }: { account?: AccountDetail }) => {
   });
   const dirty = form.formState.isDirty;
   useUnsavedChangesGuard(dirty && !form.formState.isSubmitSuccessful);
+  // Edits apply to the account as the form opened; only changed fields are sent (T162).
+  const edit = useEditBase(account, { onReload: (x) => form.reset(valuesOf(x)) });
   const create = useApiMutation(accountEndpoints.create, { invalidate: ['accounts.', 'projects.'], silentErrors: true, successMessage: 'Account added' });
   const update = useApiMutation(accountEndpoints.update, { invalidate: ['accounts.'], silentErrors: true, successMessage: 'Account saved' });
 
@@ -112,7 +134,7 @@ export const AccountEditor = ({ account }: { account?: AccountDetail }) => {
 
   const onSubmit = form.handleSubmit(async (v) => {
     setError(null);
-    const common = {
+    const commonOf = (v: FormValues) => ({
       platform: v.platform,
       profileUrl: v.profileUrl.trim(),
       ownerMembershipId: v.ownerMembershipId,
@@ -128,12 +150,16 @@ export const AccountEditor = ({ account }: { account?: AccountDetail }) => {
       metricsDayOfWeek: Number(v.metricsDayOfWeek),
       metricsTime: v.metricsTime,
       captionMaxLength: v.captionMaxLength ? Number(v.captionMaxLength) : null,
-    };
+    });
+    const common = commonOf(v);
     try {
       if (account) {
+        const changed = changedFields(commonOf(valuesOf(edit.start ?? account)), common);
+        for (const group of [['platform', 'profileUrl'], ['metricsCadence', 'metricsDayOfWeek', 'metricsTime']] as const)
+          if (group.some((k) => changed.includes(k))) changed.push(...group);
         const r = await update.run(
-          { params: { workspaceId: workspace.id, accountId: account.id }, body: { ...common, identityChangeReason: v.identityChangeReason?.trim() || undefined } },
-          { ifMatch: account.rowVersion },
+          { params: { workspaceId: workspace.id, accountId: account.id }, body: { ...pickChanged(common, changed), identityChangeReason: v.identityChangeReason?.trim() || undefined } },
+          { ifMatch: edit.version },
         );
         form.reset(form.getValues());
         router.push(wsPath(`/accounts/${r.id}`));
@@ -143,8 +169,8 @@ export const AccountEditor = ({ account }: { account?: AccountDetail }) => {
         router.replace(wsPath(`/accounts/${r.id}`));
       }
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The account could not be saved.');
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The account could not be saved.');
     }
   });
 
@@ -349,7 +375,7 @@ export const AccountEditor = ({ account }: { account?: AccountDetail }) => {
           </Button>
         </div>
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
       {account ? <AssignMemberDialog open={assignOpen} onOpenChange={setAssignOpen} accountId={account.id} /> : null}
     </div>
   );

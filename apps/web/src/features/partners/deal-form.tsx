@@ -10,6 +10,7 @@ import { isApiError } from '@castlane/api-client';
 import { SUPPORTED_CURRENCIES } from '@castlane/domain';
 import { AmountInput, Banner, Button, DateInput, Field, IconButton, Input, PageHeader, Panel, Select } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect, MultiEntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { applyFieldErrors, useApiMutation } from '@/lib/hooks';
@@ -42,21 +43,21 @@ export const DealForm = ({ deal, onDone, embedded }: { deal?: DealDetail; onDone
   const wsPath = useWsPath();
   const finance = deal ? deal.permissions.editAmounts : can('finance.read');
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const valuesOf = (deal: DealDetail): FormValues => ({
+    title: deal.title,
+    partnerId: deal.partner.id,
+    ownerMembershipId: deal.owner.membershipId,
+    projectIds: deal.projects.map((p) => p.id),
+    amount: deal.amount?.amount ?? '',
+    currency: deal.amount?.currency ?? workspace.baseCurrency,
+    expectedCloseDate: deal.expectedCloseDate ?? '',
+    campaignId: deal.campaign?.id ?? null,
+    paymentSchedule: (deal.paymentSchedule ?? []).map((p) => ({ dueDate: p.dueDate, amount: p.amount, note: p.note ?? '' })),
+  });
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: deal
-      ? {
-          title: deal.title,
-          partnerId: deal.partner.id,
-          ownerMembershipId: deal.owner.membershipId,
-          projectIds: deal.projects.map((p) => p.id),
-          amount: deal.amount?.amount ?? '',
-          currency: deal.amount?.currency ?? workspace.baseCurrency,
-          expectedCloseDate: deal.expectedCloseDate ?? '',
-          campaignId: deal.campaign?.id ?? null,
-          paymentSchedule: (deal.paymentSchedule ?? []).map((p) => ({ dueDate: p.dueDate, amount: p.amount, note: p.note ?? '' })),
-        }
+      ? valuesOf(deal)
       : {
           title: '',
           partnerId: params.get('partnerId') ?? '',
@@ -69,6 +70,8 @@ export const DealForm = ({ deal, onDone, embedded }: { deal?: DealDetail; onDone
           paymentSchedule: [],
         },
   });
+  // Edits apply to the record as the form opened; only changed fields are sent (T162).
+  const edit = useEditBase(deal, { onReload: (x) => form.reset(valuesOf(x)) });
   const schedule = useFieldArray({ control: form.control, name: 'paymentSchedule' });
   useUnsavedChangesGuard(form.formState.isDirty && !form.formState.isSubmitSuccessful);
   const create = useApiMutation(dealEndpoints.create, { invalidate: ['deals.', 'partners.'], silentErrors: true, successMessage: 'Deal created' });
@@ -78,7 +81,7 @@ export const DealForm = ({ deal, onDone, embedded }: { deal?: DealDetail; onDone
 
   const onSubmit = form.handleSubmit(async (v) => {
     setError(null);
-    const body = {
+    const bodyOf = (v: FormValues) => ({
       title: v.title.trim(),
       partnerId: v.partnerId,
       ownerMembershipId: v.ownerMembershipId,
@@ -91,10 +94,14 @@ export const DealForm = ({ deal, onDone, embedded }: { deal?: DealDetail; onDone
             paymentSchedule: v.paymentSchedule.map((p) => ({ dueDate: p.dueDate, amount: p.amount, currency: v.currency, ...(p.note?.trim() ? { note: p.note.trim() } : {}) })),
           }
         : {}),
-    };
+    });
+    const body = bodyOf(v);
     try {
       if (deal) {
-        await update.run({ params: { workspaceId: workspace.id, dealId: deal.id }, body }, { ifMatch: deal.rowVersion });
+        const changed = changedFields(bodyOf(valuesOf(edit.start ?? deal)), body);
+        // Amount and schedule share the currency: send them together.
+        if (changed.includes('amount') || changed.includes('paymentSchedule')) changed.push('amount', 'paymentSchedule');
+        await update.run({ params: { workspaceId: workspace.id, dealId: deal.id }, body: pickChanged(body, changed) }, { ifMatch: edit.version });
         onDone?.();
       } else {
         const r = await create.run({ params: { workspaceId: workspace.id }, body });
@@ -102,8 +109,8 @@ export const DealForm = ({ deal, onDone, embedded }: { deal?: DealDetail; onDone
         router.replace(wsPath(`/deals/${r.id}`));
       }
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The deal could not be saved.');
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The deal could not be saved.');
     }
   });
   const pending = create.isPending || update.isPending;
@@ -185,7 +192,7 @@ export const DealForm = ({ deal, onDone, embedded }: { deal?: DealDetail; onDone
           </Button>
         </div>
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </div>
   );
 };

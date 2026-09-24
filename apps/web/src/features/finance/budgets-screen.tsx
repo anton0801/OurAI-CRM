@@ -41,6 +41,7 @@ import {
 } from '@castlane/ui';
 import { EntitySelect } from '@/components/common/entity-select';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { DirectionSelect, MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { useDebounced } from '@/components/common/use-debounced';
@@ -523,9 +524,9 @@ const BudgetBody = ({ b, refetch }: { b: BudgetDetail; refetch: () => void }) =>
         </ul>
       </Panel>
       {dialog === 'edit' || dialog === 'revise' ? (
-        <LinesDialog b={b} revise={dialog === 'revise'} onClose={() => setDialog(null)} onConflict={() => { setDialog(null); setConflict(true); }} />
+        <LinesDialog b={b} revise={dialog === 'revise'} onClose={() => setDialog(null)} />
       ) : null}
-      {dialog === 'thresholds' ? <ThresholdsDialog b={b} onClose={() => setDialog(null)} onConflict={() => { setDialog(null); setConflict(true); }} /> : null}
+      {dialog === 'thresholds' ? <ThresholdsDialog b={b} onClose={() => setDialog(null)} /> : null}
       {dialog === 'copy' ? <CopyDialog b={b} onClose={() => setDialog(null)} /> : null}
       <ReasonDialog
         open={!!resetAlert}
@@ -548,10 +549,13 @@ const BudgetBody = ({ b, refetch }: { b: BudgetDetail; refetch: () => void }) =>
   );
 };
 
-const LinesDialog = ({ b, revise, onClose, onConflict }: { b: BudgetDetail; revise: boolean; onClose: () => void; onConflict: () => void }) => {
+const LinesDialog = ({ b, revise, onClose }: { b: BudgetDetail; revise: boolean; onClose: () => void }) => {
   const params = useFinanceParams();
-  const source = revise ? b.versions.find((v) => v.versionNo === b.approvedVersionNo) : b.versions.find((v) => v.state === 'draft');
-  const [lines, setLines] = useState<LineRow[]>((source?.lines ?? []).map((l) => ({ key: rowKey(), categoryId: l.category.id, planned: l.planned.amount, note: l.note ?? '' })));
+  const linesOf = (x: BudgetDetail) =>
+    ((revise ? x.versions.find((v) => v.versionNo === x.approvedVersionNo) : x.versions.find((v) => v.state === 'draft'))?.lines ?? []).map((l) => ({ key: rowKey(), categoryId: l.category.id, planned: l.planned.amount, note: l.note ?? '' }));
+  const [lines, setLines] = useState<LineRow[]>(() => linesOf(b));
+  // The lines are saved as a whole against the budget version the dialog opened with (T162).
+  const edit = useEditBase(b, { onReload: (x) => setLines(linesOf(x)) });
   const [reason, setReason] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
@@ -560,85 +564,105 @@ const LinesDialog = ({ b, revise, onClose, onConflict }: { b: BudgetDetail; revi
   const save = async () => {
     setError(null);
     try {
-      if (revise) await reviseM.run({ params: { ...params, budgetId: b.id }, body: { lines: linesBody(lines), reason: reason.trim() } }, { ifMatch: b.rowVersion });
-      else await update.run({ params: { ...params, budgetId: b.id }, body: { lines: linesBody(lines) } }, { ifMatch: b.rowVersion });
+      if (revise) await reviseM.run({ params: { ...params, budgetId: b.id }, body: { lines: linesBody(lines), reason: reason.trim() } }, { ifMatch: edit.version });
+      else await update.run({ params: { ...params, budgetId: b.id }, body: { lines: linesBody(lines) } }, { ifMatch: edit.version });
       onClose();
     } catch (e) {
-      if (isConflict(e)) return onConflict();
+      if (edit.catchConflict(e)) return;
       setErrors(fieldErrorsOf(e));
       setError(apiMessage(e));
     }
   };
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="wide"
-      title={revise ? 'Revise Budget' : 'Edit Draft Lines'}
-      description={revise ? 'Creates a new draft version. The approved version and actual costs do not change until the new version is approved.' : undefined}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" loading={update.isPending || reviseM.isPending} disabled={revise && reason.trim().length < 3} onClick={() => void save()}>
-            {revise ? 'Create Version' : 'Save Lines'}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <BudgetLinesEditor value={lines} onChange={setLines} currency={b.currency} errors={errors} />
-        {revise ? (
-          <Field label="Reason" required helper="At least 3 characters.">
-            <Textarea value={reason} maxLength={2000} onChange={(e) => setReason(e.target.value)} className="min-h-[64px]" />
-          </Field>
-        ) : null}
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="wide"
+        title={revise ? 'Revise Budget' : 'Edit Draft Lines'}
+        description={revise ? 'Creates a new draft version. The approved version and actual costs do not change until the new version is approved.' : undefined}
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="primary" loading={update.isPending || reviseM.isPending} disabled={revise && reason.trim().length < 3} onClick={() => void save()}>
+              {revise ? 'Create Version' : 'Save Lines'}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <BudgetLinesEditor value={lines} onChange={setLines} currency={b.currency} errors={errors} />
+          {revise ? (
+            <Field label="Reason" required helper="At least 3 characters.">
+              <Textarea value={reason} maxLength={2000} onChange={(e) => setReason(e.target.value)} className="min-h-[64px]" />
+            </Field>
+          ) : null}
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
-const ThresholdsDialog = ({ b, onClose, onConflict }: { b: BudgetDetail; onClose: () => void; onConflict: () => void }) => {
+const ThresholdsDialog = ({ b, onClose }: { b: BudgetDetail; onClose: () => void }) => {
   const params = useFinanceParams();
   const [value, setValue] = useState(b.alertThresholds.join(', '));
   const [owner, setOwner] = useState<string | null>(b.owner.membershipId);
   const [error, setError] = useState<string | null>(null);
+  // Saved against the budget as the dialog opened; only changed settings are sent (T162).
+  const edit = useEditBase(b, {
+    onReload: (x) => {
+      setValue(x.alertThresholds.join(', '));
+      setOwner(x.owner.membershipId);
+    },
+  });
+  const s = edit.start ?? b;
   const m = useFinanceMutation(F.budgetsUpdate, { invalidate: ['finance.'], silentErrors: true, successMessage: 'Budget updated' });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="Set Alert Threshold"
-      description="Alerts notify the owner once per threshold. They never block recording a real cost."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={m.isPending}
-            onClick={() =>
-              void m
-                .run({ params: { ...params, budgetId: b.id }, body: { alertThresholds: parseThresholds(value), ownerMembershipId: owner ?? undefined } }, { ifMatch: b.rowVersion })
-                .then(onClose)
-                .catch((e) => (isConflict(e) ? onConflict() : setError(apiMessage(e))))
-            }
-          >
-            Save
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Thresholds" helper="Percent of plan, comma-separated, e.g. 50, 80, 100.">
-          <Input value={value} onChange={(e) => setValue(e.target.value)} />
-        </Field>
-        <Field label="Owner">
-          <MemberSelect value={owner} onChange={setOwner} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="Set Alert Threshold"
+        description="Alerts notify the owner once per threshold. They never block recording a real cost."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={m.isPending}
+              onClick={() =>
+                void m
+                  .run(
+                    {
+                      params: { ...params, budgetId: b.id },
+                      body: pickChanged({ alertThresholds: parseThresholds(value), ownerMembershipId: owner ?? undefined }, changedFields({ alertThresholds: s.alertThresholds, ownerMembershipId: s.owner.membershipId }, { alertThresholds: parseThresholds(value), ownerMembershipId: owner ?? undefined })),
+                    },
+                    { ifMatch: edit.version },
+                  )
+                  .then(onClose)
+                  .catch((e) => (edit.catchConflict(e) ? undefined : setError(apiMessage(e))))
+              }
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Thresholds" helper="Percent of plan, comma-separated, e.g. 50, 80, 100.">
+            <Input value={value} onChange={(e) => setValue(e.target.value)} />
+          </Field>
+          <Field label="Owner">
+            <MemberSelect value={owner} onChange={setOwner} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -796,7 +820,8 @@ const CommitmentDrawer = ({ open, onClose, onCreated, existing }: { open: boolea
   const [f, setF] = useState<CommitmentForm>(blank);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // An edit applies to the commitment as the drawer opened; only changed fields are sent (T162).
+  const edit = useEditBase(existing, { open: open && !!existing, onReload: () => setF(blank()) });
   useEffect(() => {
     if (open) {
       setF(blank());
@@ -820,14 +845,18 @@ const CommitmentDrawer = ({ open, onClose, onCreated, existing }: { open: boolea
     const body = { projectId: f.projectId!, budgetId: f.budgetId, categoryId: f.categoryId!, amount: f.amount.trim(), currency: f.currency, dueDate: f.dueDate || null, counterparty: f.counterparty.trim() || null, description: f.description.trim() };
     try {
       if (existing) {
-        await update.run({ params: { ...params, commitmentId: existing.id }, body }, { ifMatch: existing.rowVersion });
+        const s = edit.start ?? existing;
+        const before = { projectId: s.project.id, budgetId: s.budget?.id ?? null, categoryId: s.category.id, amount: s.amount.amount, currency: s.amount.currency, dueDate: s.dueDate ?? null, counterparty: s.counterparty?.trim() || null, description: s.description.trim() };
+        const changed = changedFields(before, body);
+        if (changed.includes('amount') || changed.includes('currency')) changed.push('amount', 'currency');
+        await update.run({ params: { ...params, commitmentId: existing.id }, body: pickChanged(body, changed) }, { ifMatch: edit.version });
         onClose();
       } else {
         const r = await create.run({ params, body });
         onCreated?.(r.id);
       }
     } catch (err) {
-      if (isConflict(err)) return setConflict(true);
+      if (edit.catchConflict(err)) return;
       setErrors(fieldErrorsOf(err));
       setError(apiMessage(err));
     }
@@ -883,7 +912,7 @@ const CommitmentDrawer = ({ open, onClose, onCreated, existing }: { open: boolea
           </Field>
         </div>
       </div>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => { setConflict(false); onClose(); }} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Drawer>
   );
 };

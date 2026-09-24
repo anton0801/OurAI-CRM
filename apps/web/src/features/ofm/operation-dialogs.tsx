@@ -30,6 +30,7 @@ import {
   toast,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect, MultiEntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
@@ -70,6 +71,18 @@ export const OperationDrawer = ({
 }) => {
   const { workspace, user, membershipId } = useWorkspace();
   const models = useOfmModels();
+  const valuesOf = (operation: OfmOperationDetail): OpValues => ({
+    type: operation.type,
+    accountId: operation.account.id,
+    contactId: operation.contact?.id ?? '',
+    ownerMembershipId: operation.owner.membershipId,
+    title: operation.title,
+    details: operation.details ?? '',
+    dueAt: toLocalInput(operation.dueAt, user.timezone),
+    priority: operation.priority,
+    promisedDeliverable: operation.promisedDeliverable ?? '',
+    evidenceAssetIds: operation.evidenceAssetIds,
+  });
   const form = useForm<OpValues>({
     resolver: zodResolver(opSchema),
     defaultValues: operation
@@ -99,7 +112,8 @@ export const OperationDrawer = ({
         },
   });
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // Edits apply to the operation as it was opened; only changed fields are sent (T162).
+  const edit = useEditBase(operation, { onReload: (x) => form.reset(valuesOf(x)) });
   const create = useOfmMutation(E.createOperation, { successMessage: 'Operation created' });
   const update = useOfmMutation(E.updateOperation, { successMessage: 'Operation updated' });
   const accountId = form.watch('accountId');
@@ -107,7 +121,7 @@ export const OperationDrawer = ({
   const errs = form.formState.errors;
   const submit = form.handleSubmit(async (v) => {
     setError(null);
-    const common = {
+    const commonOf = (v: OpValues) => ({
       title: v.title.trim(),
       details: v.details?.trim() ? v.details : null,
       dueAt: v.dueAt ? fromLocalInput(v.dueAt, user.timezone) : null,
@@ -116,18 +130,20 @@ export const OperationDrawer = ({
       contactId: v.contactId || null,
       promisedDeliverable: v.promisedDeliverable?.trim() ? v.promisedDeliverable.trim() : null,
       evidenceAssetIds: v.evidenceAssetIds,
-    };
+    });
+    const common = commonOf(v);
     try {
       if (operation) {
-        await update.run({ params: { workspaceId: workspace.id, operationId: operation.id }, body: common }, { ifMatch: operation.rowVersion });
+        const before = commonOf(valuesOf(edit.start ?? operation));
+        await update.run({ params: { workspaceId: workspace.id, operationId: operation.id }, body: pickChanged(common, changedFields(before, common)) }, { ifMatch: edit.version });
         onClose(operation.id);
       } else {
         const res = await create.run({ params: { workspaceId: workspace.id }, body: { ...common, type: v.type, accountId: v.accountId, shiftId: preset?.shiftId ?? null } });
         onClose(res.id);
       }
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(errorMessage(e, 'The operation could not be saved.'));
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(errorMessage(e, 'The operation could not be saved.'));
     }
   });
   const pending = create.isPending || update.isPending;
@@ -209,7 +225,7 @@ export const OperationDrawer = ({
           />
         </Field>
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Drawer>
   );
 };
@@ -330,6 +346,8 @@ const TransitionDialog = ({
   const [nextCheck, setNextCheck] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(op);
   const simple = target === 'in_progress' || target === 'open';
   const valid =
     simple ||
@@ -351,12 +369,12 @@ const TransitionDialog = ({
             nextCheckAt: target === 'waiting' ? (fromLocalInput(nextCheck, user.timezone) ?? undefined) : undefined,
           },
         },
-        { ifMatch: op.rowVersion },
+        { ifMatch: edit.version },
       );
       toast.success(`Operation: ${label('operationStatus', target)}`);
       onClose();
     } catch (e) {
-      setError(errorMessage(e));
+      if (!edit.catchConflict(e)) setError(errorMessage(e));
     } finally {
       setPending(false);
     }
@@ -367,42 +385,45 @@ const TransitionDialog = ({
   }, []);
   if (simple) return null;
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title={target === 'completed' ? 'Complete operation' : target === 'cancelled' ? 'Cancel operation?' : 'Wait for something'}
-      description={target === 'completed' ? 'Record the outcome. Completion does not mean a payment was made.' : undefined}
-      dirty={(text + waitingFor).length > 0 && !pending}
-      footer={
-        <>
-          <Button onClick={onClose} disabled={pending}>
-            Back
-          </Button>
-          <Button variant={target === 'cancelled' ? 'danger' : 'primary'} disabled={!valid} loading={pending} onClick={() => void go()}>
-            {transitionLabel(op.status, target)}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {target === 'waiting' ? (
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title={target === 'completed' ? 'Complete operation' : target === 'cancelled' ? 'Cancel operation?' : 'Wait for something'}
+        description={target === 'completed' ? 'Record the outcome. Completion does not mean a payment was made.' : undefined}
+        dirty={(text + waitingFor).length > 0 && !pending}
+        footer={
           <>
-            <Field label="Waiting For" required>
-              <Input value={waitingFor} onChange={(e) => setWaitingFor(e.target.value)} maxLength={500} />
-            </Field>
-            <Field label="Next Check At" required>
-              <DateTimeInput timezone={user.timezone} value={nextCheck} onChange={(e) => setNextCheck(e.target.value)} />
-            </Field>
+            <Button onClick={onClose} disabled={pending}>
+              Back
+            </Button>
+            <Button variant={target === 'cancelled' ? 'danger' : 'primary'} disabled={!valid} loading={pending} onClick={() => void go()}>
+              {transitionLabel(op.status, target)}
+            </Button>
           </>
-        ) : (
-          <Field label={target === 'completed' ? 'Outcome' : 'Reason'} required helper="At least 3 characters.">
-            <Textarea value={text} onChange={(e) => setText(e.target.value)} maxLength={2000} />
-          </Field>
-        )}
-      </div>
-    </Dialog>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {target === 'waiting' ? (
+            <>
+              <Field label="Waiting For" required>
+                <Input value={waitingFor} onChange={(e) => setWaitingFor(e.target.value)} maxLength={500} />
+              </Field>
+              <Field label="Next Check At" required>
+                <DateTimeInput timezone={user.timezone} value={nextCheck} onChange={(e) => setNextCheck(e.target.value)} />
+              </Field>
+            </>
+          ) : (
+            <Field label={target === 'completed' ? 'Outcome' : 'Reason'} required helper="At least 3 characters.">
+              <Textarea value={text} onChange={(e) => setText(e.target.value)} maxLength={2000} />
+            </Field>
+          )}
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -413,55 +434,60 @@ const ContentBriefDialog = ({ op, onClose }: { op: OfmOperationDetail; onClose: 
   const [brief, setBrief] = useState(op.promisedDeliverable ?? '');
   const [due, setDue] = useState(toLocalInput(op.dueAt, user.timezone));
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(op);
   const m = useOfmMutation(E.createContentBrief, { successMessage: 'Brief sent to the creator as a task', also: ['tasks.', 'myWork.'] });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Create Content Brief"
-      description="The creator receives a task with this brief only — contact notes and history are never shared."
-      dirty
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!creator || title.trim().length < 3 || brief.trim().length < 3}
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run(
-                  { params: { workspaceId: workspace.id, operationId: op.id }, body: { creatorMembershipId: creator!, title: title.trim(), brief: brief.trim(), dueAt: due ? fromLocalInput(due, user.timezone) : null } },
-                  { ifMatch: op.rowVersion },
-                );
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Create Brief
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Creator" required>
-          <MemberSelect value={creator} onChange={setCreator} projectId={op.project.id} permission="tasks.read" />
-        </Field>
-        <Field label="Task Title" required>
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} />
-        </Field>
-        <Field label="Brief" required helper="What to make. Do not include contact aliases, notes or conversation history.">
-          <Textarea value={brief} onChange={(e) => setBrief(e.target.value)} rows={5} maxLength={4000} />
-        </Field>
-        <Field label="Due">
-          <DateTimeInput timezone={user.timezone} value={due} onChange={(e) => setDue(e.target.value)} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Create Content Brief"
+        description="The creator receives a task with this brief only — contact notes and history are never shared."
+        dirty
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={!creator || title.trim().length < 3 || brief.trim().length < 3}
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await m.run(
+                    { params: { workspaceId: workspace.id, operationId: op.id }, body: { creatorMembershipId: creator!, title: title.trim(), brief: brief.trim(), dueAt: due ? fromLocalInput(due, user.timezone) : null } },
+                    { ifMatch: edit.version },
+                  );
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Create Brief
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Creator" required>
+            <MemberSelect value={creator} onChange={setCreator} projectId={op.project.id} permission="tasks.read" />
+          </Field>
+          <Field label="Task Title" required>
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} />
+          </Field>
+          <Field label="Brief" required helper="What to make. Do not include contact aliases, notes or conversation history.">
+            <Textarea value={brief} onChange={(e) => setBrief(e.target.value)} rows={5} maxLength={4000} />
+          </Field>
+          <Field label="Due">
+            <DateTimeInput timezone={user.timezone} value={due} onChange={(e) => setDue(e.target.value)} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -469,43 +495,48 @@ const LinkContentDialog = ({ op, onClose }: { op: OfmOperationDetail; onClose: (
   const { workspace } = useWorkspace();
   const [item, setItem] = useState<string | null>(op.contentItemId);
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(op);
   const m = useOfmMutation(E.linkContent, { successMessage: 'Content linked' });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="Link Content"
-      description="Link the content item delivered for this request."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!item}
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run({ params: { workspaceId: workspace.id, operationId: op.id }, body: { contentItemId: item } }, { ifMatch: op.rowVersion });
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Link Content
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Content Item" required>
-          <EntitySelect type="content_item" filters={{ projectId: op.project.id }} value={item} onChange={setItem} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="Link Content"
+        description="Link the content item delivered for this request."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={!item}
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await m.run({ params: { workspaceId: workspace.id, operationId: op.id }, body: { contentItemId: item } }, { ifMatch: edit.version });
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Link Content
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Content Item" required>
+            <EntitySelect type="content_item" filters={{ projectId: op.project.id }} value={item} onChange={setItem} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

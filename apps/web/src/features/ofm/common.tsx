@@ -7,6 +7,8 @@ import { isApiError } from '@castlane/api-client';
 import { DateTime, runningNetSeconds } from '@castlane/domain';
 import { Avatar, Badge, Button, Dialog, Field, StatusBadge, Textarea, cn, formatDuration, toast } from '@castlane/ui';
 import { useApiMutation, type MutationOptions } from '@/lib/hooks';
+import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { label } from '@/lib/labels';
 import { useCan, useWsPath } from '@/lib/workspace-context';
 import './labels';
@@ -170,6 +172,7 @@ export const ReasonDialog = ({
   reasonLabel = 'Reason',
   required = true,
   onConfirm,
+  record,
   children,
 }: {
   open: boolean;
@@ -180,14 +183,19 @@ export const ReasonDialog = ({
   destructive?: boolean;
   reasonLabel?: string;
   required?: boolean;
-  onConfirm: (reason: string) => Promise<unknown>;
+  /** `ifMatch` is the record's version when the dialog opened (pass `record`). */
+  onConfirm: (reason: string, ifMatch: number | undefined) => Promise<unknown>;
+  /** The record the action applies to: If-Match stays on the version shown when the dialog opened (T162). */
+  record?: { id?: string; rowVersion: number } | null;
   children?: ReactNode;
 }) => {
   const [reason, setReason] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const edit = useEditBase(record, { open, onReload: () => setReason('') });
   const valid = !required || reason.trim().length >= 3;
   return (
+    <>
     <Dialog
       open={open}
       onOpenChange={(o) => {
@@ -213,11 +221,11 @@ export const ReasonDialog = ({
               setPending(true);
               setError(null);
               try {
-                await onConfirm(reason.trim());
+                await onConfirm(reason.trim(), edit.version);
                 setReason('');
                 onOpenChange(false);
               } catch (e) {
-                setError(errorMessage(e));
+                if (!edit.catchConflict(e)) setError(errorMessage(e));
               } finally {
                 setPending(false);
               }
@@ -236,6 +244,8 @@ export const ReasonDialog = ({
         </Field>
       </div>
     </Dialog>
+    <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

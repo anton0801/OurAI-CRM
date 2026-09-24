@@ -1,7 +1,6 @@
 'use client';
 import { useRouter } from 'next/navigation';
 import { UploadSimple } from '@phosphor-icons/react';
-import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { mediaEndpoints, settingsEndpoints, type NotificationPrefs, type ProfileView } from '@castlane/api-contracts';
 import { isApiError, newIdempotencyKey } from '@castlane/api-client';
@@ -26,6 +25,7 @@ import {
   humanize,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { QueryState } from '@/components/common/query-state';
 import { api } from '@/lib/api';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
@@ -99,24 +99,31 @@ export const ProfileSettingsScreen = () => {
 
 const ProfileTab = ({ p }: { p: ProfileView }) => {
   const { workspace } = useWorkspace();
-  const qc = useQueryClient();
   const router = useRouter();
   const [displayName, setDisplayName] = useState(p.user.displayName);
   const [timezone, setTimezone] = useState(p.preferences.timezone ?? WORKSPACE_TZ);
   const [theme, setTheme] = useState(p.preferences.theme);
   const [density, setDensity] = useState(p.preferences.density);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [conflict, setConflict] = useState(false);
+  // `start` is the profile the member is editing from: diffs and If-Match use it, so a change made
+  // meanwhile (another tab, an admin) is reported instead of being reverted (T162).
+  const [start, setStart] = useState(p);
+  const load = (x: ProfileView) => {
+    setDisplayName(x.user.displayName);
+    setTimezone(x.preferences.timezone ?? WORKSPACE_TZ);
+    setTheme(x.preferences.theme);
+    setDensity(x.preferences.density);
+    setStart(x);
+  };
   const zoneOptions = useMemo(() => [{ value: WORKSPACE_TZ, label: `Workspace default (${workspace.timezone})` }, ...zones().map((z) => ({ value: z, label: z }))], [workspace.timezone]);
+  const tz = timezone === WORKSPACE_TZ ? null : timezone;
+  const dirty = displayName.trim() !== start.user.displayName || tz !== start.preferences.timezone || theme !== start.preferences.theme || density !== start.preferences.density;
+  const edit = useEditBase(p, { key: 'me', clean: !dirty, onReload: load });
   const reset = () => {
-    setDisplayName(p.user.displayName);
-    setTimezone(p.preferences.timezone ?? WORKSPACE_TZ);
-    setTheme(p.preferences.theme);
-    setDensity(p.preferences.density);
+    load(p);
+    edit.rebase(p);
     setErrors({});
   };
-  const tz = timezone === WORKSPACE_TZ ? null : timezone;
-  const dirty = displayName.trim() !== p.user.displayName || tz !== p.preferences.timezone || theme !== p.preferences.theme || density !== p.preferences.density;
   useUnsavedChangesGuard(dirty);
   const update = useApiMutation(settingsEndpoints.updateMe, { invalidate: ['settings.', 'team.'], successMessage: 'Profile saved', silentErrors: true });
   return (
@@ -165,24 +172,26 @@ const ProfileTab = ({ p }: { p: ProfileView }) => {
           onClick={async () => {
             setErrors({});
             try {
-              await update.run(
+              const saved = await update.run(
                 {
                   params: { workspaceId: workspace.id },
                   body: {
-                    ...(displayName.trim() !== p.user.displayName ? { displayName: displayName.trim() } : {}),
-                    ...(tz !== p.preferences.timezone ? { timezone: tz } : {}),
-                    ...(theme !== p.preferences.theme ? { theme } : {}),
-                    ...(density !== p.preferences.density ? { density } : {}),
+                    ...(displayName.trim() !== start.user.displayName ? { displayName: displayName.trim() } : {}),
+                    ...(tz !== start.preferences.timezone ? { timezone: tz } : {}),
+                    ...(theme !== start.preferences.theme ? { theme } : {}),
+                    ...(density !== start.preferences.density ? { density } : {}),
                   },
                 },
-                { ifMatch: p.rowVersion },
+                { ifMatch: edit.version },
               );
-              if (theme !== p.preferences.theme) applyTheme(theme);
+              if (theme !== start.preferences.theme) applyTheme(theme);
+              setStart(saved);
+              edit.rebase(saved);
               // Shell (name, density, time zone) is rendered from the session on the server.
               router.refresh();
             } catch (e) {
-              if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-              else if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
+              if (edit.catchConflict(e)) return;
+              if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
               else reportError(e);
             }
           }}
@@ -190,15 +199,7 @@ const ProfileTab = ({ p }: { p: ProfileView }) => {
           Save Changes
         </Button>
       </div>
-      <ConflictDialog
-        open={conflict}
-        onOpenChange={(o) => {
-          setConflict(o);
-          // Keep editing: load the newer version; only fields you changed are sent again.
-          if (!o) void qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0] ?? '') === 'settings.me' });
-        }}
-        onReload={() => window.location.reload()}
-      />
+      <ConflictDialog {...edit.conflictDialog} />
     </div>
   );
 };
@@ -389,13 +390,20 @@ const NOTIFICATION_ROWS: { key: keyof NotificationPrefs; label: string; descript
 
 const NotificationsTab = ({ p }: { p: ProfileView }) => {
   const { workspace } = useWorkspace();
-  const qc = useQueryClient();
   const [prefs, setPrefs] = useState<NotificationPrefs>(p.preferences.notifications);
   const [start, setStart] = useState(p.preferences.quietHoursStart);
   const [end, setEnd] = useState(p.preferences.quietHoursEnd);
-  const [conflict, setConflict] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const dirty = JSON.stringify(prefs) !== JSON.stringify(p.preferences.notifications) || start !== p.preferences.quietHoursStart || end !== p.preferences.quietHoursEnd;
+  // Edited from `base` (as loaded); only changed parts are sent and If-Match stays on it (T162).
+  const [base, setBase] = useState(p);
+  const load = (x: ProfileView) => {
+    setPrefs(x.preferences.notifications);
+    setStart(x.preferences.quietHoursStart);
+    setEnd(x.preferences.quietHoursEnd);
+    setBase(x);
+  };
+  const dirty = JSON.stringify(prefs) !== JSON.stringify(base.preferences.notifications) || start !== base.preferences.quietHoursStart || end !== base.preferences.quietHoursEnd;
+  const edit = useEditBase(p, { key: 'me', clean: !dirty, onReload: load });
   useUnsavedChangesGuard(dirty);
   const update = useApiMutation(settingsEndpoints.updateMe, { invalidate: ['settings.'], successMessage: 'Notification preferences saved', silentErrors: true });
   return (
@@ -417,9 +425,8 @@ const NotificationsTab = ({ p }: { p: ProfileView }) => {
         <Button
           disabled={!dirty}
           onClick={() => {
-            setPrefs(p.preferences.notifications);
-            setStart(p.preferences.quietHoursStart);
-            setEnd(p.preferences.quietHoursEnd);
+            load(p);
+            edit.rebase(p);
           }}
         >
           Discard Changes
@@ -431,10 +438,23 @@ const NotificationsTab = ({ p }: { p: ProfileView }) => {
           onClick={async () => {
             setErrors({});
             try {
-              await update.run({ params: { workspaceId: workspace.id }, body: { notifications: prefs, quietHoursStart: start, quietHoursEnd: end } }, { ifMatch: p.rowVersion });
+              const changedPrefs = Object.fromEntries(Object.entries(prefs).filter(([k, v]) => base.preferences.notifications[k as keyof NotificationPrefs] !== v));
+              const quiet = start !== base.preferences.quietHoursStart || end !== base.preferences.quietHoursEnd;
+              const saved = await update.run(
+                {
+                  params: { workspaceId: workspace.id },
+                  body: {
+                    ...(Object.keys(changedPrefs).length ? { notifications: { ...base.preferences.notifications, ...(edit.latest?.preferences.notifications ?? {}), ...changedPrefs } } : {}),
+                    ...(quiet ? { quietHoursStart: start, quietHoursEnd: end } : {}),
+                  },
+                },
+                { ifMatch: edit.version },
+              );
+              setBase(saved);
+              edit.rebase(saved);
             } catch (e) {
-              if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-              else if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
+              if (edit.catchConflict(e)) return;
+              if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
               else reportError(e);
             }
           }}
@@ -442,15 +462,7 @@ const NotificationsTab = ({ p }: { p: ProfileView }) => {
           Save Preferences
         </Button>
       </div>
-      <ConflictDialog
-        open={conflict}
-        onOpenChange={(o) => {
-          setConflict(o);
-          // Keep editing: load the newer version; only fields you changed are sent again.
-          if (!o) void qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0] ?? '') === 'settings.me' });
-        }}
-        onReload={() => window.location.reload()}
-      />
+      <ConflictDialog {...edit.conflictDialog} />
     </div>
   );
 };

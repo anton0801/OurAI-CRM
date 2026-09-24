@@ -23,6 +23,7 @@ import {
   type Column,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect } from '@/components/common/entity-select';
 import { QueryState } from '@/components/common/query-state';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
@@ -177,7 +178,18 @@ const FieldDrawer = ({ target, taken, field, onClose }: { target: Target; taken:
   const [precision, setPrecision] = useState<string>(field?.precision !== null && field?.precision !== undefined ? String(field.precision) : '');
   const [scopeProjectId, setScope] = useState<string | null>(field?.scopeProject?.id ?? null);
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // Edited against the definition as the drawer opened; live updates no longer remount it (T162).
+  const edit = useEditBase(field, {
+    onReload: (x) => {
+      setName(x.name);
+      setOptions(x.options);
+      setRequired(x.requiredAtStage);
+      setUnit(x.unit ?? '');
+      setPrecision(x.precision !== null && x.precision !== undefined ? String(x.precision) : '');
+      setScope(x.scopeProject?.id ?? null);
+    },
+  });
+  const s = edit.start ?? field;
   const [dialog, setDialog] = useState<null | 'archive' | 'replace'>(null);
   const create = useApiMutation(customFieldEndpoints.create, { invalidate: INVALIDATE, silentErrors: true, successMessage: 'Field added' });
   const update = useApiMutation(customFieldEndpoints.update, { invalidate: INVALIDATE, silentErrors: true, successMessage: 'Field updated' });
@@ -193,17 +205,26 @@ const FieldDrawer = ({ target, taken, field, onClose }: { target: Target; taken:
     precision: type === 'number' && precision !== '' ? Number(precision) : type === 'number' ? null : undefined,
     scopeProjectId,
   };
-  const dirty = field ? JSON.stringify({ n: field.name, o: field.options, r: field.requiredAtStage, u: field.unit ?? '', p: field.precision ?? '', s: field.scopeProject?.id ?? null }) !== JSON.stringify({ n: name, o: options, r: requiredAtStage, u: unit, p: precision === '' ? '' : Number(precision), s: scopeProjectId }) : !!name;
+  const dirty = s ? JSON.stringify({ n: s.name, o: s.options, r: s.requiredAtStage, u: s.unit ?? '', p: s.precision ?? '', s: s.scopeProject?.id ?? null }) !== JSON.stringify({ n: name, o: options, r: requiredAtStage, u: unit, p: precision === '' ? '' : Number(precision), s: scopeProjectId }) : !!name;
   const valid = name.trim().length >= 2 && (!!field || /^[a-z][a-z0-9_]{1,39}$/.test(key)) && (!hasOptions(type) || cleanOptions.filter((o) => !o.archivedAt).length > 0);
   const submit = async () => {
     setError(null);
     try {
-      if (field) await update.run({ params: { workspaceId: workspace.id, fieldId: field.id }, body }, { ifMatch: field.rowVersion });
+      if (field && s) {
+        const before = {
+          name: s.name,
+          options: hasOptions(s.type) ? s.options : undefined,
+          requiredAtStage: s.requiredAtStage,
+          unit: s.type === 'number' ? s.unit || null : undefined,
+          precision: s.type === 'number' ? (s.precision ?? null) : undefined,
+          scopeProjectId: s.scopeProject?.id ?? null,
+        };
+        await update.run({ params: { workspaceId: workspace.id, fieldId: field.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
+      }
       else await create.run({ params: { workspaceId: workspace.id }, body: { ...body, entityType: target.entityType, key, type } });
       onClose();
     } catch (e) {
-      if (isApiError(e) && (e.code === 'VERSION_CONFLICT' || e.status === 412)) setConflict(true);
-      else setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'Could not save the field.');
+      if (!edit.catchConflict(e)) setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'Could not save the field.');
     }
   };
   return (
@@ -277,7 +298,7 @@ const FieldDrawer = ({ target, taken, field, onClose }: { target: Target; taken:
       </div>
       {field && dialog === 'archive' ? <ArchiveFieldDialog field={field} onClose={(done) => (done ? onClose() : setDialog(null))} /> : null}
       {field && dialog === 'replace' ? <ReplaceFieldDialog field={field} onClose={(done) => (done ? onClose() : setDialog(null))} /> : null}
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={onClose} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Drawer>
   );
 };
@@ -288,38 +309,42 @@ const EditFieldLoader = ({ fieldId, targets, onClose }: { fieldId: string; targe
   const f = q.data;
   const target = f ? (targets.find((t) => t.entityType === f.entityType) ?? { entityType: f.entityType, label: f.entityType, stages: [], activeFields: 0, maxActiveFields: 30 }) : null;
   if (!f || !target) return null;
-  return <FieldDrawer key={`${f.id}:${f.rowVersion}`} target={target} taken={[]} field={f} onClose={onClose} />;
+  return <FieldDrawer key={f.id} target={target} taken={[]} field={f} onClose={onClose} />;
 };
 
 const ArchiveFieldDialog = ({ field, onClose }: { field: CustomFieldDefinition; onClose: (done: boolean) => void }) => {
   const { workspace } = useWorkspace();
   const [reason, setReason] = useState('');
+  const edit = useEditBase(field);
   const archive = useApiMutation(customFieldEndpoints.archive, { invalidate: INVALIDATE, successMessage: 'Field archived' });
   return (
-    <Dialog
-      open
-      size="small"
-      onOpenChange={(o) => !o && onClose(false)}
-      title={`Archive “${field.name}”?`}
-      description={`The field disappears from forms. ${formatNumber(field.valueCount)} stored value${field.valueCount === 1 ? '' : 's'} and their labels are kept.`}
-      footer={
-        <>
-          <Button onClick={() => onClose(false)}>Cancel</Button>
-          <Button
-            variant="danger"
-            loading={archive.isPending}
-            disabled={reason.trim().length < 3}
-            onClick={() => void archive.run({ params: { workspaceId: workspace.id, fieldId: field.id }, body: { reason: reason.trim() } }, { ifMatch: field.rowVersion }).then(() => onClose(true), () => undefined)}
-          >
-            Archive Field
-          </Button>
-        </>
-      }
-    >
-      <Field label="Reason" required>
-        <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
-      </Field>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        size="small"
+        onOpenChange={(o) => !o && onClose(false)}
+        title={`Archive “${field.name}”?`}
+        description={`The field disappears from forms. ${formatNumber(field.valueCount)} stored value${field.valueCount === 1 ? '' : 's'} and their labels are kept.`}
+        footer={
+          <>
+            <Button onClick={() => onClose(false)}>Cancel</Button>
+            <Button
+              variant="danger"
+              loading={archive.isPending}
+              disabled={reason.trim().length < 3}
+              onClick={() => void archive.run({ params: { workspaceId: workspace.id, fieldId: field.id }, body: { reason: reason.trim() } }, { ifMatch: edit.version }).then(() => onClose(true), (e: unknown) => edit.catchConflict(e))}
+            >
+              Archive Field
+            </Button>
+          </>
+        }
+      >
+        <Field label="Reason" required>
+          <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
+        </Field>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -332,6 +357,7 @@ const ReplaceFieldDialog = ({ field, onClose }: { field: CustomFieldDefinition; 
   const [migrate, setMigrate] = useState(true);
   const [preview, setPreview] = useState<EndpointResponse<typeof customFieldEndpoints.replacePreview> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const edit = useEditBase(field);
   const previewRun = useApiMutation(customFieldEndpoints.replacePreview, { silentErrors: true });
   const replace = useApiMutation(customFieldEndpoints.replace, { invalidate: INVALIDATE, silentErrors: true, successMessage: 'Field replaced' });
   const cleanOptions = useMemo(() => options.filter((o) => o.label.trim()), [options]);
@@ -350,54 +376,57 @@ const ReplaceFieldDialog = ({ field, onClose }: { field: CustomFieldDefinition; 
   const submit = async () => {
     setError(null);
     try {
-      await replace.run({ params, body: { type, options: hasOptions(type) ? cleanOptions : undefined, migrateValues: migrate } }, { ifMatch: field.rowVersion });
+      await replace.run({ params, body: { type, options: hasOptions(type) ? cleanOptions : undefined, migrateValues: migrate } }, { ifMatch: edit.version });
       onClose(true);
     } catch (e) {
-      setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'Could not replace the field.');
+      if (!edit.catchConflict(e)) setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'Could not replace the field.');
     }
   };
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose(false)}
-      title={`Change type of “${field.name}”`}
-      description="A new field replaces this one; the old field is archived with all its values, so nothing is lost."
-      footer={
-        <>
-          <Button onClick={() => onClose(false)}>Cancel</Button>
-          <Button variant="primary" loading={replace.isPending} disabled={!preview || type === field.type || (hasOptions(type) && !cleanOptions.length)} onClick={() => void submit()}>
-            Replace Field
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="New Type" required>
-          <Select value={type} onChange={(v) => v && setType(v)} options={CUSTOM_FIELD_TYPES.filter((t) => t !== field.type).map((t) => ({ value: t, label: label('customFieldType', t) }))} />
-        </Field>
-        {hasOptions(type) ? <OptionsEditor value={options} onChange={setOptions} /> : null}
-        {preview ? (
-          <div className="flex flex-col gap-2 rounded-[10px] border border-line p-3 text-[13px]">
-            <p className="text-fg">
-              {formatNumber(preview.convertible)} of {formatNumber(preview.total)} stored value{preview.total === 1 ? '' : 's'} can be converted
-              {preview.notConvertible ? `; ${formatNumber(preview.notConvertible)} cannot and stay only on the archived field` : ''}.
-            </p>
-            {preview.samples.length ? (
-              <ul className="flex flex-col gap-1 text-fg-2">
-                {preview.samples.map((s, i) => (
-                  <li key={i}>
-                    “{s.from}” → {s.to === null ? <span className="text-danger">not convertible</span> : `“${s.to}”`}
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
-        ) : (
-          <p className="text-[13px] text-fg-2">{previewRun.isPending ? 'Checking stored values…' : null}</p>
-        )}
-        <Checkbox label="Copy convertible values to the new field" description="Without this, the new field starts empty." checked={migrate} onCheckedChange={setMigrate} />
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose(false)}
+        title={`Change type of “${field.name}”`}
+        description="A new field replaces this one; the old field is archived with all its values, so nothing is lost."
+        footer={
+          <>
+            <Button onClick={() => onClose(false)}>Cancel</Button>
+            <Button variant="primary" loading={replace.isPending} disabled={!preview || type === field.type || (hasOptions(type) && !cleanOptions.length)} onClick={() => void submit()}>
+              Replace Field
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="New Type" required>
+            <Select value={type} onChange={(v) => v && setType(v)} options={CUSTOM_FIELD_TYPES.filter((t) => t !== field.type).map((t) => ({ value: t, label: label('customFieldType', t) }))} />
+          </Field>
+          {hasOptions(type) ? <OptionsEditor value={options} onChange={setOptions} /> : null}
+          {preview ? (
+            <div className="flex flex-col gap-2 rounded-[10px] border border-line p-3 text-[13px]">
+              <p className="text-fg">
+                {formatNumber(preview.convertible)} of {formatNumber(preview.total)} stored value{preview.total === 1 ? '' : 's'} can be converted
+                {preview.notConvertible ? `; ${formatNumber(preview.notConvertible)} cannot and stay only on the archived field` : ''}.
+              </p>
+              {preview.samples.length ? (
+                <ul className="flex flex-col gap-1 text-fg-2">
+                  {preview.samples.map((s, i) => (
+                    <li key={i}>
+                      “{s.from}” → {s.to === null ? <span className="text-danger">not convertible</span> : `“${s.to}”`}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : (
+            <p className="text-[13px] text-fg-2">{previewRun.isPending ? 'Checking stored values…' : null}</p>
+          )}
+          <Checkbox label="Copy convertible values to the new field" description="Without this, the new field starts empty." checked={migrate} onCheckedChange={setMigrate} />
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };

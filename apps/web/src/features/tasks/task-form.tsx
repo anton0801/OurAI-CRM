@@ -10,6 +10,7 @@ import { Banner, Button, Checkbox, DateInput, DateTimeInput, Drawer, Field, Inpu
 import { ConflictDialog } from '@/components/common/conflict';
 import { EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
+import { useEditBase } from '@/lib/edit-base';
 import { applyFieldErrors, useApiMutation } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useCan, useWorkspace } from '@/lib/workspace-context';
@@ -70,62 +71,62 @@ export interface TaskFormProps {
 export const TaskForm = ({ open, onOpenChange, task, defaults, parentTaskId, onSaved }: TaskFormProps) => {
   const { workspace, user } = useWorkspace();
   const can = useCan();
-  const [conflict, setConflict] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const initial: Values = useMemo(
-    () =>
-      task
-        ? {
-            title: task.title,
-            projectId: task.project.id,
-            description: task.description ?? '',
-            status: 'backlog',
-            priority: task.priority,
-            assigneeMembershipId: task.assignee?.membershipId ?? null,
-            reviewerMembershipId: task.reviewer?.membershipId ?? null,
-            startAt: toLocalInput(task.startAt, user.timezone),
-            dueMode: !task.due ? 'none' : task.due.date ? 'date' : 'datetime',
-            dueDate: task.due?.date ?? '',
-            dueDateTime: task.due && !task.due.date ? toLocalInput(task.due.at, task.due.timezone ?? user.timezone) : '',
-            dueTimezone: task.due?.timezone ?? user.timezone,
-            estimateHours: task.estimateMinutes !== null ? String(Math.floor(task.estimateMinutes / 60)) : '',
-            estimateMinutes: task.estimateMinutes !== null ? String(task.estimateMinutes % 60) : '',
-            tags: task.tags.join(', '),
-            requiredForParent: task.requiredForParent,
-            accountId: task.linked.find((l) => l.type === 'account')?.id ?? null,
-            contentItemId: task.linked.find((l) => l.type === 'content_item')?.id ?? null,
-            publicationId: task.linked.find((l) => l.type === 'publication')?.id ?? null,
-            shiftId: task.linked.find((l) => l.type === 'shift')?.id ?? null,
-            dealId: task.linked.find((l) => l.type === 'deal')?.id ?? null,
-            checklist: '',
-          }
-        : {
-            title: '',
-            projectId: defaults?.projectId ?? '',
-            description: '',
-            status: defaults?.status ?? 'backlog',
-            priority: 'normal',
-            assigneeMembershipId: defaults?.assigneeMembershipId ?? null,
-            reviewerMembershipId: null,
-            startAt: '',
-            dueMode: 'none',
-            dueDate: '',
-            dueDateTime: '',
-            dueTimezone: user.timezone,
-            estimateHours: '',
-            estimateMinutes: '',
-            tags: '',
-            requiredForParent: true,
-            accountId: defaults?.accountId ?? null,
-            contentItemId: defaults?.contentItemId ?? null,
-            publicationId: null,
-            shiftId: null,
-            dealId: null,
-            checklist: '',
-          },
-    [task, defaults, user.timezone],
-  );
+  const valuesOf = (task: TaskDetail | undefined): Values =>
+    task
+      ? {
+          title: task.title,
+          projectId: task.project.id,
+          description: task.description ?? '',
+          status: 'backlog',
+          priority: task.priority,
+          assigneeMembershipId: task.assignee?.membershipId ?? null,
+          reviewerMembershipId: task.reviewer?.membershipId ?? null,
+          startAt: toLocalInput(task.startAt, user.timezone),
+          dueMode: !task.due ? 'none' : task.due.date ? 'date' : 'datetime',
+          dueDate: task.due?.date ?? '',
+          dueDateTime: task.due && !task.due.date ? toLocalInput(task.due.at, task.due.timezone ?? user.timezone) : '',
+          dueTimezone: task.due?.timezone ?? user.timezone,
+          estimateHours: task.estimateMinutes !== null ? String(Math.floor(task.estimateMinutes / 60)) : '',
+          estimateMinutes: task.estimateMinutes !== null ? String(task.estimateMinutes % 60) : '',
+          tags: task.tags.join(', '),
+          requiredForParent: task.requiredForParent,
+          accountId: task.linked.find((l) => l.type === 'account')?.id ?? null,
+          contentItemId: task.linked.find((l) => l.type === 'content_item')?.id ?? null,
+          publicationId: task.linked.find((l) => l.type === 'publication')?.id ?? null,
+          shiftId: task.linked.find((l) => l.type === 'shift')?.id ?? null,
+          dealId: task.linked.find((l) => l.type === 'deal')?.id ?? null,
+          checklist: '',
+        }
+      : {
+          title: '',
+          projectId: defaults?.projectId ?? '',
+          description: '',
+          status: defaults?.status ?? 'backlog',
+          priority: 'normal',
+          assigneeMembershipId: defaults?.assigneeMembershipId ?? null,
+          reviewerMembershipId: null,
+          startAt: '',
+          dueMode: 'none',
+          dueDate: '',
+          dueDateTime: '',
+          dueTimezone: user.timezone,
+          estimateHours: '',
+          estimateMinutes: '',
+          tags: '',
+          requiredForParent: true,
+          accountId: defaults?.accountId ?? null,
+          contentItemId: defaults?.contentItemId ?? null,
+          publicationId: null,
+          shiftId: null,
+          dealId: null,
+          checklist: '',
+        };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const initial: Values = useMemo(() => valuesOf(task), [task, defaults, user.timezone]);
   const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: initial });
+  // If-Match stays on the version the drawer opened with; live updates never reset the typing.
+  const edit = useEditBase(task, { open: open && !!task, onReload: (latest) => form.reset(valuesOf(latest)) });
   // Start from fresh values each time the drawer opens (never while the member is typing).
   useEffect(() => {
     if (open) {
@@ -196,7 +197,7 @@ export const TaskForm = ({ open, onOpenChange, task, defaults, parentTaskId, onS
           onOpenChange(false);
           return;
         }
-        const r = await update.run({ params: { workspaceId: workspace.id, taskId: task.id }, body: patch }, { ifMatch: task.rowVersion });
+        const r = await update.run({ params: { workspaceId: workspace.id, taskId: task.id }, body: patch }, { ifMatch: edit.version });
         onSaved?.(r.id);
       } else {
         const checklist = v.checklist
@@ -212,8 +213,8 @@ export const TaskForm = ({ open, onOpenChange, task, defaults, parentTaskId, onS
       }
       onOpenChange(false);
     } catch (err) {
-      if (isApiError(err) && err.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(err, form.setError as never)) setError(isApiError(err) ? err.message : 'The task could not be saved.');
+      if (edit.catchConflict(err)) return;
+      if (!applyFieldErrors(err, form.setError as never)) setError(isApiError(err) ? err.message : 'The task could not be saved.');
       else setError('Some fields need attention.');
     }
   });
@@ -382,7 +383,7 @@ export const TaskForm = ({ open, onOpenChange, task, defaults, parentTaskId, onS
           />
         ) : null}
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => { setConflict(false); onOpenChange(false); }} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Drawer>
   );
 };

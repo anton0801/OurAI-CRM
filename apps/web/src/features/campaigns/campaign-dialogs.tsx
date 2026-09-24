@@ -5,6 +5,7 @@ import { campaignEndpoints as C, type CampaignDetail, type CampaignRow } from '@
 import { isApiError } from '@castlane/api-client';
 import { Banner, Button, Checkbox, DateInput, Dialog, Field, Input, Textarea } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { EntitySelect } from '@/components/common/entity-select';
 import { useApiMutation } from '@/lib/hooks';
 import { label } from '@/lib/labels';
@@ -21,7 +22,8 @@ export const TransitionCampaignDialog = ({ campaign: c, target, onClose }: { cam
   const { workspace } = useWorkspace();
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // Pinned to the version shown when this opened (T162).
+  const edit = useEditBase(c, { open: !!target, onReload: () => setText('') });
   const m = useApiMutation(C.transition, { invalidate: CAMPAIGN_INVALIDATE, silentErrors: true, successMessage: (r) => `Campaign ${label('campaignStatus', r.status).toLowerCase()}` });
   if (!target) return null;
   const reopening = target === 'active' && c.status === 'closed';
@@ -40,13 +42,13 @@ export const TransitionCampaignDialog = ({ campaign: c, target, onClose }: { cam
           params: { workspaceId: workspace.id, campaignId: c.id },
           body: { targetStatus: target, ...(needs === 'summary' ? { closingSummary: text.trim() } : needs === 'reason' ? { reason: text.trim() } : {}) },
         },
-        { ifMatch: c.rowVersion },
+        { ifMatch: edit.version },
       );
       setText('');
       onClose();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else setError(isApiError(e) ? e.message : 'The status could not be changed.');
+      if (edit.catchConflict(e)) return;
+      setError(isApiError(e) ? e.message : 'The status could not be changed.');
     }
   };
   return (
@@ -84,7 +86,7 @@ export const TransitionCampaignDialog = ({ campaign: c, target, onClose }: { cam
           ) : null}
         </div>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };

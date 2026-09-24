@@ -1,7 +1,6 @@
 'use client';
 import Link from 'next/link';
 import { ArrowDown, ArrowUp, Compass, DotsThree, Plus } from '@phosphor-icons/react';
-import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { directionAdminEndpoints, directionEndpoints, type DirectionDetail, type DirectionRow, type LeadImpact } from '@castlane/api-contracts';
 import { isApiError } from '@castlane/api-client';
@@ -30,6 +29,7 @@ import {
   type Column,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
@@ -170,21 +170,27 @@ const DirectionFormDialog = ({
   const [description, setDescription] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<number | null>(null);
   const create = useApiMutation(directionEndpoints.create, { invalidate: ['directions.'], successMessage: 'Direction created', silentErrors: true });
   const update = useApiMutation(directionEndpoints.update, { invalidate: ['directions.'], successMessage: 'Direction saved', silentErrors: true });
-  const [version, setVersion] = useState(direction?.rowVersion ?? 0);
+  // Edited against the direction as the dialog opened; only changed fields are sent (T162).
+  const edit = useEditBase(direction, {
+    open,
+    onReload: (x) => {
+      setName(x.name);
+      setDescription(x.description ?? '');
+    },
+  });
+  const s = edit.start ?? direction;
   useEffect(() => {
     if (!open) return;
     setName(direction?.name ?? '');
     setDescription(direction?.description ?? '');
-    setVersion(direction?.rowVersion ?? 0);
     setErrors({});
     setError(null);
     // Only when the dialog opens; live refreshes must not wipe what is being typed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, direction?.id]);
-  const dirty = name !== (direction?.name ?? '') || description !== (direction?.description ?? '');
+  const dirty = name !== (s?.name ?? '') || description !== (s?.description ?? '');
   return (
     <>
       <Dialog
@@ -204,10 +210,9 @@ const DirectionFormDialog = ({
                 setError(null);
                 try {
                   if (direction) {
-                    await update.run(
-                      { params: { workspaceId: workspace.id, directionId: direction.id }, body: { name: name.trim(), description: description.trim() || null } },
-                      { ifMatch: version },
-                    );
+                    const body = { name: name.trim(), description: description.trim() || null };
+                    const before = { name: s?.name ?? '', description: s?.description?.trim() || null };
+                    await update.run({ params: { workspaceId: workspace.id, directionId: direction.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
                     onOpenChange(false);
                   } else {
                     const d = await create.run({ params: { workspaceId: workspace.id }, body: { name: name.trim(), description: description.trim() || null } });
@@ -215,8 +220,8 @@ const DirectionFormDialog = ({
                     onSaved?.(d.id);
                   }
                 } catch (e) {
-                  if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(e.currentVersion ?? version);
-                  else if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
+                  if (edit.catchConflict(e)) return;
+                  if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
                   else setError(isApiError(e) ? e.message : 'The direction could not be saved.');
                 }
               }}
@@ -236,14 +241,7 @@ const DirectionFormDialog = ({
           </Field>
         </div>
       </Dialog>
-      <ConflictDialog
-        open={conflict !== null}
-        onOpenChange={(o) => {
-          if (!o && conflict !== null) setVersion(conflict);
-          if (!o) setConflict(null);
-        }}
-        onReload={() => window.location.reload()}
-      />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };
@@ -418,14 +416,13 @@ const DirectionDrawer = ({ directionId, onClose, projectsHref }: { directionId: 
 /** Lead change with its access impact shown first (grant/revoke the Direction Lead role explicitly). */
 const AssignLeadDialog = ({ d, onClose }: { d: DirectionDetail; onClose: () => void }) => {
   const { workspace } = useWorkspace();
-  const qc = useQueryClient();
   const { guard, dialog } = useRecentAuth();
   const [lead, setLead] = useState<string | null>(d.lead?.membershipId ?? null);
   const [impact, setImpact] = useState<LeadImpact | null>(null);
   const [grantRole, setGrantRole] = useState(false);
   const [revokePrevious, setRevokePrevious] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const edit = useEditBase(d, { onReload: (x) => setLead(x.lead?.membershipId ?? null) });
   const preview = useApiMutation(directionAdminEndpoints.leadImpact, { silentErrors: true });
   const assign = useApiMutation(directionAdminEndpoints.assignLead, { invalidate: ['directions.', 'team.', 'projects.'], successMessage: 'Lead updated', silentErrors: true });
   useEffect(() => {
@@ -467,13 +464,13 @@ const AssignLeadDialog = ({ d, onClose }: { d: DirectionDetail; onClose: () => v
                   await guard(() =>
                     assign.run(
                       { params: { workspaceId: workspace.id, directionId: d.id }, body: { leadMembershipId: lead, grantLeadRole: grantRole, revokePreviousLeadRole: revokePrevious } },
-                      { ifMatch: d.rowVersion },
+                      { ifMatch: edit.version },
                     ),
                   );
                   onClose();
                 } catch (e) {
-                  if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-                  else if (isApiError(e)) setError(e.fieldErrors[0]?.message ?? e.message);
+                  if (edit.catchConflict(e)) return;
+                  if (isApiError(e)) setError(e.fieldErrors[0]?.message ?? e.message);
                   else reportError(e);
                 }
               }}
@@ -532,14 +529,7 @@ const AssignLeadDialog = ({ d, onClose }: { d: DirectionDetail; onClose: () => v
           ) : null}
         </div>
       </Dialog>
-      <ConflictDialog
-        open={conflict}
-        onOpenChange={(o) => {
-          setConflict(o);
-          if (!o) void qc.invalidateQueries({ predicate: (q) => String(q.queryKey[0] ?? '').startsWith('directions.') });
-        }}
-        onReload={() => window.location.reload()}
-      />
+      <ConflictDialog {...edit.conflictDialog} />
       {dialog}
     </>
   );

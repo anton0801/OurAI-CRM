@@ -30,6 +30,7 @@ import {
   type MenuItem,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { QueryState } from '@/components/common/query-state';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
@@ -340,7 +341,8 @@ const CloseGoalDialog = ({ goal, open, onOpenChange }: { goal: GoalDetail; open:
   const { workspace } = useWorkspace();
   const [assessment, setAssessment] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // The goal as the dialog opened: a new check-in meanwhile changes the achieved value (T162).
+  const edit = useEditBase(goal, { open, onReload: () => setAssessment('') });
   useEffect(() => {
     if (open) {
       setAssessment('');
@@ -350,11 +352,11 @@ const CloseGoalDialog = ({ goal, open, onOpenChange }: { goal: GoalDetail; open:
   const m = useApiMutation(goalEndpoints.close, { invalidate: ['goals.'], successMessage: 'Goal closed', silentErrors: true });
   const submit = () =>
     void m
-      .run({ params: { workspaceId: workspace.id, goalId: goal.id }, body: { assessment: assessment.trim() } }, { ifMatch: goal.rowVersion })
+      .run({ params: { workspaceId: workspace.id, goalId: goal.id }, body: { assessment: assessment.trim() } }, { ifMatch: edit.version })
       .then(() => onOpenChange(false))
       .catch((e) => {
-        if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-        else setError(errorText(e, 'The goal could not be closed.'));
+        if (edit.catchConflict(e)) return;
+        setError(errorText(e, 'The goal could not be closed.'));
       });
   return (
     <>
@@ -387,7 +389,7 @@ const CloseGoalDialog = ({ goal, open, onOpenChange }: { goal: GoalDetail; open:
           </Field>
         </div>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };

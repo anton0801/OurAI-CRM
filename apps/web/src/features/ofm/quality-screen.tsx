@@ -36,6 +36,8 @@ import {
 import { MultiEntitySelect, EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
+import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { useApiInfinite, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useUrlState } from '@/lib/url-state';
@@ -242,6 +244,15 @@ const ReviewEditor = ({ review, onClose }: { review?: OfmQualityReview; onClose:
   const [improvements, setImprovements] = useState(review?.improvements ?? '');
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<string[]>([]);
+  // A draft is edited against the version it was opened at; only changed parts are sent (T162).
+  const edit = useEditBase(review, {
+    onReload: (x) => {
+      setRubricId(x.rubric.id);
+      setScores(fromReview(x));
+      setFacts(x.factualNotes ?? '');
+      setImprovements(x.improvements ?? '');
+    },
+  });
   const create = useOfmMutation(E.createQuality, { successMessage: 'Draft saved' });
   const update = useOfmMutation(E.updateQuality, { successMessage: 'Draft saved' });
   const publish = useOfmMutation(E.publishQuality, { successMessage: 'Review published', also: ['myWork.'] });
@@ -258,141 +269,145 @@ const ReviewEditor = ({ review, onClose }: { review?: OfmQualityReview; onClose:
     setFieldErrors([]);
     try {
       if (review) {
-        return await update.run(
-          { params: { workspaceId: workspace.id, reviewId: review.id }, body: { rubricVersionId: rubricId ?? undefined, scores: toScoreBody(scores), factualNotes: facts.trim() || null, improvements: improvements.trim() || null } },
-          { ifMatch: review.rowVersion },
-        );
+        const s = edit.start ?? review;
+        const body = { rubricVersionId: rubricId ?? undefined, scores: toScoreBody(scores), factualNotes: facts.trim() || null, improvements: improvements.trim() || null };
+        const before = { rubricVersionId: s.rubric.id, scores: toScoreBody(fromReview(s)), factualNotes: s.factualNotes?.trim() || null, improvements: s.improvements?.trim() || null };
+        return await update.run({ params: { workspaceId: workspace.id, reviewId: review.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
       }
       return await create.run({
         params: { workspaceId: workspace.id },
         body: { subjectType, subjectId: subjectId!, rubricVersionId: rubricId!, scores: toScoreBody(scores), factualNotes: facts.trim() || null, improvements: improvements.trim() || null },
       });
     } catch (e) {
+      if (edit.catchConflict(e)) return null;
       if (isApiError(e) && e.fieldErrors.length) setFieldErrors(e.fieldErrors.map((f) => f.message));
       setError(errorMessage(e, 'The review could not be saved.'));
       return null;
     }
   };
   return (
-    <Drawer
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title={review ? 'Edit Draft Review' : 'Draft Review'}
-      description="You cannot review your own work. Score what the evidence shows."
-      width={760}
-      dirty={!pending}
-      footer={
-        <>
-          <Button onClick={() => onClose()} disabled={pending}>
-            Cancel
-          </Button>
-          <Button
-            loading={create.isPending || update.isPending}
-            disabled={!subjectId || !rubricId}
-            onClick={async () => {
-              const r = await save();
-              if (r) onClose(r.id);
-            }}
-          >
-            Save Draft
-          </Button>
-          <Button
-            variant="primary"
-            loading={publish.isPending}
-            disabled={!subjectId || !rubricId || !preview?.complete}
-            onClick={async () => {
-              const r = await save();
-              if (!r) return;
-              try {
-                await publish.run({ params: { workspaceId: workspace.id, reviewId: r.id } }, { ifMatch: r.rowVersion });
-                onClose(r.id);
-              } catch (e) {
-                if (isApiError(e) && e.fieldErrors.length) setFieldErrors(e.fieldErrors.map((f) => f.message));
-                setError(errorMessage(e, 'The review was saved as a draft but could not be published.'));
-              }
-            }}
-          >
-            Publish Review
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? (
-          <Banner tone="danger">
-            {error}
-            {fieldErrors.length ? (
-              <ul className="mt-1 list-disc pl-5">
-                {fieldErrors.map((m, i) => (
-                  <li key={i}>{m}</li>
-                ))}
-              </ul>
-            ) : null}
-          </Banner>
-        ) : null}
-        {!review ? (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="Subject Type" required>
-              <Select
-                value={subjectType}
-                onChange={(v) => {
-                  if (v) setSubjectType(v);
-                  setSubjectId(null);
-                }}
-                options={[
-                  { value: 'shift', label: 'Shift' },
-                  { value: 'operation', label: 'Operation' },
-                ]}
-              />
-            </Field>
-            <Field label={subjectType === 'shift' ? 'Shift' : 'Operation'} required>
-              {subjectType === 'shift' ? (
-                <EntitySelect type="shift" value={subjectId} onChange={setSubjectId} />
-              ) : (
-                <Select
-                  value={subjectId}
-                  onChange={setSubjectId}
-                  placeholder={ops.isLoading ? 'Loading…' : 'Choose an operation'}
-                  options={(ops.data?.items ?? []).filter((o) => o.owner.membershipId !== membershipId).map((o) => ({ value: o.id, label: o.title, description: `${o.owner.displayName} · ${label('operationStatus', o.status)}` }))}
-                  emptyText="No operations in scope"
-                />
-              )}
-            </Field>
-          </div>
-        ) : (
-          <p className="text-[13px] text-fg-2">
-            {review.subjectType === 'shift' ? 'Shift' : 'Operation'}: {review.subject.label} · {review.subjectMember.displayName}
-          </p>
-        )}
-        <Field label="Rubric Version" required>
-          <Select
-            value={rubricId}
-            onChange={(v) => {
-              setRubricId(v);
-              setScores({});
-            }}
-            placeholder={rubrics.isLoading ? 'Loading…' : 'Choose a published rubric'}
-            options={published.map((r) => ({ value: r.id, label: `${r.name} v${r.versionNo}`, description: `${r.criteria.length} criteria` }))}
-            emptyText="No published rubric yet"
-          />
-        </Field>
-        {rubric ? (
+    <>
+      <Drawer
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title={review ? 'Edit Draft Review' : 'Draft Review'}
+        description="You cannot review your own work. Score what the evidence shows."
+        width={760}
+        dirty={!pending}
+        footer={
           <>
-            <ScoreEditor rubric={rubric} scores={scores} onChange={setScores} projectId={projectId} />
-            <p className="text-[13px] text-fg-2">
-              Preview: {preview?.value === null || preview === null ? 'No Score (every criterion Not Applicable)' : `${preview.value.toFixed(1)} %`}
-              {preview && !preview.complete ? ' · score every criterion or mark it Not Applicable to publish' : ''}
-            </p>
+            <Button onClick={() => onClose()} disabled={pending}>
+              Cancel
+            </Button>
+            <Button
+              loading={create.isPending || update.isPending}
+              disabled={!subjectId || !rubricId}
+              onClick={async () => {
+                const r = await save();
+                if (r) onClose(r.id);
+              }}
+            >
+              Save Draft
+            </Button>
+            <Button
+              variant="primary"
+              loading={publish.isPending}
+              disabled={!subjectId || !rubricId || !preview?.complete}
+              onClick={async () => {
+                const r = await save();
+                if (!r) return;
+                try {
+                  await publish.run({ params: { workspaceId: workspace.id, reviewId: r.id } }, { ifMatch: r.rowVersion });
+                  onClose(r.id);
+                } catch (e) {
+                  if (isApiError(e) && e.fieldErrors.length) setFieldErrors(e.fieldErrors.map((f) => f.message));
+                  setError(errorMessage(e, 'The review was saved as a draft but could not be published.'));
+                }
+              }}
+            >
+              Publish Review
+            </Button>
           </>
-        ) : null}
-        <Field label="Factual Notes">
-          <Textarea value={facts} onChange={(e) => setFacts(e.target.value)} rows={4} maxLength={20000} />
-        </Field>
-        <Field label="Improvements">
-          <Textarea value={improvements} onChange={(e) => setImprovements(e.target.value)} rows={3} maxLength={20000} />
-        </Field>
-      </div>
-    </Drawer>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? (
+            <Banner tone="danger">
+              {error}
+              {fieldErrors.length ? (
+                <ul className="mt-1 list-disc pl-5">
+                  {fieldErrors.map((m, i) => (
+                    <li key={i}>{m}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </Banner>
+          ) : null}
+          {!review ? (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <Field label="Subject Type" required>
+                <Select
+                  value={subjectType}
+                  onChange={(v) => {
+                    if (v) setSubjectType(v);
+                    setSubjectId(null);
+                  }}
+                  options={[
+                    { value: 'shift', label: 'Shift' },
+                    { value: 'operation', label: 'Operation' },
+                  ]}
+                />
+              </Field>
+              <Field label={subjectType === 'shift' ? 'Shift' : 'Operation'} required>
+                {subjectType === 'shift' ? (
+                  <EntitySelect type="shift" value={subjectId} onChange={setSubjectId} />
+                ) : (
+                  <Select
+                    value={subjectId}
+                    onChange={setSubjectId}
+                    placeholder={ops.isLoading ? 'Loading…' : 'Choose an operation'}
+                    options={(ops.data?.items ?? []).filter((o) => o.owner.membershipId !== membershipId).map((o) => ({ value: o.id, label: o.title, description: `${o.owner.displayName} · ${label('operationStatus', o.status)}` }))}
+                    emptyText="No operations in scope"
+                  />
+                )}
+              </Field>
+            </div>
+          ) : (
+            <p className="text-[13px] text-fg-2">
+              {review.subjectType === 'shift' ? 'Shift' : 'Operation'}: {review.subject.label} · {review.subjectMember.displayName}
+            </p>
+          )}
+          <Field label="Rubric Version" required>
+            <Select
+              value={rubricId}
+              onChange={(v) => {
+                setRubricId(v);
+                setScores({});
+              }}
+              placeholder={rubrics.isLoading ? 'Loading…' : 'Choose a published rubric'}
+              options={published.map((r) => ({ value: r.id, label: `${r.name} v${r.versionNo}`, description: `${r.criteria.length} criteria` }))}
+              emptyText="No published rubric yet"
+            />
+          </Field>
+          {rubric ? (
+            <>
+              <ScoreEditor rubric={rubric} scores={scores} onChange={setScores} projectId={projectId} />
+              <p className="text-[13px] text-fg-2">
+                Preview: {preview?.value === null || preview === null ? 'No Score (every criterion Not Applicable)' : `${preview.value.toFixed(1)} %`}
+                {preview && !preview.complete ? ' · score every criterion or mark it Not Applicable to publish' : ''}
+              </p>
+            </>
+          ) : null}
+          <Field label="Factual Notes">
+            <Textarea value={facts} onChange={(e) => setFacts(e.target.value)} rows={4} maxLength={20000} />
+          </Field>
+          <Field label="Improvements">
+            <Textarea value={improvements} onChange={(e) => setImprovements(e.target.value)} rows={3} maxLength={20000} />
+          </Field>
+        </div>
+      </Drawer>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -557,7 +572,8 @@ const ReviewDrawer = ({ id, onClose }: { id: string; onClose: () => void }) => {
           body="Explain what the review got wrong. The original score stays in history while the dispute is resolved."
           confirmLabel="Submit Dispute"
           reasonLabel="Dispute"
-          onConfirm={(reason) => dispute.run({ params: { workspaceId: workspace.id, reviewId: r.id }, body: { reason } }, { ifMatch: r.rowVersion })}
+          record={r}
+          onConfirm={(reason, ifMatch) => dispute.run({ params: { workspaceId: workspace.id, reviewId: r.id }, body: { reason } }, { ifMatch })}
         />
       ) : null}
       {r && dlg === 'resolve' && openDispute ? <ResolveDisputeDialog r={r} disputeId={openDispute.id} onClose={() => setDlg(null)} /> : null}
@@ -570,42 +586,47 @@ const AcknowledgeDialog = ({ r, onClose }: { r: OfmQualityReview; onClose: () =>
   const { workspace } = useWorkspace();
   const [response, setResponse] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(r);
   const m = useOfmMutation(E.acknowledgeQuality, { successMessage: 'Review acknowledged' });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="Acknowledge review"
-      description="Confirms you read the review. You can add a response."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run({ params: { workspaceId: workspace.id, reviewId: r.id }, body: { response: response.trim() || undefined } }, { ifMatch: r.rowVersion });
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Acknowledge
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Response">
-          <Textarea value={response} onChange={(e) => setResponse(e.target.value)} rows={4} maxLength={4000} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="Acknowledge review"
+        description="Confirms you read the review. You can add a response."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await m.run({ params: { workspaceId: workspace.id, reviewId: r.id }, body: { response: response.trim() || undefined } }, { ifMatch: edit.version });
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Acknowledge
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Response">
+            <Textarea value={response} onChange={(e) => setResponse(e.target.value)} rows={4} maxLength={4000} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

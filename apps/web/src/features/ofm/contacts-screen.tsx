@@ -37,6 +37,8 @@ import { EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { useDebounced } from '@/components/common/use-debounced';
+import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { applyFieldErrors, useApiInfinite } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useUrlState } from '@/lib/url-state';
@@ -490,53 +492,58 @@ export const ContactQuickEdit = ({ contact, kind, onClose }: { contact: OfmConta
   const [manager, setManager] = useState<string | null>(contact.manager?.membershipId ?? null);
   const [follow, setFollow] = useState(toLocalInput(contact.nextFollowUpAt, user.timezone));
   const [error, setError] = useState<string | null>(null);
+  // `contact` is the row as the dialog opened (T162).
+  const edit = useEditBase(contact);
   const m = useOfmMutation(E.updateContact, { successMessage: kind === 'assign' ? 'Manager assigned' : 'Follow-up saved' });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title={kind === 'assign' ? 'Assign manager' : 'Next follow-up'}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run(
-                  {
-                    params: { workspaceId: workspace.id, contactId: contact.id },
-                    body: kind === 'assign' ? { managerMembershipId: manager } : { nextFollowUpAt: follow ? fromLocalInput(follow, user.timezone) : null },
-                  },
-                  { ifMatch: contact.rowVersion },
-                );
-                onClose();
-              } catch (e) {
-                setError(isApiError(e) && e.code === 'VERSION_CONFLICT' ? 'The contact changed meanwhile. Close and try again.' : errorMessage(e));
-              }
-            }}
-          >
-            Save
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {kind === 'assign' ? (
-          <Field label="Manager">
-            <MemberSelect value={manager} onChange={setManager} clearable />
-          </Field>
-        ) : (
-          <Field label="Next Follow-up" helper="Empty clears the follow-up.">
-            <DateTimeInput timezone={user.timezone} value={follow} onChange={(e) => setFollow(e.target.value)} />
-          </Field>
-        )}
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title={kind === 'assign' ? 'Assign manager' : 'Next follow-up'}
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await m.run(
+                    {
+                      params: { workspaceId: workspace.id, contactId: contact.id },
+                      body: kind === 'assign' ? { managerMembershipId: manager } : { nextFollowUpAt: follow ? fromLocalInput(follow, user.timezone) : null },
+                    },
+                    { ifMatch: edit.version },
+                  );
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {kind === 'assign' ? (
+            <Field label="Manager">
+              <MemberSelect value={manager} onChange={setManager} clearable />
+            </Field>
+          ) : (
+            <Field label="Next Follow-up" helper="Empty clears the follow-up.">
+              <DateTimeInput timezone={user.timezone} value={follow} onChange={(e) => setFollow(e.target.value)} />
+            </Field>
+          )}
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

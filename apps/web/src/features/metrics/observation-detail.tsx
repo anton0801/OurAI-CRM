@@ -6,6 +6,7 @@ import { metricsEndpoints as M, type ObservationDetail } from '@castlane/api-con
 import { isApiError } from '@castlane/api-client';
 import { Badge, Banner, Button, DescriptionList, Dialog, Drawer, Field, IconButton, Menu, PageHeader, Panel, Textarea, formatDateTime } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { QueryState } from '@/components/common/query-state';
 import { useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
@@ -180,7 +181,7 @@ export const ObservationDetailScreen = ({ observationId }: { observationId: stri
                   </ol>
                 </Panel>
 
-                {state.correct === '1' && canCorrect ? <CorrectionDrawer o={o} onClose={() => set({ correct: null })} onConflict={() => setConflict(true)} /> : null}
+                {state.correct === '1' && canCorrect ? <CorrectionDrawer o={o} onClose={() => set({ correct: null })} /> : null}
                 {dialog === 'review' ? <ReasonDialog o={o} mode="review" onClose={() => setDialog(null)} onConflict={() => setConflict(true)} /> : null}
                 {dialog === 'canonical' ? <ReasonDialog o={o} mode="canonical" onClose={() => setDialog(null)} onConflict={() => setConflict(true)} /> : null}
                 {dialog === 'reject' ? <ReasonDialog o={o} mode="reject" onClose={() => setDialog(null)} onConflict={() => setConflict(true)} /> : null}
@@ -269,31 +270,33 @@ const PendingCorrection = ({ o, onConflict, onReject }: { o: ObservationDetail; 
 };
 
 /** Submit Correction: a new revision of the same key that waits for review (T106). */
-const CorrectionDrawer = ({ o, onClose, onConflict }: { o: ObservationDetail; onClose: () => void; onConflict: () => void }) => {
+const CorrectionDrawer = ({ o, onClose }: { o: ObservationDetail; onClose: () => void }) => {
   const { workspace } = useWorkspace();
   const catalog = useApiQuery(M.catalog, { params: { workspaceId: workspace.id } }, { staleTime: 5 * 60_000 });
   const fields = useMemo(
     () => (catalog.data?.fields ?? []).filter((f) => f.entityType === o.entity.type && f.observationKind === o.kind && f.version === o.definitionSetVersion),
     [catalog.data, o],
   );
-  const [cells, setCells] = useState(() =>
-    Object.fromEntries(o.values.map((v) => [v.metricKey, { availability: v.availability as '' | typeof v.availability, value: v.value ?? '', currency: v.currency ?? workspace.baseCurrency }])),
-  );
+  const cellsOf = (x: ObservationDetail) => Object.fromEntries(x.values.map((v) => [v.metricKey, { availability: v.availability as '' | typeof v.availability, value: v.value ?? '', currency: v.currency ?? workspace.baseCurrency }]));
+  const [cells, setCells] = useState(() => cellsOf(o));
+  // The correction is proposed against the observation as the drawer opened (T162).
+  const edit = useEditBase(o, { onReload: (x) => setCells(cellsOf(x)) });
+  const shown = edit.start ?? o;
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const revise = useInsightsMutation(M.revise, { successMessage: 'Correction submitted for review' });
-  const dirty = reason.length > 0 || JSON.stringify(cells) !== JSON.stringify(Object.fromEntries(o.values.map((v) => [v.metricKey, { availability: v.availability, value: v.value ?? '', currency: v.currency ?? workspace.baseCurrency }])));
+  const dirty = reason.length > 0 || JSON.stringify(cells) !== JSON.stringify(cellsOf(shown));
   const submit = async () => {
     setErrors({});
     const values = fields
       .filter((f) => cells[f.key]?.availability)
       .map((f) => ({ metricKey: f.key, availability: cells[f.key]!.availability as 'known', value: cells[f.key]!.availability === 'known' ? cells[f.key]!.value.trim() || null : null, currency: f.valueType === 'money' ? cells[f.key]!.currency : null }));
     try {
-      await revise.run({ params: { workspaceId: workspace.id, observationId: o.id }, body: { values, reason, warningNote: note.trim() || null } }, { ifMatch: o.rowVersion });
+      await revise.run({ params: { workspaceId: workspace.id, observationId: o.id }, body: { values, reason, warningNote: note.trim() || null } }, { ifMatch: edit.version });
       onClose();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') return onConflict();
+      if (edit.catchConflict(e)) return;
       if (isApiError(e) && e.fieldErrors.length) {
         const out: Record<string, string> = {};
         for (const fe of e.fieldErrors) {
@@ -306,36 +309,39 @@ const CorrectionDrawer = ({ o, onClose, onConflict }: { o: ObservationDetail; on
     }
   };
   return (
-    <Drawer
-      open
-      onOpenChange={(v) => !v && onClose()}
-      width={760}
-      dirty={dirty}
-      title="Submit Correction"
-      description="The corrected values wait for review; the current values stay in use until an approver accepts them."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" loading={revise.isPending} onClick={() => void submit()}>
-            Submit Correction
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        <ValuesEditor fields={fields} cells={cells} errors={errors} currency={workspace.baseCurrency} onChange={(key, patch) => setCells((c) => ({ ...c, [key]: { availability: '', value: '', currency: workspace.baseCurrency, ...c[key], ...patch } }))} />
-        {errors.values ? <p className="text-[13px] text-danger">{errors.values}</p> : null}
-        <Field label="Reason for the correction" required error={errors.reason}>
-          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} maxLength={1000} />
-        </Field>
-        {errors.warningNote ? (
-          <Field label="Note about the warning" required error={errors.warningNote}>
-            <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={1000} />
+    <>
+      <Drawer
+        open
+        onOpenChange={(v) => !v && onClose()}
+        width={760}
+        dirty={dirty}
+        title="Submit Correction"
+        description="The corrected values wait for review; the current values stay in use until an approver accepts them."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="primary" loading={revise.isPending} onClick={() => void submit()}>
+              Submit Correction
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <ValuesEditor fields={fields} cells={cells} errors={errors} currency={workspace.baseCurrency} onChange={(key, patch) => setCells((c) => ({ ...c, [key]: { availability: '', value: '', currency: workspace.baseCurrency, ...c[key], ...patch } }))} />
+          {errors.values ? <p className="text-[13px] text-danger">{errors.values}</p> : null}
+          <Field label="Reason for the correction" required error={errors.reason}>
+            <Textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} maxLength={1000} />
           </Field>
-        ) : null}
-        {errors.form ? <Banner tone="danger">{errors.form}</Banner> : null}
-      </div>
-    </Drawer>
+          {errors.warningNote ? (
+            <Field label="Note about the warning" required error={errors.warningNote}>
+              <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={1000} />
+            </Field>
+          ) : null}
+          {errors.form ? <Banner tone="danger">{errors.form}</Banner> : null}
+        </div>
+      </Drawer>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

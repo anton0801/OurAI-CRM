@@ -13,6 +13,7 @@ import { isApiError } from '@castlane/api-client';
 import { ATTRIBUTION_TYPES, PUBLICATION_STATUSES } from '@castlane/domain';
 import { Badge, Banner, BarChart, Button, DataTable, DateTimeInput, DescriptionList, Dialog, EmptyState, Field, Input, Panel, Select, Textarea, formatDateTime, type Column } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { QueryState } from '@/components/common/query-state';
 import { AssetThumb, FileUploader } from '@/components/media/file-uploader';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
@@ -188,7 +189,8 @@ const SourceReportDialog = ({ campaign: c, report, onClose }: { campaign: Campai
   const [reason, setReason] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // Pinned to the version shown when this opened (T162).
+  const edit = useEditBase(report);
   const create = useApiMutation(SR.create, { invalidate: CAMPAIGN_INVALIDATE, silentErrors: true, successMessage: 'Source report added' });
   const update = useApiMutation(SR.update, { invalidate: CAMPAIGN_INVALIDATE, silentErrors: true, successMessage: 'Source report corrected' });
   const pending = create.isPending || update.isPending;
@@ -223,12 +225,29 @@ const SourceReportDialog = ({ campaign: c, report, onClose }: { campaign: Campai
       note: note.trim() || null,
     };
     try {
-      if (report) await update.run({ params: { workspaceId: workspace.id, reportId: report.id }, body: { ...body, reason: reason.trim() } }, { ifMatch: report.rowVersion });
+      if (report) {
+        // Only the corrected values are sent, so a concurrent correction of other values survives (T162).
+        const base = edit.start ?? report;
+        const before = {
+          sourceName: base.sourceName,
+          periodStart: fromLocalInput(toLocalInput(base.periodStart, tz), tz)!,
+          periodEnd: fromLocalInput(toLocalInput(base.periodEnd, tz), tz)!,
+          clicks: base.clicks,
+          conversions: base.conversions,
+          attributionLabel: base.attributionLabel,
+          trackingLinkId: base.trackingLink?.id ?? null,
+          evidenceAssetId: base.evidenceAssetId,
+          note: base.note?.trim() || null,
+        };
+        const changed = changedFields(before, body);
+        if (changed.includes('periodStart') || changed.includes('periodEnd')) changed.push('periodStart', 'periodEnd');
+        await update.run({ params: { workspaceId: workspace.id, reportId: report.id }, body: { ...pickChanged(body, changed), reason: reason.trim() } }, { ifMatch: edit.version });
+      }
       else await create.run({ params: { workspaceId: workspace.id, campaignId: c.id }, body });
       onClose();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
+      if (edit.catchConflict(e)) return;
+      if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
       else setError(isApiError(e) ? e.message : 'The report could not be saved.');
     }
   };
@@ -310,7 +329,7 @@ const SourceReportDialog = ({ campaign: c, report, onClose }: { campaign: Campai
           ) : null}
         </div>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };

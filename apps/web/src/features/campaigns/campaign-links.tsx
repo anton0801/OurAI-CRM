@@ -7,6 +7,7 @@ import { isApiError } from '@castlane/api-client';
 import { isSafeUrl } from '@castlane/domain';
 import { Badge, Banner, Button, Checkbox, DataTable, Dialog, EmptyState, Field, Input, Menu, Switch, Textarea, Toolbar, toast, type Column } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect } from '@/components/common/entity-select';
 import { QueryState } from '@/components/common/query-state';
 import { useDebounced } from '@/components/common/use-debounced';
@@ -157,7 +158,8 @@ const TaggedUrlDialog = ({ campaign: c, link, onClose }: { campaign: CampaignDet
   const [overwrite, setOverwrite] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // Pinned to the version shown when this opened (T162).
+  const edit = useEditBase(link);
   // Debounce a string (a fresh object each render would never settle).
   const debouncedKey = useDebounced(JSON.stringify({ destination, utm }), 300);
   const debounced = JSON.parse(debouncedKey) as { destination: string; utm: Utm };
@@ -197,12 +199,16 @@ const TaggedUrlDialog = ({ campaign: c, link, onClose }: { campaign: CampaignDet
       ...Object.fromEntries(UTM.map((u) => [u.key, utm[u.key].trim() || null])),
     };
     try {
-      if (link) await update.run({ params: { workspaceId: workspace.id, linkId: link.id }, body }, { ifMatch: link.rowVersion });
+      if (link) {
+        const before = { label: link.label, destinationUrl: link.destinationUrl, publicationId: link.publication?.id ?? null, overwriteConflicts: undefined, ...Object.fromEntries(UTM.map((u) => [u.key, link[u.key] ?? null])) };
+        const patch = pickChanged(body, changedFields(before as typeof body, body));
+        await update.run({ params: { workspaceId: workspace.id, linkId: link.id }, body: patch }, { ifMatch: edit.version });
+      }
       else await create.run({ params: { workspaceId: workspace.id, campaignId: c.id }, body: body as typeof body & { label: string; destinationUrl: string } });
       onClose();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
+      if (edit.catchConflict(e)) return;
+      if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
       else setError(isApiError(e) ? e.message : 'The link could not be saved.');
     }
   };
@@ -270,7 +276,7 @@ const TaggedUrlDialog = ({ campaign: c, link, onClose }: { campaign: CampaignDet
           ) : null}
         </div>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };
