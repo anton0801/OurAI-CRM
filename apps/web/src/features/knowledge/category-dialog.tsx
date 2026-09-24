@@ -5,6 +5,8 @@ import { knowledgeEndpoints, type CategoryView } from '@castlane/api-contracts';
 import { isApiError } from '@castlane/api-client';
 import { Badge, Banner, Button, Dialog, Field, IconButton, Input } from '@castlane/ui';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
+import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { useWorkspace } from '@/lib/workspace-context';
 
 /** Manage Category (S38): create, rename, reorder, archive and restore categories. */
@@ -30,6 +32,11 @@ export const CategoryDialog = ({ open, onOpenChange }: { open: boolean; onOpenCh
     }
   };
   const active = (q.data?.items ?? []).filter((c) => !c.archivedAt);
+  // A rename is saved against the category as it was when Rename was pressed (T162).
+  const renaming = useEditBase(
+    active.find((c) => c.id === editing?.id),
+    { open: !!editing, key: editing?.id, onReload: (x) => setEditing({ id: x.id, name: x.name }) },
+  );
   const archived = (q.data?.items ?? []).filter((c) => c.archivedAt);
   const move = (c: CategoryView, d: -1 | 1) => {
     const i = active.findIndex((x) => x.id === c.id);
@@ -42,75 +49,84 @@ export const CategoryDialog = ({ open, onOpenChange }: { open: boolean; onOpenCh
     });
   };
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title="Manage Categories" description="Archived categories stay on their articles for history but are not offered for new articles." footer={<Button onClick={() => onOpenChange(false)}>Done</Button>}>
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <form
-          className="flex items-end gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (name.trim().length < 2) return;
-            void run(() => create.run({ params: { workspaceId: workspace.id }, body: { name: name.trim(), sortOrder: active.length * 10 } })).then((ok) => ok && setName(''));
-          }}
-        >
-          <Field label="New category" className="flex-1">
-            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
-          </Field>
-          <Button type="submit" variant="primary" loading={create.isPending} disabled={name.trim().length < 2}>
-            Add
-          </Button>
-        </form>
-        <ul className="flex flex-col divide-y divide-line rounded-[8px] border border-line">
-          {active.map((c, i) => (
-            <li key={c.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
-              {editing?.id === c.id ? (
-                <form
-                  className="flex flex-1 items-center gap-2"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void run(() => update.run({ params: { workspaceId: workspace.id, categoryId: c.id }, body: { name: editing.name.trim() } }, { ifMatch: c.rowVersion })).then((ok) => ok && setEditing(null));
-                  }}
-                >
-                  <Input aria-label="Category name" value={editing.name} onChange={(e) => setEditing({ id: c.id, name: e.target.value })} maxLength={120} autoFocus />
-                  <Button size="sm" type="submit" variant="primary" loading={update.isPending}>
-                    Save
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
-                    Cancel
-                  </Button>
-                </form>
-              ) : (
-                <>
-                  <span className="min-w-0 flex-1 truncate text-[14px] text-fg">{c.name}</span>
-                  <Badge>{c.articleCount} article{c.articleCount === 1 ? '' : 's'}</Badge>
-                  <IconButton label={`Move ${c.name} up`} icon={<ArrowUp size={14} />} disabled={i === 0} onClick={() => move(c, -1)} />
-                  <IconButton label={`Move ${c.name} down`} icon={<ArrowDown size={14} />} disabled={i === active.length - 1} onClick={() => move(c, 1)} />
-                  <IconButton label={`Rename ${c.name}`} icon={<PencilSimple size={14} />} onClick={() => setEditing({ id: c.id, name: c.name })} />
-                  <Button size="sm" variant="ghost" onClick={() => void run(() => archive.run({ params: { workspaceId: workspace.id, categoryId: c.id }, body: {} }, { ifMatch: c.rowVersion }))}>
-                    Archive
-                  </Button>
-                </>
-              )}
-            </li>
-          ))}
-          {!active.length ? <li className="px-3 py-3 text-[13px] text-fg-2">No categories yet. Add one to start writing articles.</li> : null}
-        </ul>
-        {archived.length ? (
-          <section className="flex flex-col gap-2">
-            <h3 className="text-[13px] font-semibold text-fg-2">Archived</h3>
-            <ul className="flex flex-col divide-y divide-line rounded-[8px] border border-line">
-              {archived.map((c) => (
-                <li key={c.id} className="flex items-center gap-2 px-3 py-2">
-                  <span className="min-w-0 flex-1 truncate text-[14px] text-fg-2">{c.name}</span>
-                  <Button size="sm" variant="ghost" onClick={() => void run(() => restore.run({ params: { workspaceId: workspace.id, categoryId: c.id }, body: {} }, { ifMatch: c.rowVersion }))}>
-                    Restore
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          </section>
-        ) : null}
-      </div>
-    </Dialog>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange} title="Manage Categories" description="Archived categories stay on their articles for history but are not offered for new articles." footer={<Button onClick={() => onOpenChange(false)}>Done</Button>}>
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <form
+            className="flex items-end gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (name.trim().length < 2) return;
+              void run(() => create.run({ params: { workspaceId: workspace.id }, body: { name: name.trim(), sortOrder: active.length * 10 } })).then((ok) => ok && setName(''));
+            }}
+          >
+            <Field label="New category" className="flex-1">
+              <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
+            </Field>
+            <Button type="submit" variant="primary" loading={create.isPending} disabled={name.trim().length < 2}>
+              Add
+            </Button>
+          </form>
+          <ul className="flex flex-col divide-y divide-line rounded-[8px] border border-line">
+            {active.map((c, i) => (
+              <li key={c.id} className="flex flex-wrap items-center gap-2 px-3 py-2">
+                {editing?.id === c.id ? (
+                  <form
+                    className="flex flex-1 items-center gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      setError(null);
+                      void update.run({ params: { workspaceId: workspace.id, categoryId: c.id }, body: { name: editing.name.trim() } }, { ifMatch: renaming.version }).then(
+                        () => setEditing(null),
+                        (err: unknown) => {
+                          if (!renaming.catchConflict(err)) setError(isApiError(err) ? (err.fieldErrors[0]?.message ?? err.message) : 'The change could not be saved.');
+                        },
+                      );
+                    }}
+                  >
+                    <Input aria-label="Category name" value={editing.name} onChange={(e) => setEditing({ id: c.id, name: e.target.value })} maxLength={120} autoFocus />
+                    <Button size="sm" type="submit" variant="primary" loading={update.isPending}>
+                      Save
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+                      Cancel
+                    </Button>
+                  </form>
+                ) : (
+                  <>
+                    <span className="min-w-0 flex-1 truncate text-[14px] text-fg">{c.name}</span>
+                    <Badge>{c.articleCount} article{c.articleCount === 1 ? '' : 's'}</Badge>
+                    <IconButton label={`Move ${c.name} up`} icon={<ArrowUp size={14} />} disabled={i === 0} onClick={() => move(c, -1)} />
+                    <IconButton label={`Move ${c.name} down`} icon={<ArrowDown size={14} />} disabled={i === active.length - 1} onClick={() => move(c, 1)} />
+                    <IconButton label={`Rename ${c.name}`} icon={<PencilSimple size={14} />} onClick={() => setEditing({ id: c.id, name: c.name })} />
+                    <Button size="sm" variant="ghost" onClick={() => void run(() => archive.run({ params: { workspaceId: workspace.id, categoryId: c.id }, body: {} }, { ifMatch: c.rowVersion }))}>
+                      Archive
+                    </Button>
+                  </>
+                )}
+              </li>
+            ))}
+            {!active.length ? <li className="px-3 py-3 text-[13px] text-fg-2">No categories yet. Add one to start writing articles.</li> : null}
+          </ul>
+          {archived.length ? (
+            <section className="flex flex-col gap-2">
+              <h3 className="text-[13px] font-semibold text-fg-2">Archived</h3>
+              <ul className="flex flex-col divide-y divide-line rounded-[8px] border border-line">
+                {archived.map((c) => (
+                  <li key={c.id} className="flex items-center gap-2 px-3 py-2">
+                    <span className="min-w-0 flex-1 truncate text-[14px] text-fg-2">{c.name}</span>
+                    <Button size="sm" variant="ghost" onClick={() => void run(() => restore.run({ params: { workspaceId: workspace.id, categoryId: c.id }, body: {} }, { ifMatch: c.rowVersion }))}>
+                      Restore
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
+        </div>
+      </Dialog>
+      <ConflictDialog {...renaming.conflictDialog} />
+    </>
   );
 };

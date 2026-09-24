@@ -7,6 +7,7 @@ import { isApiError } from '@castlane/api-client';
 import { CONTENT_FORMATS, PERIOD_PRESETS, PLATFORMS, REPORT_CHART_TYPES, REPORT_LIMITS, TIME_GRAINS } from '@castlane/domain';
 import { Badge, Banner, Button, DateInput, Drawer, Field, IconButton, Input, Menu, MultiSelect, PageHeader, Panel, PermissionDenied, Select, Skeleton, Textarea, formatDateTime } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { MultiEntitySelect } from '@/components/common/entity-select';
 import { MultiMemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
@@ -41,7 +42,7 @@ export const NewReportScreen = () => {
 export const ReportScreen = ({ reportId }: { reportId: string }) => {
   const { workspace } = useWorkspace();
   const q = useApiQuery(R.get, { params: { workspaceId: workspace.id, reportId } });
-  return <QueryState query={q}>{q.data ? <ReportEditor key={`${q.data.id}:${q.data.rowVersion}`} report={q.data} /> : null}</QueryState>;
+  return <QueryState query={q}>{q.data ? <ReportEditor key={q.data.id} report={q.data} /> : null}</QueryState>;
 };
 
 /** S52 Report Builder: dataset → metrics (≤8) → dimensions (≤3) → filters, period, chart; preview, save, share, schedule, snapshot, export. */
@@ -58,7 +59,18 @@ const ReportEditor = ({ report }: { report?: ReportDetail }) => {
   const [preview, setPreview] = useState<ReportResult | null>(null);
   const [errors, setErrors] = useState<{ field: string; message: string }[]>([]);
   const [dialog, setDialog] = useState<null | 'share' | 'schedule' | 'versions'>(null);
-  const [conflict, setConflict] = useState(false);
+  // The report is edited from `start` (as loaded): a background refresh no longer remounts the editor
+  // or moves If-Match; untouched, it follows the latest version (T162).
+  const [start, setStart] = useState({ name: report?.name ?? '', config: report?.config ?? null });
+  const dirtyVsStart = !!report && (name !== start.name || JSON.stringify(config) !== JSON.stringify(start.config));
+  const edit = useEditBase(report, {
+    clean: !dirtyVsStart,
+    onReload: (x) => {
+      setName(x.name);
+      setConfig(x.config);
+      setStart({ name: x.name, config: x.config });
+    },
+  });
   const saved = useApiQuery(R.run, { params: { ...p, reportId: report?.id ?? '' }, body: {} }, { enabled: !!report && report.datasetAvailable && !report.archivedAt });
   const previewM = useApiMutation(R.preview, { silentErrors: true });
   const create = useInsightsMutation(R.create, { successMessage: 'Report saved' });
@@ -79,7 +91,7 @@ const ReportEditor = ({ report }: { report?: ReportDetail }) => {
   };
 
   const fail = (e: unknown) => {
-    if (isApiError(e) && e.code === 'VERSION_CONFLICT') return setConflict(true);
+    if (edit.catchConflict(e)) return;
     if (isApiError(e) && e.fieldErrors.length) return setErrors(e.fieldErrors.map((f) => ({ field: f.field, message: f.message })));
     setErrors([{ field: 'form', message: errorMessage(e) }]);
   };
@@ -100,7 +112,13 @@ const ReportEditor = ({ report }: { report?: ReportDetail }) => {
         const r = await create.run({ params: p, body: { name: name.trim(), config: cfg } });
         router.push(wsPath(`/reports/${r.id}`));
       } else {
-        await update.run({ params: { ...p, reportId: report.id }, body: { name: name.trim(), config: cfg, changeNote: changeNote.trim() || undefined } }, { ifMatch: report.rowVersion });
+        const body = { name: name.trim(), config: cfg };
+        const r = await update.run(
+          { params: { ...p, reportId: report.id }, body: { ...pickChanged(body, changedFields({ name: start.name.trim(), config: start.config ?? cfg }, body)), changeNote: changeNote.trim() || undefined } },
+          { ifMatch: edit.version },
+        );
+        edit.rebase(r);
+        setStart({ name: r.name, config: r.config });
         setChangeNote('');
       }
     } catch (e) {
@@ -112,7 +130,7 @@ const ReportEditor = ({ report }: { report?: ReportDetail }) => {
   if (!list.length) return <PermissionDenied description="Your role has no report datasets." />;
   if (!cfg || !ds) return null;
   const result = preview ?? saved.data ?? null;
-  const dirty = !!report && (name !== report.name || JSON.stringify(cfg) !== JSON.stringify(report.config));
+  const dirty = !!report && (name !== start.name || JSON.stringify(cfg) !== JSON.stringify(start.config));
 
   return (
     <div className="flex flex-col gap-5">
@@ -238,7 +256,7 @@ const ReportEditor = ({ report }: { report?: ReportDetail }) => {
           {report ? <SchedulesList report={report} /> : null}
         </div>
       </div>
-      {report && dialog === 'share' ? <ShareDialog report={report} onClose={() => setDialog(null)} onConflict={() => setConflict(true)} /> : null}
+      {report && dialog === 'share' ? <ShareDialog report={report} onClose={() => setDialog(null)} /> : null}
       {report && dialog === 'schedule' ? <ScheduleDialog report={report} onClose={() => setDialog(null)} /> : null}
       {report && dialog === 'versions' ? (
         <VersionsDrawer
@@ -253,7 +271,7 @@ const ReportEditor = ({ report }: { report?: ReportDetail }) => {
           editable={editable}
         />
       ) : null}
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
       <span className="sr-only" aria-live="polite">
         {preview ? `Preview updated: ${preview.rowCount} rows.` : ''}
       </span>

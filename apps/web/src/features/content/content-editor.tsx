@@ -30,6 +30,7 @@ import {
   formatDate,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect, MultiEntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
@@ -253,10 +254,27 @@ export const ContentEditor = ({ content }: { content?: ContentDetail }) => {
   const wsPath = useWsPath();
   const can = useCan();
   const { workspace, user, membershipId } = useWorkspace();
-  const [conflict, setConflict] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [planOpen, setPlanOpen] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
+  const valuesOf = (content: ContentDetail): FormValues => ({
+    title: content.title,
+    projectId: content.project.id,
+    format: content.format,
+    ownerMembershipId: content.owner?.membershipId ?? null,
+    reviewerMembershipId: content.reviewer?.membershipId ?? null,
+    language: content.language ?? '',
+    dueAt: toLocalInput(content.dueAt, user.timezone),
+    noDeadline: content.noDeadline,
+    tags: content.tags.join(', '),
+    accountId: content.account?.id ?? null,
+    episodeId: content.episode?.id ?? null,
+    referenceIds: content.references.map((r) => r.id),
+    characterVersionIds: content.characters.map((c) => c.versionId),
+    ...Object.fromEntries(CONTENT_BRIEF_FIELDS.map((f) => [f.key, content.brief[f.key] ?? ''])),
+    templateId: null,
+    templateStart: today,
+  });
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: content
@@ -313,6 +331,8 @@ export const ContentEditor = ({ content }: { content?: ContentDetail }) => {
   );
   const projectId = form.watch('projectId');
   const dirty = form.formState.isDirty;
+  // Edits apply to the content as the form opened; only changed fields (and brief parts) are sent (T162).
+  const edit = useEditBase(content, { onReload: (x) => form.reset(valuesOf(x)) });
   useUnsavedChangesGuard(dirty && !create.isSuccess && !update.isSuccess);
   const errors = form.formState.errors;
 
@@ -337,10 +357,13 @@ export const ContentEditor = ({ content }: { content?: ContentDetail }) => {
       setError(null);
       try {
         if (content) {
-          const r = await update.run(
-            { params: { workspaceId: workspace.id, contentId: content.id }, body: bodyOf(v) },
-            { ifMatch: content.rowVersion },
-          );
+          const body = bodyOf(v);
+          const before = bodyOf(valuesOf(edit.start ?? content));
+          const changed = changedFields(before, body);
+          if (changed.includes('dueAt') || changed.includes('noDeadline')) changed.push('dueAt', 'noDeadline');
+          const patch: Partial<typeof body> = pickChanged(body, changed);
+          if (patch.brief) patch.brief = pickChanged(body.brief, changedFields(before.brief, body.brief)) as typeof body.brief;
+          const r = await update.run({ params: { workspaceId: workspace.id, contentId: content.id }, body: patch }, { ifMatch: edit.version });
           router.push(wsPath(`/content/${r.id}`));
           return;
         }
@@ -364,8 +387,8 @@ export const ContentEditor = ({ content }: { content?: ContentDetail }) => {
         });
         router.push(wsPath(`/content/${r.id}`));
       } catch (e) {
-        if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-        else if (
+        if (edit.catchConflict(e)) return;
+        if (
           !applyFieldErrors(e, ((name: string, err: { type: string; message: string }) =>
             form.setError((name.startsWith('brief.') ? name.slice(6) : name) as never, err)) as never)
         )
@@ -664,7 +687,7 @@ export const ContentEditor = ({ content }: { content?: ContentDetail }) => {
           projectId={projectId}
         />
       ) : null}
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </div>
   );
 };

@@ -192,7 +192,7 @@ const RuleView = ({ rule: r }: { rule: AutomationRuleDetail }) => {
           <TabPanel value="rule">
             {state.tab === 'rule' || !state.tab ? (
               <RuleEditor
-                key={`${r.id}:${r.rowVersion}`}
+                key={r.id}
                 initial={initial}
                 rule={r}
                 readOnly={!r.permissions.edit}
