@@ -6,7 +6,7 @@ import { Button } from './button';
 import { cn } from './cn';
 
 const overlayCls =
-  'fixed inset-0 z-50 bg-black/35 data-[state=open]:animate-[fadeIn_160ms_ease-out] motion-reduce:animate-none';
+  'fixed inset-0 z-50 bg-black/35 motion-safe:data-[state=open]:animate-[fadeIn_160ms_ease-out]';
 
 export interface DialogProps {
   open: boolean;
@@ -119,7 +119,7 @@ export const Dialog = ({ open, onOpenChange, title, description, size = 'regular
           {...focus}
           className={cn(
             'fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100dvh-48px)] w-[calc(100vw-32px)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-[16px] border border-line bg-surface shadow-[var(--shadow-overlay)]',
-            'data-[state=open]:animate-[dialogIn_160ms_ease-out] motion-reduce:animate-none',
+            'motion-safe:data-[state=open]:animate-[dialogIn_160ms_ease-out]',
             widths[size],
           )}
           aria-describedby={description ? undefined : undefined}
@@ -175,7 +175,7 @@ export const Drawer = ({ open, onOpenChange, title, description, width = 560, ch
           {...focus}
           className={cn(
             'fixed inset-y-0 right-0 z-50 flex h-[100dvh] w-full flex-col border-l border-line bg-surface shadow-[var(--shadow-overlay)]',
-            'data-[state=open]:animate-[drawerIn_180ms_ease-out] motion-reduce:animate-none',
+            'motion-safe:data-[state=open]:animate-[drawerIn_180ms_ease-out]',
             width === 560 ? 'md:max-w-[560px]' : 'md:max-w-[760px]',
           )}
         >
