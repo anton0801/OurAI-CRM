@@ -25,7 +25,11 @@
     "fixtures:load": "tsx --env-file-if-exists=.env tests/tools/demo/load-demo.ts",
     "openapi:generate": "tsx packages/api-contracts/src/cli/generate-openapi.ts",
     "format": "prettier --write .",
-    "acceptance:report": "tsx tests/tools/acceptance-report.ts"
+    "acceptance:report": "tsx tests/tools/acceptance-report.ts",
+    "perf:seed": "tsx tests/performance/seed.ts",
+    "perf:stack": "tsx tests/performance/stack.ts",
+    "perf:run": "tsx tests/performance/run.ts",
+    "perf:report": "tsx tests/performance/report.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
