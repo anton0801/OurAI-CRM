@@ -32,7 +32,7 @@ export const FIXES: Fix[] = [
     commit: 'ac53b2a',
     problem:
       'Default list orders and per-record counters scanned whole tables: 210 ms for the open-task order, 220 ms for the publication order, and 80–200 ms for subtask, content-item and project counters.',
-    fix: 'Migration `0001_perf_indexes`. The same queries now take under 1 ms or are index lookups.',
+    fix: 'Migration `0002_perf_indexes`. The same queries now take under 1 ms or are index lookups.',
   },
   {
     commit: 'fb906e0',
