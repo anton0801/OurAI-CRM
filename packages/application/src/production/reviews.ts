@@ -25,7 +25,7 @@ import { createComment } from '../work/comments';
 import { createTask } from '../work/tasks';
 import { contentBriefView, contentSummaries, indexContent, recordStageEvent, reviewPolicyOfProject } from './content';
 import { fileThumbnailUrl, loadVersionFiles, primaryFile } from './files';
-import { isContentOverdue, reviewSteps, selfReviewOutcome, waitingHours, type BriefFields, type ReviewStepKind } from './rules';
+import { isContentOverdue, reviewSteps, selfReviewOutcome, waitingHours, type BriefFields, type ProjectReviewPolicy, type ReviewStepKind } from './rules';
 import { authorizeContentAction, contentScope, contentVisibility, fieldError, loadContent, lockContent, readableContent, type ContentRow } from './scope';
 import { assertEligibleReviewer, contentVersionDetail, listContentVersions, openBlockingCount } from './versions';
 
@@ -57,6 +57,29 @@ export const assertContentVersionPlaceable = async (ctx: QueryContext | CommandC
 // ——— Queue (S25) ———
 
 const OPEN_BLOCKING = sql<number>`(SELECT count(*)::int FROM comments cm WHERE cm.workspace_id = ${reviews.workspaceId} AND cm.target_version_id = ${reviews.targetId} AND cm.severity = 'blocking' AND cm.state <> 'resolved' AND cm.deleted_at IS NULL AND cm.reply_to_id IS NULL)`;
+
+/**
+ * On the project's eligible-reviewer list (§10.3: each step has a list of eligible reviewers). No list
+ * means anyone with content.approve; the workspace Owner is exempt. Applies to both decisions.
+ */
+const onEligibleList = (ctx: QueryContext | CommandContext, policy: Pick<ProjectReviewPolicy, 'eligibleReviewerMembershipIds'> | null | undefined) => {
+  const list = policy?.eligibleReviewerMembershipIds;
+  return !list?.length || !ctx.actor.membershipId || ctx.actor.access.isOwner || list.includes(ctx.actor.membershipId);
+};
+
+/** Members who approved an earlier step of this review's round: a later step needs another person (two levels of approval). */
+const earlierStepApprovers = async (db: DbOrTx, r: ReviewRow) => {
+  if (r.stepOrder <= 1) return [] as string[];
+  const rows = await db
+    .select({ by: reviewDecisions.decidedByMembershipId })
+    .from(reviewDecisions)
+    .innerJoin(reviews, eq(reviews.id, reviewDecisions.reviewId))
+    .where(and(eq(reviews.workspaceId, r.workspaceId), eq(reviews.targetId, r.targetId), eq(reviews.roundNo, r.roundNo), lt(reviews.stepOrder, r.stepOrder), eq(reviewDecisions.decision, 'approved')));
+  return rows.map((x) => x.by);
+};
+
+const NOT_ELIGIBLE_MESSAGE = 'You are not on the project’s list of eligible reviewers.';
+const EARLIER_STEP_MESSAGE = 'You approved an earlier step of this review. Another reviewer must approve this step.';
 
 /** Reviews visible to the actor: content reviews through the content scope, profile reviews through characters.read. */
 const reviewVisibility = (ctx: QueryContext): SQL => {
@@ -112,6 +135,7 @@ export const listReviewQueue = async (ctx: QueryContext, input: ReviewQueueInput
       characterName: characters.name,
       characterVersionNo: characterVersions.versionNo,
       projectName: projects.name,
+      reviewPolicy: projects.reviewPolicy,
       openBlocking: OPEN_BLOCKING,
     })
     .from(reviews)
@@ -148,7 +172,7 @@ export const listReviewQueue = async (ctx: QueryContext, input: ReviewQueueInput
     const r = p.r;
     const isContent = r.targetType === 'content_version';
     const content = p.contentRow;
-    const decide = isContent && content ? allowed(ctx, 'content.approve', contentScope(content)) : allowed(ctx, 'characters.approve', { projectId: r.projectId });
+    const decide = isContent && content ? allowed(ctx, 'content.approve', contentScope(content)) && onEligibleList(ctx, p.reviewPolicy) : allowed(ctx, 'characters.approve', { projectId: r.projectId });
     return {
       id: r.id,
       targetType: r.targetType,
@@ -198,7 +222,11 @@ const approveBlockersOf = async (ctx: QueryContext | CommandContext, r: ReviewRo
   if (r.status !== 'pending') out.push({ field: 'status', code: 'DECIDED', message: 'This review was already decided.' });
   if (c.currentVersionId !== r.targetId) out.push({ field: 'versionId', code: 'STALE', message: 'A newer version was submitted; this review no longer decides the latest version.' });
   if (openBlocking > 0) out.push({ field: 'comments', code: 'OPEN_BLOCKERS', message: `Resolve ${openBlocking} blocking comment${openBlocking === 1 ? '' : 's'} before approving.` });
+  const [p] = await dbOf(ctx).select({ reviewPolicy: projects.reviewPolicy }).from(projects).where(eq(projects.id, c.projectId));
   if (!allowed(ctx, 'content.approve', contentScope(c))) out.push({ field: 'permission', code: 'FORBIDDEN', message: 'You do not have approval rights for this content.' });
+  else if (!onEligibleList(ctx, p?.reviewPolicy)) out.push({ field: 'permission', code: 'NOT_ELIGIBLE', message: NOT_ELIGIBLE_MESSAGE });
+  else if (ctx.actor.membershipId && (await earlierStepApprovers(dbOf(ctx), r)).includes(ctx.actor.membershipId))
+    out.push({ field: 'step', code: 'EARLIER_STEP', message: EARLIER_STEP_MESSAGE });
   else if (r.authorMembershipId && r.authorMembershipId === ctx.actor.membershipId)
     out.push({
       field: 'selfReview',
@@ -229,6 +257,7 @@ export const getReview = async (ctx: QueryContext | CommandContext, reviewId: st
   const scope = contentScope(c);
   const canApprove = allowed(ctx, 'content.approve', scope);
   const blockers = await approveBlockersOf(ctx, r, c, openBlocking);
+  const canDecide = canApprove && !blockers.some((b) => b.code === 'NOT_ELIGIBLE');
   const self = r.authorMembershipId === ctx.actor.membershipId;
   const v = version;
   const exceptionAvailable = r.policySnapshot.allowSelfReview || ctx.actor.access.isOwner;
@@ -257,11 +286,11 @@ export const getReview = async (ctx: QueryContext | CommandContext, reviewId: st
     rowVersion: r.rowVersion,
     permissions: {
       approve: blockers.every((b) => b.code === 'SELF_REVIEW' && exceptionAvailable),
-      requestChanges: r.status === 'pending' && canApprove && c.currentVersionId === r.targetId,
+      requestChanges: r.status === 'pending' && canDecide && c.currentVersionId === r.targetId,
       revoke: r.status === 'approved' && canApprove && !!(await isRevocable(ctx, r)),
       assign: r.status === 'pending' && (canApprove || allowed(ctx, 'content.edit', scope)),
       comment: !c.archivedAt,
-      selfReviewException: r.status === 'pending' && canApprove && self && exceptionAvailable,
+      selfReviewException: r.status === 'pending' && canDecide && self && exceptionAvailable,
       download: hasAnywhere(ctx.actor.access, 'assets.download'),
     },
   };
@@ -290,9 +319,11 @@ const beginDecision = async (ctx: CommandContext, reviewId: string, versionId: s
     });
   }
   if (c.currentVersionId !== r.targetId) throw new AppError('INVALID_STATE', 'A newer version was submitted; this review no longer decides the latest version.');
+  const [p] = await ctx.tx.select().from(projects).where(eq(projects.id, c.projectId));
+  if (!onEligibleList(ctx, reviewPolicyOfProject(p!))) throw new AppError('FORBIDDEN', NOT_ELIGIBLE_MESSAGE);
   const [v] = await ctx.tx.select().from(contentVersions).where(eq(contentVersions.id, r.targetId)).for('update');
   if (!v) throw notFound('Version');
-  return { r, c, v };
+  return { r, c, v, p: p! };
 };
 
 const recipientsOf = (c: ContentRow, r: ReviewRow) => [...new Set([c.ownerMembershipId, r.authorMembershipId].filter((x): x is string => !!x))];
@@ -305,11 +336,8 @@ const recipientsOf = (c: ContentRow, r: ReviewRow) => [...new Set([c.ownerMember
  * approval opens the Release Approval step.
  */
 export const approveReview = async (ctx: CommandContext, reviewId: string, input: { versionId: string; decisionNote?: string; selfReviewException?: { reason: string } }) => {
-  const { r, c, v } = await beginDecision(ctx, reviewId, input.versionId);
-  const [p] = await ctx.tx.select().from(projects).where(eq(projects.id, c.projectId));
-  const policy = reviewPolicyOfProject(p!);
-  if (policy.eligibleReviewerMembershipIds?.length && ctx.actor.membershipId && !policy.eligibleReviewerMembershipIds.includes(ctx.actor.membershipId) && !ctx.actor.access.isOwner)
-    throw new AppError('FORBIDDEN', 'You are not on the project’s list of eligible reviewers.');
+  const { r, c, v, p } = await beginDecision(ctx, reviewId, input.versionId);
+  if (ctx.actor.membershipId && (await earlierStepApprovers(ctx.tx, r)).includes(ctx.actor.membershipId)) throw new AppError('FORBIDDEN', EARLIER_STEP_MESSAGE, { details: { earlierStep: true } });
   const self = selfReviewOutcome({
     actorMembershipId: ctx.actor.membershipId,
     authorMembershipId: r.authorMembershipId,
@@ -366,7 +394,7 @@ export const approveReview = async (ctx: CommandContext, reviewId: string, input
     await emit(ctx, { type: 'review.created', entityType: 'review', entityId: nextReviewId, revision: 1, payload: { contentId: c.id, step: nextStep } });
     await notify(ctx.tx, {
       workspaceId: c.workspaceId,
-      recipientMembershipIds: [nextReviewer ?? p!.ownerMembershipId],
+      recipientMembershipIds: [nextReviewer ?? p.ownerMembershipId],
       eventType: 'review.requested',
       eventKey: `review.requested:${nextReviewId}`,
       kind: 'review_request',
@@ -582,6 +610,8 @@ export const assignReviewReviewer = async (ctx: CommandContext, reviewId: string
   await assertEligibleReviewer(ctx, c, input.reviewerMembershipId);
   if (input.reviewerMembershipId === r.authorMembershipId && !r.policySnapshot.allowSelfReview)
     throw fieldError('reviewerMembershipId', 'SELF_REVIEW', 'The author of the version cannot review it.');
+  if ((await earlierStepApprovers(ctx.tx, r)).includes(input.reviewerMembershipId))
+    throw fieldError('reviewerMembershipId', 'EARLIER_STEP', 'This member approved an earlier step of the review. Choose another reviewer.');
   if (input.reviewerMembershipId === r.reviewerMembershipId) return r.id;
   await ctx.tx.update(reviews).set({ reviewerMembershipId: input.reviewerMembershipId, ...touch(ctx, reviews) }).where(eq(reviews.id, r.id));
   await audit(ctx, { action: 'review.reviewer_assigned', entityType: 'content_item', entityId: c.id, projectId: c.projectId, metadata: { reviewId: r.id, from: r.reviewerMembershipId, to: input.reviewerMembershipId } });
