@@ -23,7 +23,7 @@ import { emit } from '../core/events';
 import { enqueueJob } from '../core/jobs';
 import { isActiveMember, loadMemberRefs } from '../core/members';
 import { notify } from '../core/notify';
-import { RESPONSIBILITY_PROVIDERS, type ResponsibilityItem, type ResponsibilityResolution } from '../core/responsibility-registry';
+import { RESPONSIBILITY_PROVIDERS, inTransferOrder, type ResponsibilityItem, type ResponsibilityResolution } from '../core/responsibility-registry';
 import { assertVersion, touch } from '../core/rows';
 import { validateGrants } from '../identity/grants';
 import { revokeUserSessions } from '../identity/sessions';
@@ -206,7 +206,7 @@ export const deactivationPreview = async (ctx: QueryContext, membershipId: strin
 const runTransfers = async (ctx: CommandContext, m: MembershipRow, groups: OpenWorkGroup[], resolutions: Resolution[], includeUnresolved: boolean) => {
   const byKey = new Map(resolutions.map((r) => [`${r.kind}:${r.entityId}`, r]));
   let transferred = 0;
-  for (const g of groups) {
+  for (const g of inTransferOrder(groups)) {
     const provider = RESPONSIBILITY_PROVIDERS.get(g.kind);
     if (!provider) continue;
     const list: ResponsibilityResolution[] = [];
