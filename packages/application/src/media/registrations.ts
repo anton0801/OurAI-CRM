@@ -8,7 +8,7 @@ import { defineExportDataset } from '../core/export-registry';
 import { defineLookup, likePattern } from '../core/lookup-registry';
 import { loadMemberRefs } from '../core/members';
 import { archiveAsset, assetArchivePreview, assetListWhere, restoreAsset, type AssetListFilter } from './assets';
-import { archiveFolder, folderArchivePreview, folderVisibility, restoreFolder } from './folders';
+import { archiveFolder, folderArchivePreview, folderRestorePreview, folderVisibility, restoreFolder } from './folders';
 
 // ——— Pickers ———
 
@@ -103,12 +103,9 @@ defineArchiveHandler({
   archive: async (ctx, id, input) => {
     await archiveFolder(ctx, id, { reason: input.reason }, { skipVersion: true });
   },
-  restorePreview: async (ctx, id) => {
-    const p = await folderArchivePreview(ctx, id);
-    return { title: p.title, items: [] };
-  },
-  restore: async (ctx, id) => {
-    await restoreFolder(ctx, id, { skipVersion: true });
+  restorePreview: folderRestorePreview,
+  restore: async (ctx, id, input) => {
+    await restoreFolder(ctx, id, { skipVersion: true, name: input.resolutions?.name });
   },
 });
 

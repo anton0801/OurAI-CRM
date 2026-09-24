@@ -1,7 +1,7 @@
 import { and, asc, count, eq, gt, inArray, isNull, ne, or } from 'drizzle-orm';
 import { can, hasAnywhere } from '@castlane/authorization';
 import { directions, memberships, projects, roleAssignments, roles } from '@castlane/database';
-import { AppError, notFound } from '@castlane/domain';
+import { AppError, LIMITS, normalizeKey, notFound } from '@castlane/domain';
 import { allowed, loadAccessSnapshot, requirePermission, requireRecentAuth, scopePredicate, whereAll } from '../core/access';
 import { defineArchiveHandler } from '../core/archive-registry';
 import { audit } from '../core/audit';
@@ -230,19 +230,47 @@ export const assignDirectionLead = async (
   return d.id;
 };
 
-const restoreCore = async (ctx: CommandContext, d: DirectionDb) => {
-  if (d.status !== 'archived') throw new AppError('INVALID_STATE', 'This direction is not archived.');
-  const [dup] = await ctx.tx
+/** Another active direction already uses this name (the unique index covers active directions only). */
+const activeNameTaken = async (ctx: QueryContext | CommandContext, nameKey: string, exceptId: string) => {
+  const [dup] = await dbOf(ctx)
     .select({ id: directions.id })
     .from(directions)
-    .where(and(eq(directions.workspaceId, ctx.actor.workspaceId), eq(directions.nameKey, d.nameKey), eq(directions.status, 'active'), ne(directions.id, d.id)));
-  if (dup) throw new AppError('DUPLICATE', 'An active direction with the same name exists. Rename one of them first.');
+    .where(and(eq(directions.workspaceId, ctx.actor.workspaceId), eq(directions.nameKey, nameKey), eq(directions.status, 'active'), ne(directions.id, exceptId)));
+  return !!dup;
+};
+
+/** First free “<name> (restored)”, “<name> (restored 2)”, … offered when a restore collides (T155). */
+const restoredNameSuggestion = async (ctx: QueryContext | CommandContext, d: DirectionDb) => {
+  for (let n = 1; n <= 50; n++) {
+    const suffix = n === 1 ? ' (restored)' : ` (restored ${n})`;
+    const candidate = `${d.name.slice(0, LIMITS.shortNameMax - suffix.length)}${suffix}`;
+    if (!(await activeNameTaken(ctx, normalizeKey(candidate), d.id))) return candidate;
+  }
+  return null;
+};
+
+/**
+ * Restore an archived direction. When an active direction now uses its name, the restore needs an
+ * explicit new name (T155) — it is refused otherwise, never skipped or merged.
+ */
+const restoreCore = async (ctx: CommandContext, d: DirectionDb, opts: { name?: string } = {}) => {
+  if (d.status !== 'archived') throw new AppError('INVALID_STATE', 'This direction is not archived.');
+  const name = opts.name === undefined ? d.name : opts.name.trim();
+  if (name.length < LIMITS.shortNameMin || name.length > LIMITS.shortNameMax)
+    throw new AppError('VALIDATION_FAILED', 'Enter a name for the restored direction.', { fieldErrors: [{ field: 'name', code: 'LENGTH', message: `Use ${LIMITS.shortNameMin}–${LIMITS.shortNameMax} characters.` }] });
+  if (await activeNameTaken(ctx, normalizeKey(name), d.id)) {
+    const message =
+      opts.name === undefined
+        ? 'An active direction with the same name exists. Restore it with a new name from Archive / Trash, or rename the active direction first.'
+        : 'An active direction already uses this name. Choose another name.';
+    throw new AppError('DUPLICATE', message, { fieldErrors: [{ field: 'name', code: 'DUPLICATE', message }] });
+  }
   const [row] = await ctx.tx
     .update(directions)
-    .set({ status: 'active', archivedAt: null, archivedBy: null, archiveReason: null, ...touch(ctx, directions) })
+    .set({ status: 'active', name, nameKey: normalizeKey(name), archivedAt: null, archivedBy: null, archiveReason: null, ...touch(ctx, directions) })
     .where(eq(directions.id, d.id))
     .returning();
-  await audit(ctx, { action: 'direction.restored', entityType: 'direction', entityId: d.id });
+  await audit(ctx, { action: 'direction.restored', entityType: 'direction', entityId: d.id, diff: name !== d.name ? { name: { from: d.name, to: name } } : undefined });
   await emit(ctx, { type: 'direction.restored', entityType: 'direction', entityId: d.id, revision: row!.rowVersion });
   await indexDirection(ctx, row!);
 };
@@ -299,21 +327,29 @@ defineArchiveHandler({
     const d = await lockById(ctx, directions, id, 'Direction');
     await archiveDirection({ ...ctx, request: { ...ctx.request, expectedVersion: ctx.request.expectedVersion ?? d.rowVersion } }, id, input.reason);
   },
+  // A name taken by an active direction is a collision the restore must resolve explicitly (T155).
   async restorePreview(ctx, id) {
     requirePermission(ctx, 'directions.manage');
     const d = await loadDirection(ctx, id);
-    const [dup] = await dbOf(ctx)
-      .select({ id: directions.id })
-      .from(directions)
-      .where(and(eq(directions.workspaceId, ctx.actor.workspaceId), eq(directions.nameKey, d.nameKey), eq(directions.status, 'active'), ne(directions.id, d.id)));
+    if (d.status !== 'archived') throw new AppError('INVALID_STATE', 'This direction is not archived.');
+    if (!(await activeNameTaken(ctx, d.nameKey, d.id))) return { title: d.name, items: [], collisions: [] };
+    const suggestion = await restoredNameSuggestion(ctx, d);
     return {
       title: d.name,
-      items: dup ? [{ kind: 'name_conflict', label: 'An active direction has the same name', count: 1, blocking: true, resolution: 'Rename one of the directions first.' }] : [],
+      items: [],
+      collisions: [
+        {
+          field: 'name',
+          value: d.name,
+          message: 'Another active direction uses this name. Choose a new name for the restored direction.',
+          options: suggestion ? [{ value: suggestion, label: `Rename to “${suggestion}”` }] : [],
+        },
+      ],
     };
   },
-  async restore(ctx, id) {
+  async restore(ctx, id, input) {
     requirePermission(ctx, 'directions.manage');
     const d = await lockById(ctx, directions, id, 'Direction');
-    await restoreCore(ctx, d);
+    await restoreCore(ctx, d, { name: input.resolutions?.name });
   },
 });
