@@ -102,6 +102,7 @@ export const defineInsightMetric = <R extends BaseRec>(d: InsightMetric<R>) => {
     higherIsBetter: d.higherIsBetter,
     measuresChange: d.measuresChange,
     permission: d.permission,
+    requires: d.requires,
     dimensions: d.dimensions.map(toCoreDimension),
     grains: d.grains,
     definitionVersion: d.definitionVersion ?? 1,

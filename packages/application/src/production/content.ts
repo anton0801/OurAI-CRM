@@ -749,14 +749,20 @@ export const updateContent = async (ctx: CommandContext, id: string, input: Cont
   return id;
 };
 
-/** WIP warnings for a stage (a warning, never a hard stop — the card is never lost). */
-const wipWarnings = async (ctx: CommandContext, stage: ContentStage, projectId: string) => {
+/**
+ * WIP warnings for a stage (a warning, never a hard stop — the card is never lost). The limits are
+ * workspace settings; the count is the content the actor can read, like the board's column count, so
+ * the warning never reveals how much out-of-scope content exists (T159).
+ */
+const wipWarnings = async (ctx: CommandContext, stage: ContentStage) => {
   const limits = await wipLimitsOf(ctx);
   const limit = limits[stage];
   if (!limit) return [];
-  const [n] = await ctx.tx.select({ n: count() }).from(contentItems).where(and(eq(contentItems.workspaceId, ctx.actor.workspaceId), eq(contentItems.stage, stage), isNull(contentItems.archivedAt), isNull(contentItems.deletedAt)));
+  const [n] = await ctx.tx
+    .select({ n: count() })
+    .from(contentItems)
+    .where(and(eq(contentItems.workspaceId, ctx.actor.workspaceId), eq(contentItems.stage, stage), isNull(contentItems.archivedAt), isNull(contentItems.deletedAt), contentVisibility(ctx)));
   const total = Number(n?.n ?? 0);
-  void projectId;
   return total > limit ? [`Work in progress in ${stageLabel(stage)} is above the limit (${total} / ${limit}).`] : [];
 };
 
@@ -799,7 +805,7 @@ export const transitionContent = async (ctx: CommandContext, id: string, input: 
   });
   await emit(ctx, { type: 'content_item.stage_changed', entityType: 'content_item', entityId: id, revision: row!.rowVersion, payload: { from: c.stage, to: input.targetStage } });
   await indexContent(ctx, row!);
-  return { id, warnings: await wipWarnings(ctx, input.targetStage, c.projectId) };
+  return { id, warnings: await wipWarnings(ctx, input.targetStage) };
 };
 
 /** Blocked / Paused: independent flags with reason, actor, start and end (the stage does not change). */

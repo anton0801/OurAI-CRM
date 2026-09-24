@@ -22,10 +22,12 @@ import type { NeedsAttentionItem, OverviewKpi, OverviewResponse } from '@castlan
 import { requireAnyPermission, scopePredicate, whereAll } from '../core/access';
 import { all, dbOf, type QueryContext } from '../core/context';
 import { loadMemberRefs, refOrUnknown } from '../core/members';
-import { METRIC_DEFINITIONS, evaluateMetric, type MetricFilters } from '../core/metric-registry';
+import { METRIC_DEFINITIONS, canUseMetricDefinition, evaluateMetric, type MetricFilters } from '../core/metric-registry';
 import { listBudgets } from '../finance/budgets';
 import { financeOverview } from '../finance/overview';
 import { accountLabelOf } from '../automation/records';
+import { visibleReviewPredicate } from '../production/reviews';
+import { publicationVisibility } from '../publishing/scope';
 
 /**
  * Overview S08 (§17, §25.4, F03). Every number is computed inside the member's scope before
@@ -88,7 +90,7 @@ const grainFor = (p: Period): 'day' | 'week' | 'month' => {
 const permittedMetric = (ctx: QueryContext, id: string) => {
   const d = METRIC_DEFINITIONS.get(id);
   if (!d) return { def: null, permitted: true };
-  return { def: d, permitted: hasAnywhere(ctx.actor.access, d.permission) };
+  return { def: d, permitted: canUseMetricDefinition(ctx, d) };
 };
 
 const safeEvaluate = async (ctx: QueryContext, id: string, q: Parameters<typeof evaluateMetric>[2]) => {
@@ -174,6 +176,8 @@ export const getOverview = async (ctx: QueryContext, input: OverviewInput): Prom
   const projectScope = scopePredicate(ctx, 'projects.read', { projectId: projects.id, ownerMembership: projects.ownerMembershipId });
   const taskScope = scopePredicate(ctx, 'tasks.read', { projectId: tasks.projectId, accountId: tasks.accountId, assigned: [tasks.assigneeMembershipId, tasks.reviewerMembershipId] });
   const accountScope = scopePredicate(ctx, 'accounts.read', { projectId: socialAccounts.projectId, accountId: socialAccounts.id });
+  // Reviews as the Review Queue shows them: content reviews in content scope, profile reviews through characters.read.
+  const canReadReviews = canRead('content.read') || canRead('characters.read');
 
   // Setup checklist (T169): counts in the member's scope, ignoring filters.
   const [[pc], [ac], [tc]] = await all(ctx, [
@@ -193,7 +197,7 @@ export const getOverview = async (ctx: QueryContext, input: OverviewInput): Prom
     asOf: now.toISOString(),
     filters: { direction: directionRef, project: projectRef },
     setup: { empty, steps },
-    permissions: { createProject: canRead('projects.create'), exportView: canRead('exports.create'), reviewQueue: canRead('content.read') },
+    permissions: { createProject: canRead('projects.create'), exportView: canRead('exports.create'), reviewQueue: canReadReviews },
   };
   if (empty)
     return {
@@ -211,12 +215,11 @@ export const getOverview = async (ctx: QueryContext, input: OverviewInput): Prom
   if (published) kpis.push(published);
   const onTime = await metricKpi(ctx, 'on_time_rate', 'M07', 'On-Time Rate', 'Done tasks completed by their baseline deadline, of all tasks with a baseline in the period.', period, filters, wsPath(`/tasks${qs({ includeClosed: '1', projectId: input.projectId })}`));
   if (onTime) kpis.push(onTime);
-  if (canRead('content.read')) {
-    const reviewScope = scopePredicate(ctx, 'content.read', { projectId: reviews.projectId, assigned: [reviews.reviewerMembershipId, reviews.authorMembershipId] });
+  if (canReadReviews) {
     const [r] = await db
       .select({ n: count() })
       .from(reviews)
-      .where(and(eq(reviews.workspaceId, ws), eq(reviews.status, 'pending'), reviewScope, projectFilter(sql`${reviews.projectId}`, f)));
+      .where(and(eq(reviews.workspaceId, ws), eq(reviews.status, 'pending'), visibleReviewPredicate(ctx), projectFilter(sql`${reviews.projectId}`, f)));
     kpis.push({
       key: 'pending_reviews',
       label: 'Pending Reviews',
@@ -303,13 +306,13 @@ export const getOverview = async (ctx: QueryContext, input: OverviewInput): Prom
     );
   }
 
-  if (canRead('content.read')) {
+  if (canReadReviews) {
     const waitBefore = new Date(now.getTime() - REVIEW_WAIT_HOURS * 3_600_000);
     const where = and(
       eq(reviews.workspaceId, ws),
       eq(reviews.status, 'pending'),
       or(lt(reviews.submittedAt, waitBefore), lt(reviews.dueAt, now)),
-      scopePredicate(ctx, 'content.read', { projectId: reviews.projectId, assigned: [reviews.reviewerMembershipId, reviews.authorMembershipId] }),
+      visibleReviewPredicate(ctx),
       projectFilter(sql`${reviews.projectId}`, f),
     );
     const [[n], rows] = await all(ctx, [() => db.select({ n: count() }).from(reviews).where(where), () => db.select().from(reviews).where(where).orderBy(asc(reviews.submittedAt)).limit(ITEMS_PER_KIND)] as const);
@@ -480,12 +483,11 @@ export const getOverview = async (ctx: QueryContext, input: OverviewInput): Prom
         .limit(PROJECT_ROWS),
   ] as const);
   const pids = prows.map((r) => r.p.id);
+  // Per-project counts are narrowed like every other number: tasks by tasks.read, publications by publications.read.
+  const projectOpenTasks = and(eq(tasks.workspaceId, ws), inArray(tasks.projectId, pids), inArray(tasks.status, [...OPEN_TASK_STATUSES]), isNull(tasks.deletedAt), isNull(tasks.archivedAt), taskScope);
   const [openRows, overdueRows, milestoneRows, lastPubRows, ownerRefs] = await all(ctx, [
-    () => (pids.length ? db.select({ id: tasks.projectId, n: count() }).from(tasks).where(and(eq(tasks.workspaceId, ws), inArray(tasks.projectId, pids), inArray(tasks.status, [...OPEN_TASK_STATUSES]), isNull(tasks.deletedAt), isNull(tasks.archivedAt))).groupBy(tasks.projectId) : Promise.resolve([])),
-    () =>
-      pids.length
-        ? db.select({ id: tasks.projectId, n: count() }).from(tasks).where(and(eq(tasks.workspaceId, ws), inArray(tasks.projectId, pids), inArray(tasks.status, [...OPEN_TASK_STATUSES]), isNull(tasks.deletedAt), isNull(tasks.archivedAt), lt(tasks.dueAt, now))).groupBy(tasks.projectId)
-        : Promise.resolve([]),
+    () => (pids.length ? db.select({ id: tasks.projectId, n: count() }).from(tasks).where(projectOpenTasks).groupBy(tasks.projectId) : Promise.resolve([])),
+    () => (pids.length ? db.select({ id: tasks.projectId, n: count() }).from(tasks).where(and(projectOpenTasks, lt(tasks.dueAt, now))).groupBy(tasks.projectId) : Promise.resolve([])),
     () =>
       pids.length
         ? db
@@ -496,7 +498,11 @@ export const getOverview = async (ctx: QueryContext, input: OverviewInput): Prom
         : Promise.resolve([]),
     () =>
       pids.length
-        ? db.select({ id: publications.projectId, last: max(publications.actualPublishedAt) }).from(publications).where(and(eq(publications.workspaceId, ws), inArray(publications.projectId, pids), eq(publications.status, 'published'))).groupBy(publications.projectId)
+        ? db
+            .select({ id: publications.projectId, last: max(publications.actualPublishedAt) })
+            .from(publications)
+            .where(and(eq(publications.workspaceId, ws), inArray(publications.projectId, pids), eq(publications.status, 'published'), isNull(publications.deletedAt), publicationVisibility(ctx)))
+            .groupBy(publications.projectId)
         : Promise.resolve([]),
     () => loadMemberRefs(db, ws, prows.map((r) => r.p.ownerMembershipId)),
   ] as const);

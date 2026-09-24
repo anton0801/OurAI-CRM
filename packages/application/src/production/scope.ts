@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql, type SQL } from 'drizzle-orm';
 import { listFilter, type ObjectScope } from '@castlane/authorization';
 import { contentItems, projects, publications, type DbOrTx } from '@castlane/database';
 import { AppError, forbidden, notFound } from '@castlane/domain';
@@ -23,23 +23,27 @@ export const contentScope = (c: ContentScopeFields): ObjectScope => ({
   createdByUserId: c.createdBy,
 });
 
-const accountsOfPlacements = async (db: DbOrTx, workspaceId: string, contentId: string) => {
+/**
+ * Placements that carry content access to account-scoped members: live ones only. A trashed or
+ * cancelled placement no longer grants anything (it stays visible as publication history).
+ */
+const liveAccountsOfPlacements = async (db: DbOrTx, workspaceId: string, contentId: string) => {
   const rows = await db
     .selectDistinct({ accountId: publications.accountId })
     .from(publications)
-    .where(and(eq(publications.workspaceId, workspaceId), eq(publications.contentItemId, contentId)));
+    .where(and(eq(publications.workspaceId, workspaceId), eq(publications.contentItemId, contentId), isNull(publications.deletedAt), ne(publications.status, 'cancelled')));
   return rows.map((r) => r.accountId);
 };
 
 /**
  * Can the actor use `permission` on this content? Account-scoped members (e.g. publishers) also
- * reach content through its placements on their accounts (approved files for publishing).
+ * reach content through its live placements on their accounts (approved files for publishing).
  */
 export const canOnContent = async (ctx: QueryContext | CommandContext, permission: string, c: ContentScopeFields): Promise<boolean> => {
   if (allowed(ctx, permission, contentScope(c))) return true;
   const f = listFilter(ctx.actor.access, permission);
   if (f.kind !== 'scoped' || f.accountIds.length === 0) return false;
-  const accounts = await accountsOfPlacements(dbOf(ctx), ctx.actor.workspaceId, c.id);
+  const accounts = await liveAccountsOfPlacements(dbOf(ctx), ctx.actor.workspaceId, c.id);
   return accounts.some((a) => allowed(ctx, permission, { ...contentScope(c), accountId: a, projectId: null }));
 };
 
@@ -59,7 +63,7 @@ export const authorizeContentAction = async (ctx: QueryContext | CommandContext,
 
 /**
  * SQL visibility of content for a permission (applied before pagination and aggregation):
- * project / account / assigned-object / own-record scopes plus placements on readable accounts.
+ * project / account / assigned-object / own-record scopes plus live placements on readable accounts.
  */
 export const contentVisibility = (ctx: QueryContext, permission = 'content.read'): SQL | undefined => {
   const f = listFilter(ctx.actor.access, permission);
@@ -73,7 +77,7 @@ export const contentVisibility = (ctx: QueryContext, permission = 'content.read'
   if (f.kind === 'scoped' && f.accountIds.length)
     return or(
       base,
-      sql`EXISTS (SELECT 1 FROM publications p WHERE p.workspace_id = ${contentItems.workspaceId} AND p.content_item_id = ${contentItems.id} AND p.account_id IN (${sql.join(
+      sql`EXISTS (SELECT 1 FROM publications p WHERE p.workspace_id = ${contentItems.workspaceId} AND p.content_item_id = ${contentItems.id} AND p.deleted_at IS NULL AND p.status <> 'cancelled' AND p.account_id IN (${sql.join(
         f.accountIds.map((a) => sql`${a}::uuid`),
         sql`, `,
       )}))`,

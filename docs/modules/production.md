@@ -29,7 +29,8 @@ Pipeline and editor:
 - The reviewer must hold `content.approve` in the project and cannot be the owner unless the project policy allows
   self-review. The format can change only in Idea/Brief/Ready and only while no version was submitted.
 - Blocked and Paused are separate flags with reason and history (`content_flag_intervals`). They do not change the stage.
-- WIP limits live in `workspaces.settings.contentWipLimits` (needs `workspace.update`); going over only returns a warning.
+- WIP limits live in `workspaces.settings.contentWipLimits` (needs `workspace.update`); they are workspace-wide, there is no
+  per-project limit. Going over only returns a warning, counted over the content the member can read (as on the board).
 - `applyContentTemplate` creates the template's tasks once per content + template version (`contentApplicationKey`; the
   preview token must match). Started or done tasks are kept; only not-started tasks picked in the preview are cancelled.
 
@@ -46,14 +47,15 @@ Versions and submit:
 
 Reviews (queue S25, studio S26):
 - Who can decide: any member with `content.approve` in the content scope, not only the assigned reviewer. With an
-  eligible-reviewer list on the project, only listed members can approve (workspace Owner exempt); Request Changes does not check
-  the list. The author (submitter) may approve only with an explicit `selfReviewException` reason, and only when the policy
+  eligible-reviewer list on the project, only listed members can approve or request changes (workspace Owner exempt); the queue's
+  `decide` flag and the studio's `approve`/`requestChanges` flags (blocker `NOT_ELIGIBLE`) follow the same rule. The author (submitter) may approve only with an explicit `selfReviewException` reason, and only when the policy
   snapshot allows self-review or the author is the workspace Owner. The exception is audited with `sensitivity: 'security'`.
 - Decisions apply only to the exact `versionId` of the review, while it is still the latest submitted version (review row
   locked, If-Match). Unresolved top-level `blocking` comments on the version block approval.
 - Steps: optional Content Quality, then Release Approval. Approving the first step opens the second and assigns the content
-  reviewer, unless that reviewer is the decider or the author. Only the final step sets `approvedAt`, stage Approved and
-  `approvedVersionId`.
+  reviewer, unless that reviewer is the decider or the author. Two levels mean two people: the member who approved an earlier
+  step of the round can neither approve (blocker `EARLIER_STEP`) nor be assigned to a later step. Only the final step sets
+  `approvedAt`, stage Approved and `approvedVersionId`.
 - Request Changes needs a summary and either an unresolved comment on the version or an explanation (saved as an `issue` comment).
 - Revoke Approval (final-step review only, with a reason) sets `approvalRevokedAt`. If this was the approved version,
   `approvedVersionId` is cleared and Approved → Changes Requested. Published placements get `approvalRevokedAfterPublication` and
@@ -87,7 +89,7 @@ Slots: contributes `ACCOUNT_TABS` Content, `CHARACTER_PANELS` "Content using thi
 tab }`) in its Publications and Results tabs. Publishing registers `publications` and metrics registers `results`; with no visible
 panel, the tab shows an empty state.
 
-Known limits: WIP limits are counted across the whole workspace, whatever the board filter. Each step takes one approval
-(`requiredApprovals: 1`), and the same member may approve both steps. Nothing is scheduled for content deadlines: overdue is
-computed on read. The queue's `decide` flag and the studio's `approve` flag ignore the eligible-reviewer list; only the command
-enforces it. `listContentPackages` shows only the member's own last 10 packages.
+Known limits: the WIP warning ignores the board filter. Each step takes one approval
+(`requiredApprovals: 1`). The eligible-reviewer list is read from the current project policy, not the review's policy snapshot.
+Nothing is scheduled for content deadlines: overdue is computed on read. `listContentPackages` shows only the member's own last
+10 packages.

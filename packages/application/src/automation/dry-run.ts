@@ -16,7 +16,7 @@ import {
 } from '@castlane/database';
 import { AppError, evaluateAutomationConditions, newId } from '@castlane/domain';
 import type { AutomationDryRunResult, AutomationRuleConfig } from '@castlane/api-contracts';
-import { scopePredicate } from '../core/access';
+import { allowed, scopePredicate } from '../core/access';
 import { mapDbError } from '../core/command';
 import type { CommandContext, QueryContext } from '../core/context';
 import { dealVisibility } from '../partners/scope';
@@ -24,7 +24,7 @@ import { runAutomationActions } from './actions';
 import { triggerDef, type TriggerDefinition } from './catalog';
 import { authorityGaps, describeGaps, rulePrincipal } from './principal';
 import { accountLabelOf, loadAutomationRecord, recordInRuleScope, type RuleScopeLike } from './records';
-import { configOfVersion, ruleAuthScope, staticRuleErrors } from './rules';
+import { configOfVersion, ruleAuthScope, staticRuleErrors, validateRuleDraft } from './rules';
 
 class DryRunRollback extends Error {
   constructor() {
@@ -38,21 +38,37 @@ const readRule = async (ctx: QueryContext, ruleId: string) => {
   return rule;
 };
 
+/** Key-order-independent JSON (JSONB does not keep the key order of the submitted config). */
+const canonicalJson = (v: unknown): string =>
+  JSON.stringify(v, (_k, x: unknown) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) : x));
+
 /**
  * Dry Run (T139): conditions are evaluated purely; action previews run the real use cases as the
  * rule principal inside a transaction that is always rolled back — zero domain mutations, and
  * mail jobs never leave the transaction, so zero mail. No run or effect row is written.
+ *
+ * Any reader of the rule may dry-run its saved version. An unsaved configuration is a draft edit:
+ * it needs automations.edit on the rule, passes the full rule validation, and the requester must
+ * hold every permission it uses in the rule scope — the owner principal never previews for someone
+ * actions they could not configure themselves.
  */
 export const dryRunAutomationRule = async (ctx: QueryContext, ruleId: string, input: { sample: { entityType: string; entityId: string } | null; config?: AutomationRuleConfig }): Promise<AutomationDryRunResult> => {
   const rule = await readRule(ctx, ruleId);
-  let config = input.config;
-  if (!config) {
-    const [v] = rule.currentVersionId ? await ctx.app.db.select().from(automationRuleVersions).where(eq(automationRuleVersions.id, rule.currentVersionId)) : [];
-    if (!v) throw new AppError('INVALID_STATE', 'The rule has no saved version.');
-    config = configOfVersion(v);
+  const [saved] = rule.currentVersionId ? await ctx.app.db.select().from(automationRuleVersions).where(eq(automationRuleVersions.id, rule.currentVersionId)) : [];
+  const savedConfig = saved ? configOfVersion(saved) : null;
+  const config = input.config ?? savedConfig;
+  if (!config) throw new AppError('INVALID_STATE', 'The rule has no saved version.');
+  const unsaved = !!input.config && !(savedConfig && canonicalJson(input.config) === canonicalJson(savedConfig));
+  if (unsaved) {
+    if (!allowed(ctx, 'automations.edit', ruleAuthScope(rule))) throw new AppError('FORBIDDEN', 'Only members who can edit this rule can dry-run unsaved changes. Run the saved version instead.');
+    const v = await validateRuleDraft(ctx, { ownerMembershipId: rule.ownerMembershipId, scopeType: rule.scopeType, scopeId: rule.scopeId, config });
+    if (v.errors.length) throw new AppError('VALIDATION_FAILED', 'Fix the rule before a dry run.', { fieldErrors: v.errors });
+    const own = await authorityGaps(ctx.app.db, ctx.actor.workspaceId, rule, config, ctx.actor.access);
+    if (own.length) throw new AppError('FORBIDDEN', `You lack ${describeGaps(own)} in the rule scope, so you cannot preview a configuration that uses it.`);
+  } else {
+    const check = staticRuleErrors(config);
+    if (check.errors.length) throw new AppError('VALIDATION_FAILED', 'Fix the rule before a dry run.', { fieldErrors: check.errors });
   }
-  const check = staticRuleErrors(config);
-  if (check.errors.length) throw new AppError('VALIDATION_FAILED', 'Fix the rule before a dry run.', { fieldErrors: check.errors });
   const def = triggerDef(config.trigger.event)!;
   const now = ctx.app.clock.now();
   let record = null;
@@ -77,7 +93,7 @@ export const dryRunAutomationRule = async (ctx: QueryContext, ruleId: string, in
     try {
       await ctx.app.db.transaction(async (tx) => {
         const pc: CommandContext = { ...p.ctx, tx, emitted: [] };
-        const results = await runAutomationActions(pc, { rule, config: config!, trigger: def, record, effectBase: `dryrun:${newId()}`, runId: null, zone: ws?.tz ?? 'UTC', now, dryRun: true });
+        const results = await runAutomationActions(pc, { rule, config, trigger: def, record, effectBase: `dryrun:${newId()}`, runId: null, zone: ws?.tz ?? 'UTC', now, dryRun: true });
         actions = results.map((r) => ({ index: r.index, type: r.type, ok: r.ok, preview: r.ok ? `${r.preview}${r.note ? ` ${r.note}` : ''}` : 'Would fail.', error: r.error ?? null }));
         throw new DryRunRollback();
       });

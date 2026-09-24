@@ -184,6 +184,8 @@ describe('Report Builder (S52)', () => {
     const outsider = await memberOf(f, 'contractor');
     await publishBoth(f);
     const report = await analyst.client.call(R.create, { params: f.p, body: { name: 'Daily publishing', config: config() } });
+    // Reports are shared explicitly: recipients must be on the share list.
+    await analyst.client.call(R.share, { params: { ...f.p, reportId: report.id }, body: { sharing: 'shared', memberIds: [lead.membershipId] } }, { ifMatch: report.rowVersion });
     const bad = await analyst.client.attempt(R.scheduleCreate, { params: f.p, body: { reportId: report.id, cadence: 'daily', recipientMembershipIds: [outsider.membershipId], localTime: '08:00', timezone: 'UTC', emailNotify: false } });
     expect(fieldCodes(bad)).toContain('INVALID_RECIPIENT');
     const schedule = await analyst.client.call(R.scheduleCreate, {

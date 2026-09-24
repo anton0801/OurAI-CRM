@@ -224,6 +224,11 @@ export const executeAutomationRun = async (app: AppServices, workspaceId: string
     const [rule] = await c.tx.select().from(automationRules).where(and(eq(automationRules.workspaceId, workspaceId), eq(automationRules.id, run.ruleId))).for('update');
     if (!rule || rule.archivedAt) return finish('skipped', 'RULE_ARCHIVED', 'The rule was archived before this run started.');
     if (rule.state !== 'enabled') return finish('skipped', rule.state === 'disabled' ? 'RULE_DISABLED' : 'RULE_PAUSED', 'The rule is not enabled.');
+    // A run is bound to the version that matched its event (operation and effect keys include it). If another
+    // version was enabled since, the old configuration is not replayed and the new one never matched this
+    // event: the run is skipped (safe side), never executed with a stale or a different configuration.
+    if (rule.enabledVersionId !== run.ruleVersionId)
+      return finish('skipped', 'VERSION_CHANGED', 'Another version of the rule was enabled after this run was queued. The run was not executed.');
     const [version] = await c.tx.select().from(automationRuleVersions).where(eq(automationRuleVersions.id, run.ruleVersionId));
     const def = version ? triggerDef(version.trigger.event) : undefined;
     if (!version || !def) return finish('failed', 'INVALID_RULE', 'The rule version or its trigger is no longer available.');
@@ -601,6 +606,7 @@ export const retryAutomationRun = async (ctx: CommandContext, runId: string, inp
   assertVersion(ctx, run);
   if (run.state !== 'failed' && run.state !== 'dead') throw new AppError('INVALID_STATE', 'Only failed runs can be retried.');
   if (rule.archivedAt || rule.state !== 'enabled') throw new AppError('INVALID_STATE', 'Enable the rule before retrying its runs.');
+  if (rule.enabledVersionId !== run.ruleVersionId) throw new AppError('INVALID_STATE', 'This run belongs to a version of the rule that is no longer enabled, so it cannot be retried.');
   const [row] = await ctx.tx
     .update(automationRuns)
     .set({ state: 'pending', errorCode: null, errorMessage: null, finishedAt: null, startedAt: null, notBefore: null, ...touch(ctx, automationRuns) })

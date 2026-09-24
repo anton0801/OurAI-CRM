@@ -51,7 +51,9 @@ Checkpoints (Metrics Inbox, S49):
 Semantic layer (`semantic/`, M01–M42 + X01–X10):
 - `defineInsightMetric` stores the definition in `INSIGHT_METRICS` and also calls core `defineMetric`, so goals and overview use
   the same formula. A definition has unit, rate, `measuresChange`, family, permission, optional `requires`, dimensions, grains,
-  `additive`, `zeroWhenEmpty`, `load` (scope applied in SQL before aggregation) and `reduce`.
+  `additive`, `zeroWhenEmpty`, `load` (scope applied in SQL before aggregation) and `reduce`. `requires` is copied into the core
+  definition; core `canUseMetricDefinition` (permission + every `requires`) guards `availableMetrics`, `evaluateMetric`, goals and
+  the overview.
 - Families and permissions: production `analytics.production.read` (M01–M10, X10); accounts `analytics.accounts.read` (X01,
   M11–M13, M22, X05); content `analytics.content.read` (M14–M21, M23); OFM `analytics.ofm.read` (M24–M31, X06, X07; M27/M29
   also need `finance.read`); team `analytics.team.read` (X02–X04, X09, M32); finance `analytics.finance.read` + `finance.read`
@@ -78,20 +80,21 @@ Reports (S52):
 - Sharing (`reports.share`) never widens access: runs, snapshots and the `report_result` export use the viewer's own scope.
   `createReportSnapshot` stores an immutable result, readable only by the member it was generated for.
 - Schedules (`reports.schedule`, job `insights.reportSchedules` every 5 min) make one snapshot per recipient with that
-  recipient's rights; a slot is never duplicated. A schedule pauses when its owner leaves or loses access, or when the report is
+  recipient's rights; a slot is never duplicated. Recipients need `reports.read` and must be able to read the report (its owner
+  or on its share list, `isReportReader`) when scheduled and again at send time; at send time others are skipped and listed in
+  `lastRunResult.skipped`. A schedule pauses when its owner leaves or loses access, or when the report is
   archived.
 - `reportSnapshotPdf` (`exports.download`) renders with pdfkit: title, period, scope, as-of, formulas, coverage and page numbers.
   It draws no charts, and unknown values stay labelled, never zero.
 
 Registries: lookups `metric_definition`, `saved_report`; link access `metric_observation` (evidence files); import
-`metric_observations` (duplicate policy skip / revise_existing / error, per-row `conflict_action`; undo only while untouched);
+`metric_observations` (duplicate policy skip / revise_existing / error, per-row `conflict_action`; undo only while untouched, the
+correction chain counted inside the workspace);
 exports `metric_observations`, `report_result` (private); archive handler `saved_report`; responsibility
 `reports.schedule_owner`; jobs/schedules `insights.checkpoints` (900 s), `insights.reportSchedules` (300 s); metric definitions
 M01–M42, X01–X10. Slots: `ACCOUNT_TABS` Metrics, `MY_WORK_SECTIONS` Metric Checkpoints, `CONTENT_PANELS` Results.
 
 Known limits:
-- `report_snapshots.source_revised` is never written. "Stale" comes only from `reportSourceChangedSince` (a source row's
-  `updated_at` is later than the as-of time).
-- The core registry does not carry `requires`, so callers that check only `permission` (`availableMetrics`, goals) can offer a
-  metric that `computeInsight` then refuses.
-- Schedule recipients need `reports.read`; they do not have to be on the report's share list.
+- `report_snapshots.source_revised` is never written (snapshots stay immutable; flagging them would need every source-changing
+  command to find affected snapshots). "Stale" comes only from `reportSourceChangedSince` (a source row's `updated_at` is later
+  than the as-of time), computed on the snapshot detail; the snapshot list's `sourceRevised` is therefore always false.

@@ -9,7 +9,7 @@ import { audit, diffFields } from '../core/audit';
 import { all, dbOf, type CommandContext, type QueryContext } from '../core/context';
 import { emit } from '../core/events';
 import { isActiveMember, loadMemberRefs, refOrUnknown } from '../core/members';
-import { METRIC_DEFINITIONS, evaluateMetric, type MetricDefinition, type MetricFilters } from '../core/metric-registry';
+import { METRIC_DEFINITIONS, canUseMetricDefinition, evaluateMetric, type MetricDefinition, type MetricFilters } from '../core/metric-registry';
 import { notify } from '../core/notify';
 import { assertVersion, findById, lockById, stamp, touch } from '../core/rows';
 import { accountLabelOf } from '../automation/records';
@@ -126,7 +126,7 @@ export const measureGoal = async (ctx: QueryContext, g: GoalRowDb, zone: string,
   const def = goalMetricDefinition(g.metricKey);
   let metric: MetricValue | null = null;
   let drillDown: Measurement['drillDown'] = null;
-  if (def && hasAnywhere(ctx.actor.access, def.permission)) {
+  if (def && canUseMetricDefinition(ctx, def)) {
     try {
       const period = resolvePeriod('custom', at, zone, { fromDate: g.periodStart, toDate: g.periodEnd });
       const r = await evaluateMetric(ctx, def.id, { period, asOf: at, filters: metricFilters(g) });
@@ -183,7 +183,7 @@ export const toGoalRows = async (ctx: QueryContext | CommandContext, rows: GoalR
         name: g.name,
         owner: refOrUnknown(refs, g.ownerMembershipId)!,
         scope: { type: g.scopeType, id: g.scopeId, label: g.scopeType === 'workspace' ? 'Whole workspace' : (labels.get(g.scopeId ?? '') ?? 'Unavailable record') },
-        metric: { id: g.metricKey, label: def?.label ?? g.metricKey, unit: def?.unit ?? g.unit, available: !!def && hasAnywhere(ctx.actor.access, def.permission), rate: !!def?.rate },
+        metric: { id: g.metricKey, label: def?.label ?? g.metricKey, unit: def?.unit ?? g.unit, available: !!def && canUseMetricDefinition(ctx, def), rate: !!def?.rate },
         targetType: g.targetType,
         targetValue: decimalOrNull(g.targetValue)!,
         unit: g.unit,
@@ -220,6 +220,13 @@ const readGoal = async (ctx: QueryContext | CommandContext, id: string) => {
 
 const canWriteGoal = (ctx: QueryContext, g: GoalRowDb, scopes: ObjectScope[]) =>
   canGoal(ctx, 'goals.write', scopes) || (g.ownerMembershipId === ctx.actor.membershipId && hasAnywhere(ctx.actor.access, 'goals.write'));
+
+/** Write access as every goal command checks it (also used by archive/restore previews): 403 when visible, else 404. */
+export const assertGoalWritable = (ctx: QueryContext, g: GoalRowDb, scopes: ObjectScope[]) => {
+  if (canWriteGoal(ctx, g, scopes)) return;
+  if (canGoal(ctx, 'goals.read', scopes) || g.ownerMembershipId === ctx.actor.membershipId) throw new AppError('FORBIDDEN', 'You cannot change this goal.');
+  throw new AppError('NOT_FOUND', 'Goal was not found.');
+};
 
 export const listGoals = async (
   ctx: QueryContext,
@@ -323,7 +330,7 @@ export const getGoal = async (ctx: QueryContext | CommandContext, id: string): P
 export const goalMetricOptions = (ctx: QueryContext) => {
   requirePermission(ctx, 'goals.read');
   return [...METRIC_DEFINITIONS.values()]
-    .filter((d) => hasAnywhere(ctx.actor.access, d.permission))
+    .filter((d) => canUseMetricDefinition(ctx, d))
     .sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }))
     .map((d) => ({ id: d.id, label: d.label, description: d.description, unit: d.unit, rate: !!d.rate, higherIsBetter: d.higherIsBetter ?? null, measuresChange: !!d.measuresChange }));
 };
@@ -358,7 +365,7 @@ const scopeExists = async (db: DbOrTx, ws: string, t: ScopeType, id: string | nu
 const validateGoal = async (ctx: CommandContext, v: Required<Omit<GoalInput, 'reason' | 'name' | 'linkedCampaignIds' | 'direction' | 'baselineValue' | 'scopeId'>> & Pick<GoalInput, 'baselineValue' | 'scopeId' | 'linkedCampaignIds'>) => {
   const errors: FieldError[] = [];
   const def = goalMetricDefinition(v.metricId);
-  if (!def || !hasAnywhere(ctx.actor.access, def.permission)) errors.push(fe('metricId', 'UNAVAILABLE', 'Choose a metric you can measure.'));
+  if (!def || !canUseMetricDefinition(ctx, def)) errors.push(fe('metricId', 'UNAVAILABLE', 'Choose a metric you can measure.'));
   if (!isDecimalString(v.targetValue)) errors.push(fe('targetValue', 'INVALID', 'Enter a number.'));
   // A change metric already subtracts the start of the period; a baseline would subtract it twice.
   if (def?.measuresChange && v.targetType !== 'absolute')
@@ -456,11 +463,7 @@ export const createGoal = async (ctx: CommandContext, input: GoalInput & { name:
 const lockGoalForWrite = async (ctx: CommandContext, id: string) => {
   const g = await lockById(ctx, goals, id, 'Goal');
   const cp = g.scopeType === 'campaign' && g.scopeId ? ((await campaignProjectsOf(ctx.tx, ctx.actor.workspaceId, [g.scopeId])).get(g.scopeId) ?? []) : [];
-  const scopes = goalScopes(g, cp);
-  if (!canWriteGoal(ctx, g, scopes)) {
-    if (canGoal(ctx, 'goals.read', scopes) || g.ownerMembershipId === ctx.actor.membershipId) throw new AppError('FORBIDDEN', 'You cannot change this goal.');
-    throw new AppError('NOT_FOUND', 'Goal was not found.');
-  }
+  assertGoalWritable(ctx, g, goalScopes(g, cp));
   return g;
 };
 

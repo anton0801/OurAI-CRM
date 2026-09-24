@@ -100,8 +100,14 @@ export const listReportSchedules = async (ctx: QueryContext, input: { reportId?:
   return toScheduleRows(ctx, rows);
 };
 
-/** Recipients must be active members who can open reports; each receives only their own permitted result. */
-const assertRecipients = async (ctx: CommandContext, ids: string[]) => {
+type ScheduledReport = Pick<typeof savedReports.$inferSelect, 'ownerMembershipId' | 'sharing' | 'sharedWithMembershipIds'>;
+
+/**
+ * Recipients must be active members who can open reports and can read this report (its owner or on its
+ * share list — reports are shared explicitly); each receives only their own permitted result.
+ */
+const assertRecipients = async (ctx: CommandContext, ids: string[], report: ScheduledReport) => {
+  const { isReportReader } = await import('./reports');
   const unique = [...new Set(ids)];
   const rows = await ctx.tx
     .select({ id: memberships.id, userId: memberships.userId, status: memberships.status })
@@ -113,6 +119,7 @@ const assertRecipients = async (ctx: CommandContext, ids: string[]) => {
     if (!m || m.status !== 'active') throw fail('Recipients must be active members.');
     const access = await loadAccessSnapshot(ctx.app.db, ctx.actor.workspaceId, m.userId, ctx.app.clock.now());
     if (!access || !hasAnywhere(access, 'reports.read')) throw fail('A recipient cannot open reports. Choose members with report access.');
+    if (!isReportReader(report, id)) throw fail('A recipient is not on the report’s share list. Share the report with them first.');
   }
   return unique;
 };
@@ -132,7 +139,7 @@ export const createReportSchedule = async (
   requirePermission(ctx, 'reports.schedule');
   if (!ctx.actor.membershipId) throw new AppError('FORBIDDEN', 'Only members can schedule reports.');
   const { r, config, validateReportConfig } = await loadScheduledReport(ctx, input.reportId);
-  const recipients = await assertRecipients(ctx, input.recipientMembershipIds);
+  const recipients = await assertRecipients(ctx, input.recipientMembershipIds, r);
   validateReportConfig(ctx, config, { shared: recipients.some((x) => x !== ctx.actor.membershipId) });
   const id = newId();
   const nextRunAt = nextScheduleRun(input.cadence, input.localTime, input.timezone, ctx.app.clock.now());
@@ -164,9 +171,10 @@ const lockOwnSchedule = async (ctx: CommandContext, id: string) => {
 
 export const updateReportSchedule = async (ctx: CommandContext, id: string, input: { cadence?: Cadence; recipientMembershipIds?: string[]; localTime?: string; timezone?: string; emailNotify?: boolean }) => {
   const s = await lockOwnSchedule(ctx, id);
-  const recipients = input.recipientMembershipIds ? await assertRecipients(ctx, input.recipientMembershipIds) : s.recipientMembershipIds;
+  let recipients = s.recipientMembershipIds;
   if (input.recipientMembershipIds) {
-    const { config, validateReportConfig } = await loadScheduledReport(ctx, s.reportId);
+    const { r, config, validateReportConfig } = await loadScheduledReport(ctx, s.reportId);
+    recipients = await assertRecipients(ctx, input.recipientMembershipIds, r);
     validateReportConfig(ctx, config, { shared: recipients.some((x) => x !== s.ownerMembershipId) });
   }
   const cadence = input.cadence ?? s.cadence;
@@ -239,7 +247,7 @@ export const deliverReportSchedule = async (app: AppServices, s: ScheduleRow) =>
     await pause(app, s, 'owner_lost_access');
     return { paused: 'owner_lost_access' };
   }
-  const { createReportSnapshot } = await import('./reports');
+  const { canReadReport, createReportSnapshot } = await import('./reports');
   let delivered = 0;
   const skipped: { membershipId: string; reason: string }[] = [];
   for (const recipient of s.recipientMembershipIds) {
@@ -250,6 +258,12 @@ export const deliverReportSchedule = async (app: AppServices, s: ScheduleRow) =>
     }
     if (!hasAnywhere(ctx.actor.access, 'reports.read')) {
       skipped.push({ membershipId: recipient, reason: 'No report access' });
+      continue;
+    }
+    // The share list is read at send time: a member removed from it gets nothing (the snapshot below is
+    // created on the recipient's behalf without the read check of an interactive run).
+    if (!canReadReport(ctx, report)) {
+      skipped.push({ membershipId: recipient, reason: 'Not on the report’s share list' });
       continue;
     }
     const [done] = await app.db

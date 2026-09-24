@@ -197,7 +197,7 @@ const RuleView = ({ rule: r }: { rule: AutomationRuleDetail }) => {
                 rule={r}
                 readOnly={!r.permissions.edit}
                 onDirtyChange={onDirtyChange}
-                onDryRun={r.permissions.dryRun ? (config) => setDryRun({ config }) : undefined}
+                onDryRun={r.permissions.dryRun && r.permissions.edit ? (config) => setDryRun({ config }) : undefined}
               />
             ) : null}
           </TabPanel>

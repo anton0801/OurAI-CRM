@@ -270,7 +270,10 @@ defineImportDataset<ImportNormalized>({
   undo: async (ctx, id) => {
     const [o] = await ctx.tx.select().from(metricObservations).where(and(eq(metricObservations.workspaceId, ctx.actor.workspaceId), eq(metricObservations.id, id))).for('update');
     if (!o) return;
-    const [chain] = await ctx.tx.select({ n: sql<number>`count(*)::int` }).from(metricObservations).where(eq(metricObservations.rootObservationId, o.rootObservationId));
+    const [chain] = await ctx.tx
+      .select({ n: sql<number>`count(*)::int` })
+      .from(metricObservations)
+      .where(and(eq(metricObservations.workspaceId, ctx.actor.workspaceId), eq(metricObservations.rootObservationId, o.rootObservationId)));
     if (o.qualityState === 'pending_correction') {
       // An imported correction that nobody reviewed yet can be withdrawn.
       await ctx.tx.delete(metricValues).where(eq(metricValues.observationId, id));
