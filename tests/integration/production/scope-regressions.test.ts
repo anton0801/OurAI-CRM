@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { accountAssignments, contentVersionAssets, contentVersions, projects, publications } from '@castlane/database';
 import { newId } from '@castlane/domain';
 import { createAccount } from '../../support';
-import { C, R, V, contentInReview, db, getContent, member, newContent, prodFixture, review, setPolicy, uploadPng } from './helpers';
+import { C, R, V, contentInProduction, contentInReview, db, getContent, member, move, newContent, prodFixture, review, setPolicy, uploadPng } from './helpers';
 
 type Client = Awaited<ReturnType<typeof member>>['client'];
 type Fixture = Awaited<ReturnType<typeof prodFixture>>;
@@ -132,5 +132,27 @@ describe('version immutability in the database', () => {
     await db().update(contentVersions).set({ approvedAt: now }).where(eq(contentVersions.id, r.versionId));
     const files = await db().select().from(contentVersionAssets).where(eq(contentVersionAssets.contentVersionId, r.versionId));
     expect(files.map((x) => x.slot)).toEqual(['main_image']);
+  });
+});
+
+describe('WIP limit warnings', () => {
+  it('count only the content the member can read (no out-of-scope count leak)', async () => {
+    const f = await prodFixture();
+    const lead = await member(f, 'project_lead', { projects: [f.projectId] });
+    const otherLead = await member(f, 'project_lead', { projects: [f.otherProjectId] });
+    await f.owner.call(C.setWipLimits, { params: f.params, body: { limits: { production: 1 } } });
+    // One item in Production in a project the lead cannot see.
+    await contentInProduction(f.owner, f, { projectId: f.otherProjectId, ownerMembershipId: otherLead.membershipId, reviewerMembershipId: f.ws.owner.membershipId });
+    const toProduction = async (c: Client) => {
+      const x = await newContent(c, f, { ownerMembershipId: lead.membershipId, reviewerMembershipId: f.ws.owner.membershipId, brief: { summary: 'A calm morning routine.', objective: 'Grow saves' }, noDeadline: true });
+      for (const s of ['brief', 'ready']) expect((await move(c, f, x.id, s)).ok).toBe(true);
+      const r = await move(c, f, x.id, 'production');
+      expect(r.ok).toBe(true);
+      return r.data!.warnings;
+    };
+    expect(await toProduction(lead.client)).toEqual([]);
+    expect(await toProduction(lead.client)).toEqual([expect.stringMatching(/above the limit \(2 \/ 1\)/)]);
+    // The Owner reads the whole workspace.
+    expect(await toProduction(f.owner)).toEqual([expect.stringMatching(/above the limit \(4 \/ 1\)/)]);
   });
 });

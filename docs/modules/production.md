@@ -29,7 +29,8 @@ Pipeline and editor:
 - The reviewer must hold `content.approve` in the project and cannot be the owner unless the project policy allows
   self-review. The format can change only in Idea/Brief/Ready and only while no version was submitted.
 - Blocked and Paused are separate flags with reason and history (`content_flag_intervals`). They do not change the stage.
-- WIP limits live in `workspaces.settings.contentWipLimits` (needs `workspace.update`); going over only returns a warning.
+- WIP limits live in `workspaces.settings.contentWipLimits` (needs `workspace.update`); they are workspace-wide, there is no
+  per-project limit. Going over only returns a warning, counted over the content the member can read (as on the board).
 - `applyContentTemplate` creates the template's tasks once per content + template version (`contentApplicationKey`; the
   preview token must match). Started or done tasks are kept; only not-started tasks picked in the preview are cancelled.
 
@@ -88,7 +89,7 @@ Slots: contributes `ACCOUNT_TABS` Content, `CHARACTER_PANELS` "Content using thi
 tab }`) in its Publications and Results tabs. Publishing registers `publications` and metrics registers `results`; with no visible
 panel, the tab shows an empty state.
 
-Known limits: WIP limits are counted across the whole workspace, whatever the board filter. Each step takes one approval
+Known limits: the WIP warning ignores the board filter. Each step takes one approval
 (`requiredApprovals: 1`). The eligible-reviewer list is read from the current project policy, not the review's policy snapshot.
 Nothing is scheduled for content deadlines: overdue is computed on read. `listContentPackages` shows only the member's own last
 10 packages.
