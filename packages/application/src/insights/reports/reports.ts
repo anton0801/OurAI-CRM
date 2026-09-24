@@ -28,8 +28,11 @@ export const parseReportConfig = (c: SavedReportConfig): ReportConfig => {
 };
 
 /** Owner, or a member the report is shared with — anyone else gets 404 (existence is not revealed). */
-export const canReadReport = (ctx: Ctx, r: Pick<ReportRow, 'ownerMembershipId' | 'sharing' | 'sharedWithMembershipIds'>) =>
-  r.ownerMembershipId === me(ctx) || (r.sharing === 'shared' && r.sharedWithMembershipIds.includes(me(ctx)));
+/** Reports are shared explicitly: the owner and the members on the share list read a report. */
+export const isReportReader = (r: Pick<ReportRow, 'ownerMembershipId' | 'sharing' | 'sharedWithMembershipIds'>, membershipId: string) =>
+  r.ownerMembershipId === membershipId || (r.sharing === 'shared' && r.sharedWithMembershipIds.includes(membershipId));
+
+export const canReadReport = (ctx: Ctx, r: Pick<ReportRow, 'ownerMembershipId' | 'sharing' | 'sharedWithMembershipIds'>) => isReportReader(r, me(ctx));
 
 const canEdit = (ctx: Ctx, r: ReportRow) => r.ownerMembershipId === me(ctx) || ctx.actor.access.isOwner;
 

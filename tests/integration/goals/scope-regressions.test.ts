@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { countValue } from '@castlane/analytics';
 import { goalEndpoints as G } from '@castlane/api-contracts';
-import { defineMetric, getAppServices } from '@castlane/application';
+import { ARCHIVE_HANDLERS, defineMetric, executeCommand, getAppServices, memberJobContext } from '@castlane/application';
 import { DateTime } from '@castlane/domain';
 import { addMember, clientFor, createDirection, createProject, createWorkspace, sessionFor } from '../../support';
 
@@ -65,5 +65,34 @@ describe('goal metrics with sensitive requirements', () => {
     const edit = await lead.attempt(G.update, { params: { ...W, goalId: goal.id }, body: { targetValue: '12' } }, { ifMatch: goal.rowVersion });
     expect(edit.status).toBe(422);
     expect(fieldsOf(edit.error)).toContain('metricId:UNAVAILABLE');
+  });
+});
+
+describe('goal archive preview', () => {
+  it('refuses the goal owner without goals.write, like the archive command', async () => {
+    const ws = await createWorkspace(db());
+    const owner = await clientFor(await sessionFor(db(), ws.owner.userId));
+    const directionId = await createDirection(db(), ws, 'AI Models');
+    const project = await createProject(db(), ws, { directionId, name: 'Emma Model', type: 'model' });
+    const W = { workspaceId: ws.workspaceId };
+    // A viewer (goals.read, no goals.write) who owns the goal.
+    const viewer = await addMember(db(), ws, { roleKey: 'viewer', scopeType: 'workspace' });
+    const today = DateTime.fromJSDate(new Date(), { zone: 'Europe/Berlin' });
+    const goal = await owner.call(G.create, {
+      params: W,
+      body: { name: 'Owned by a viewer', ownerMembershipId: viewer.membershipId, scopeType: 'project', scopeId: project.id, metricId: 'M08', targetType: 'absolute', targetValue: '0', periodStart: today.startOf('month').toISODate()!, periodEnd: today.endOf('month').toISODate()! },
+    });
+    const handler = ARCHIVE_HANDLERS.get('goal')!;
+    const vctx = (await memberJobContext(getAppServices(), ws.workspaceId, viewer.membershipId))!;
+    await expect(handler.preview(vctx, goal.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(executeCommand(vctx, (c) => handler.archive(c, goal.id, { reason: 'Done' } as never))).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(handler.restorePreview!(vctx, goal.id)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    // Someone without any access to the goal gets 404 from the preview.
+    const outsider = await addMember(db(), ws, { roleKey: 'creator', scopeType: 'assigned_projects' });
+    const octx = (await memberJobContext(getAppServices(), ws.workspaceId, outsider.membershipId))!;
+    await expect(handler.preview(octx, goal.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    // The Owner may.
+    const octxOwner = (await memberJobContext(getAppServices(), ws.workspaceId, ws.owner.membershipId))!;
+    expect((await handler.preview(octxOwner, goal.id)).title).toBe('Owned by a viewer');
   });
 });

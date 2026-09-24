@@ -13,7 +13,7 @@ import { defineLookup, likePattern } from '../core/lookup-registry';
 import { notify } from '../core/notify';
 import { defineResponsibilityProvider } from '../core/responsibility-registry';
 import { findById, touch } from '../core/rows';
-import { archiveGoal, canGoal, goalCampaignProjects, goalMetricDefinition, goalScopes, goalVisibilitySql, toGoalRows } from './goals';
+import { archiveGoal, assertGoalWritable, goalCampaignProjects, goalMetricDefinition, goalScopes, goalVisibilitySql, toGoalRows } from './goals';
 
 defineLookup({
   type: 'goal',
@@ -54,9 +54,8 @@ defineArchiveHandler({
   label: 'Goal',
   async preview(ctx, id) {
     const g = await findById(ctx, goals, id, 'Goal');
-    const scopes = await scopesOf(ctx, g);
-    if (!canGoal(ctx, 'goals.read', scopes) && g.ownerMembershipId !== ctx.actor.membershipId) throw new AppError('NOT_FOUND', 'Goal was not found.');
-    if (!canGoal(ctx, 'goals.write', scopes) && g.ownerMembershipId !== ctx.actor.membershipId) throw new AppError('FORBIDDEN', 'You cannot archive this goal.');
+    // The same check as the archive command (an owner still needs goals.write).
+    assertGoalWritable(ctx, g, await scopesOf(ctx, g));
     return {
       title: g.name,
       rowVersion: g.rowVersion,
@@ -68,7 +67,7 @@ defineArchiveHandler({
   },
   restorePreview: async (ctx, id) => {
     const g = await findById(ctx, goals, id, 'Goal');
-    if (!canGoal(ctx, 'goals.write', await scopesOf(ctx, g)) && g.ownerMembershipId !== ctx.actor.membershipId) throw new AppError('NOT_FOUND', 'Goal was not found.');
+    assertGoalWritable(ctx, g, await scopesOf(ctx, g));
     return { title: g.name, items: [] };
   },
   restore: async (ctx, id) => {

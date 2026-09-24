@@ -221,6 +221,13 @@ const readGoal = async (ctx: QueryContext | CommandContext, id: string) => {
 const canWriteGoal = (ctx: QueryContext, g: GoalRowDb, scopes: ObjectScope[]) =>
   canGoal(ctx, 'goals.write', scopes) || (g.ownerMembershipId === ctx.actor.membershipId && hasAnywhere(ctx.actor.access, 'goals.write'));
 
+/** Write access as every goal command checks it (also used by archive/restore previews): 403 when visible, else 404. */
+export const assertGoalWritable = (ctx: QueryContext, g: GoalRowDb, scopes: ObjectScope[]) => {
+  if (canWriteGoal(ctx, g, scopes)) return;
+  if (canGoal(ctx, 'goals.read', scopes) || g.ownerMembershipId === ctx.actor.membershipId) throw new AppError('FORBIDDEN', 'You cannot change this goal.');
+  throw new AppError('NOT_FOUND', 'Goal was not found.');
+};
+
 export const listGoals = async (
   ctx: QueryContext,
   input: { cursor?: string; pageSize?: number; q?: string; status?: GoalRowDb['status'][]; ownerMembershipId?: string; projectId?: string; scopeType?: ScopeType; metricId?: string; includeArchived?: boolean },
@@ -456,11 +463,7 @@ export const createGoal = async (ctx: CommandContext, input: GoalInput & { name:
 const lockGoalForWrite = async (ctx: CommandContext, id: string) => {
   const g = await lockById(ctx, goals, id, 'Goal');
   const cp = g.scopeType === 'campaign' && g.scopeId ? ((await campaignProjectsOf(ctx.tx, ctx.actor.workspaceId, [g.scopeId])).get(g.scopeId) ?? []) : [];
-  const scopes = goalScopes(g, cp);
-  if (!canWriteGoal(ctx, g, scopes)) {
-    if (canGoal(ctx, 'goals.read', scopes) || g.ownerMembershipId === ctx.actor.membershipId) throw new AppError('FORBIDDEN', 'You cannot change this goal.');
-    throw new AppError('NOT_FOUND', 'Goal was not found.');
-  }
+  assertGoalWritable(ctx, g, goalScopes(g, cp));
   return g;
 };
 

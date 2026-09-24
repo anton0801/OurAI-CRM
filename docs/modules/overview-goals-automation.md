@@ -48,7 +48,8 @@ workspace week start.
   history.
 - Exported helpers: `measureGoal`, `goalScopes`, `canGoal`, `goalVisibilitySql`, `goalMetricOptions`, and pure `goalCurrentValue`,
   `goalProgressOf`, `goalCompleteness`.
-- Registries: lookup `goal`; archive handler `goal`; responsibility `goals.owner` (a successor is required and must be able to
+- Registries: lookup `goal`; archive handler `goal` (preview and restore preview check write access exactly like the commands,
+  `assertGoalWritable`: an owner also needs `goals.write`); responsibility `goals.owner` (a successor is required and must be able to
   read the goal scope); export `goals` (evaluated in the requester's scope). Slot: project tab Goals.
 
 ## Automations (S64–S65)
