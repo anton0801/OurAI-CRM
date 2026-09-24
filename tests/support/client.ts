@@ -30,7 +30,9 @@ export class TestClient {
   fetch = async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
     const url = new URL(String(input), ORIGIN);
     const headers = new Headers(init.headers);
-    headers.set('origin', ORIGIN);
+    // Tests may pass their own Origin (foreign-site checks) or 'none' to omit it.
+    if (!headers.has('origin')) headers.set('origin', ORIGIN);
+    else if (headers.get('origin') === 'none') headers.delete('origin');
     headers.set('x-real-ip', '127.0.0.1');
     if (this.cookies.size) headers.set('cookie', [...this.cookies].map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('; '));
     const req = new Request(url, { ...init, headers });
