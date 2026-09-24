@@ -31,12 +31,14 @@ import {
   formatDateTime,
   toast,
 } from '@castlane/ui';
+import { ConflictDialog } from '@/components/common/conflict';
 import { EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { DropZone, UploadList } from '@/components/media/file-uploader';
 import { useUpload } from '@/components/media/use-upload';
 import { api } from '@/lib/api';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useUrlState } from '@/lib/url-state';
@@ -473,13 +475,28 @@ const DraftVersion = ({ content, version }: { content: ContentDetail; version: C
   const [newItem, setNewItem] = useState('');
   const [note, setNote] = useState(version.note ?? '');
   const [fixes, setFixes] = useState(version.fixesClaimed ?? '');
+  const [touched, setTouched] = useState(false);
+  // The notes are edited against the version as it was loaded (T162): a background refresh neither
+  // overwrites the typing nor moves If-Match; untouched notes follow the latest saved version.
+  const notes = useEditBase(version, {
+    clean: !touched,
+    onReload: (x) => {
+      setNote(x.note ?? '');
+      setFixes(x.fixesClaimed ?? '');
+      setTouched(false);
+    },
+  });
+  const notesStart = notes.start ?? version;
   useEffect(() => {
     setNote(version.note ?? '');
     setFixes(version.fixesClaimed ?? '');
+    setTouched(false);
   }, [version.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const saveChecklist = async (items: { label: string; done: boolean; mandatory: boolean }[]) => {
     try {
-      await update.run({ params, body: { checklist: items } }, { ifMatch: version.rowVersion });
+      const saved = await update.run({ params, body: { checklist: items } }, { ifMatch: version.rowVersion });
+      // Our own checklist change directly on top of the notes' base: the notes stay current.
+      if (saved.rowVersion === (notes.version ?? 0) + 1) notes.rebase(saved);
     } catch (e) {
       toast.error(
         isApiError(e)
@@ -627,12 +644,22 @@ const DraftVersion = ({ content, version }: { content: ContentDetail; version: C
         <Panel title="Notes for the reviewer">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <Field label="Version note">
-              <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
+              <Input
+                value={note}
+                onChange={(e) => {
+                  setNote(e.target.value);
+                  setTouched(true);
+                }}
+                maxLength={2000}
+              />
             </Field>
             <Field label="Fixes made">
               <Textarea
                 value={fixes}
-                onChange={(e) => setFixes(e.target.value)}
+                onChange={(e) => {
+                  setFixes(e.target.value);
+                  setTouched(true);
+                }}
                 maxLength={LIMITS.noteMax}
                 className="min-h-[40px]"
               />
@@ -641,21 +668,27 @@ const DraftVersion = ({ content, version }: { content: ContentDetail; version: C
           <div className="mt-3 flex justify-end">
             <Button
               size="sm"
-              disabled={note === (version.note ?? '') && fixes === (version.fixesClaimed ?? '')}
+              disabled={note === (notesStart.note ?? '') && fixes === (notesStart.fixesClaimed ?? '')}
               loading={update.isPending}
-              onClick={() =>
+              onClick={() => {
+                const body = { note: note.trim() || null, fixesClaimed: fixes.trim() || null };
+                const before = { note: notesStart.note?.trim() || null, fixesClaimed: notesStart.fixesClaimed?.trim() || null };
                 void update
-                  .run(
-                    { params, body: { note: note.trim() || null, fixesClaimed: fixes.trim() || null } },
-                    { ifMatch: version.rowVersion },
-                  )
-                  .then(() => toast.success('Notes saved'))
-                  .catch((e) => toast.error(isApiError(e) ? e.message : 'The notes were not saved.'))
-              }
+                  .run({ params, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: notes.version })
+                  .then((saved) => {
+                    notes.rebase(saved);
+                    setTouched(false);
+                    toast.success('Notes saved');
+                  })
+                  .catch((e) => {
+                    if (!notes.catchConflict(e)) toast.error(isApiError(e) ? e.message : 'The notes were not saved.');
+                  });
+              }}
             >
               Save Notes
             </Button>
           </div>
+          <ConflictDialog {...notes.conflictDialog} />
         </Panel>
       ) : null}
       <div className="flex flex-col gap-2 rounded-[12px] border border-line bg-surface p-4">

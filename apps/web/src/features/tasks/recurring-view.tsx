@@ -27,10 +27,12 @@ import {
   formatDateTime,
   type Column,
 } from '@castlane/ui';
+import { ConflictDialog } from '@/components/common/conflict';
 import { EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { useDebounced } from '@/components/common/use-debounced';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useCan, useWorkspace } from '@/lib/workspace-context';
@@ -154,6 +156,16 @@ const RuleDrawer = ({ open, onOpenChange, rule, projectId }: { open: boolean; on
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+  // The rule as the drawer opened (T162): If-Match stays on that version while live updates refresh
+  // `rule`, and only the fields changed since then are sent.
+  const edit = useEditBase(rule, {
+    open: open && !!rule,
+    onReload: (x) => {
+      setD(draftOf(x, user.timezone, projectId));
+      setDirty(false);
+      diff.reset();
+    },
+  });
   const upd = (p: Partial<RuleDraft>) => {
     setD((x) => ({ ...x, ...p }));
     setDirty(true);
@@ -171,141 +183,157 @@ const RuleDrawer = ({ open, onOpenChange, rule, projectId }: { open: boolean; on
   const update = useApiMutation(recurrenceEndpoints.update, { invalidate: INVALIDATE, successMessage: 'Recurring task updated', silentErrors: true });
   const tzOptions = useMemo(() => timezones().map((z) => ({ value: z, label: z })), []);
   const valid = d.projectId && d.title.trim().length >= 3 && d.startsOn && /^\d\d:\d\d$/.test(d.localTime);
+  /** Schedule fields changed since the drawer opened; the template (replaced as a whole) keeps others' changes to fields left alone. */
+  const patchOf = (r: RecurrenceRuleView) => {
+    const start = draftOf(edit.start ?? r, user.timezone, projectId);
+    const changed = changedFields(schedule(start), sched);
+    const mine = template(d);
+    const templateChanged = changedFields(template(start), mine);
+    return {
+      ...pickChanged(sched, changed),
+      ...(templateChanged.length ? { template: { ...template(draftOf(r, user.timezone, projectId)), ...pickChanged(mine, templateChanged) } } : {}),
+    };
+  };
   const submit = async () => {
     setError(null);
     try {
       if (rule) {
+        const body = patchOf(rule);
         if (!diff.data) {
-          await diff.run({ params: { workspaceId: workspace.id, ruleId: rule.id }, body: { ...sched, template: template(d) } });
+          await diff.run({ params: { workspaceId: workspace.id, ruleId: rule.id }, body });
           return;
         }
-        await update.run({ params: { workspaceId: workspace.id, ruleId: rule.id }, body: { ...sched, template: template(d) } }, { ifMatch: rule.rowVersion });
+        await update.run({ params: { workspaceId: workspace.id, ruleId: rule.id }, body }, { ifMatch: edit.version });
       } else await create.run({ params: { workspaceId: workspace.id }, body: { ...sched, projectId: d.projectId!, template: template(d) } });
       onOpenChange(false);
     } catch (e) {
+      if (edit.catchConflict(e)) return;
       setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The rule was not saved.');
     }
   };
   return (
-    <Drawer
-      open={open}
-      onOpenChange={onOpenChange}
-      width={760}
-      dirty={dirty}
-      title={rule ? 'Edit Recurring Task' : 'New Recurring Task'}
-      description="Occurrences are created as tasks up to the horizon ahead; each date is created once."
-      footer={
-        <>
-          <Button onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button variant="primary" disabled={!valid} loading={create.isPending || update.isPending || diff.isPending} onClick={() => void submit()}>
-            {rule ? (diff.data ? 'Apply Changes' : 'Review Changes') : 'Create'}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {diff.data ? (
-          <Banner tone="info">
-            Future not-started tasks: {diff.data.updated.length} updated, {diff.data.cancelled.length} cancelled, {diff.data.created.length} new. {diff.data.startedUnaffected} started task(s) stay unchanged.
-          </Banner>
-        ) : null}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Field label="Project" required>
-            <EntitySelect type="project" value={d.projectId} onChange={(v) => upd({ projectId: v })} disabled={!!rule || !!projectId} />
-          </Field>
-          <Field label="Task title" required>
-            <Input value={d.title} onChange={(e) => { upd({ title: e.target.value }); diff.reset(); }} maxLength={200} />
-          </Field>
-          <Field label="Assignee">
-            <MemberSelect value={d.assignee} onChange={(v) => { upd({ assignee: v }); diff.reset(); }} projectId={d.projectId ?? undefined} permission="tasks.read" clearable placeholder="Unassigned" />
-          </Field>
-          <Field label="Reviewer">
-            <MemberSelect value={d.reviewer} onChange={(v) => { upd({ reviewer: v }); diff.reset(); }} projectId={d.projectId ?? undefined} permission="tasks.read" clearable placeholder="No review" />
-          </Field>
-          <Field label="Priority">
-            <Select value={d.priority} onChange={(v) => { upd({ priority: v ?? 'normal' }); diff.reset(); }} options={TASK_PRIORITIES.map((p) => ({ value: p, label: label('taskPriority', p) }))} />
-          </Field>
-          <Field label="Estimate (minutes)" helper="Leave empty when unknown.">
-            <Input value={d.estimate} onChange={(e) => { upd({ estimate: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" />
-          </Field>
-        </div>
-        <Field label="Description">
-          <Textarea value={d.description} onChange={(e) => { upd({ description: e.target.value }); diff.reset(); }} maxLength={LIMITS.noteMax} className="min-h-[72px]" />
-        </Field>
-        <fieldset className="flex flex-col gap-4 rounded-[12px] border border-line p-4">
-          <legend className="px-1 text-[12px] font-[550] text-fg">Schedule</legend>
-          <RadioGroup
-            label="Mode"
-            orientation="horizontal"
-            value={d.mode}
-            onValueChange={(v) => { upd({ mode: v }); diff.reset(); }}
-            options={RECURRENCE_MODES.map((m) => ({ value: m, label: label('recurrenceMode', m), description: m === 'fixed_schedule' ? 'On a calendar, whatever happens' : 'Next one after the previous is closed' }))}
-          />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <Field label="Repeats">
-              <Select value={d.cadence} onChange={(v) => { upd({ cadence: (v as RuleDraft['cadence']) ?? 'weekly' }); diff.reset(); }} options={RECURRENCE_CADENCES.map((c) => ({ value: c, label: label('cadence', c) }))} />
+    <>
+      <Drawer
+        open={open}
+        onOpenChange={onOpenChange}
+        width={760}
+        dirty={dirty}
+        title={rule ? 'Edit Recurring Task' : 'New Recurring Task'}
+        description="Occurrences are created as tasks up to the horizon ahead; each date is created once."
+        footer={
+          <>
+            <Button onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button variant="primary" disabled={!valid} loading={create.isPending || update.isPending || diff.isPending} onClick={() => void submit()}>
+              {rule ? (diff.data ? 'Apply Changes' : 'Review Changes') : 'Create'}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {diff.data ? (
+            <Banner tone="info">
+              Future not-started tasks: {diff.data.updated.length} updated, {diff.data.cancelled.length} cancelled, {diff.data.created.length} new. {diff.data.startedUnaffected} started task(s) stay unchanged.
+            </Banner>
+          ) : null}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Field label="Project" required>
+              <EntitySelect type="project" value={d.projectId} onChange={(v) => upd({ projectId: v })} disabled={!!rule || !!projectId} />
             </Field>
-            <Field label="Every" helper={d.cadence === 'daily' ? 'days' : d.cadence === 'weekly' ? 'weeks' : 'months'}>
-              <Input value={d.intervalCount} onChange={(e) => { upd({ intervalCount: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" />
+            <Field label="Task title" required>
+              <Input value={d.title} onChange={(e) => { upd({ title: e.target.value }); diff.reset(); }} maxLength={200} />
             </Field>
-            <Field label="Due at (local time)" helper={d.timezone}>
-              <Input type="time" value={d.localTime} onChange={(e) => { upd({ localTime: e.target.value }); diff.reset(); }} />
+            <Field label="Assignee">
+              <MemberSelect value={d.assignee} onChange={(v) => { upd({ assignee: v }); diff.reset(); }} projectId={d.projectId ?? undefined} permission="tasks.read" clearable placeholder="Unassigned" />
             </Field>
-            {d.cadence === 'weekly' ? (
-              <Field label="On" className="md:col-span-2">
-                <MultiSelect value={d.weekdays} onChange={(v) => { upd({ weekdays: v }); diff.reset(); }} options={WEEKDAYS} placeholder="Weekday of the start date" />
-              </Field>
-            ) : null}
-            {d.cadence === 'monthly' ? (
-              <>
-                <Field label="Day of month">
-                  <Input value={d.monthDay} onChange={(e) => { upd({ monthDay: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" placeholder="Day of the start date" />
-                </Field>
-                <Field label="When the month is shorter">
-                  <Select value={d.monthDayPolicy} onChange={(v) => { upd({ monthDayPolicy: (v as RuleDraft['monthDayPolicy']) ?? 'last_day_of_month' }); diff.reset(); }} options={MONTH_DAY_POLICIES.map((p) => ({ value: p, label: label('monthDayPolicy', p) }))} />
-                </Field>
-              </>
-            ) : null}
-            <Field label="Time zone">
-              <Select value={d.timezone} onChange={(v) => { upd({ timezone: v ?? user.timezone }); diff.reset(); }} options={tzOptions} searchable />
+            <Field label="Reviewer">
+              <MemberSelect value={d.reviewer} onChange={(v) => { upd({ reviewer: v }); diff.reset(); }} projectId={d.projectId ?? undefined} permission="tasks.read" clearable placeholder="No review" />
             </Field>
-            <Field label="Starts on" required>
-              <DateInput value={d.startsOn} onChange={(e) => { upd({ startsOn: e.target.value }); diff.reset(); }} />
+            <Field label="Priority">
+              <Select value={d.priority} onChange={(v) => { upd({ priority: v ?? 'normal' }); diff.reset(); }} options={TASK_PRIORITIES.map((p) => ({ value: p, label: label('taskPriority', p) }))} />
             </Field>
-            <Field label="Ends on">
-              <DateInput value={d.endsOn} onChange={(e) => { upd({ endsOn: e.target.value }); diff.reset(); }} />
+            <Field label="Estimate (minutes)" helper="Leave empty when unknown.">
+              <Input value={d.estimate} onChange={(e) => { upd({ estimate: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" />
             </Field>
-            {d.mode === 'fixed_schedule' ? (
-              <>
-                <Field label="Create ahead (days)" helper="1–30">
-                  <Input value={d.horizonDays} onChange={(e) => { upd({ horizonDays: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" />
-                </Field>
-                <Field label="After an outage, create up to" helper="0 = one overdue task plus the list of missed dates">
-                  <Input value={d.backfillLimit} onChange={(e) => { upd({ backfillLimit: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" />
-                </Field>
-              </>
-            ) : null}
           </div>
-        </fieldset>
-        <div>
-          <h3 className="text-[12px] font-[550] text-fg-2">Next occurrences</h3>
-          {previewMut.data ? (
-            <ul className="mt-1 grid grid-cols-1 gap-1 text-[13px] sm:grid-cols-2">
-              {previewMut.data.occurrences.slice(0, 8).map((o) => (
-                <li key={o.key} className="text-fg">
-                  {formatDateTime(o.scheduledFor, user.timezone)}
-                  {o.clampedToMonthEnd ? <Badge className="ml-2">Last day of month</Badge> : null}
-                  {o.dstShifted ? <Badge className="ml-2" tone="warning">Shifted by DST</Badge> : null}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-1 text-[13px] text-fg-2">{previewMut.isError ? 'Check the schedule fields.' : 'Calculating…'}</p>
-          )}
+          <Field label="Description">
+            <Textarea value={d.description} onChange={(e) => { upd({ description: e.target.value }); diff.reset(); }} maxLength={LIMITS.noteMax} className="min-h-[72px]" />
+          </Field>
+          <fieldset className="flex flex-col gap-4 rounded-[12px] border border-line p-4">
+            <legend className="px-1 text-[12px] font-[550] text-fg">Schedule</legend>
+            <RadioGroup
+              label="Mode"
+              orientation="horizontal"
+              value={d.mode}
+              onValueChange={(v) => { upd({ mode: v }); diff.reset(); }}
+              options={RECURRENCE_MODES.map((m) => ({ value: m, label: label('recurrenceMode', m), description: m === 'fixed_schedule' ? 'On a calendar, whatever happens' : 'Next one after the previous is closed' }))}
+            />
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <Field label="Repeats">
+                <Select value={d.cadence} onChange={(v) => { upd({ cadence: (v as RuleDraft['cadence']) ?? 'weekly' }); diff.reset(); }} options={RECURRENCE_CADENCES.map((c) => ({ value: c, label: label('cadence', c) }))} />
+              </Field>
+              <Field label="Every" helper={d.cadence === 'daily' ? 'days' : d.cadence === 'weekly' ? 'weeks' : 'months'}>
+                <Input value={d.intervalCount} onChange={(e) => { upd({ intervalCount: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" />
+              </Field>
+              <Field label="Due at (local time)" helper={d.timezone}>
+                <Input type="time" value={d.localTime} onChange={(e) => { upd({ localTime: e.target.value }); diff.reset(); }} />
+              </Field>
+              {d.cadence === 'weekly' ? (
+                <Field label="On" className="md:col-span-2">
+                  <MultiSelect value={d.weekdays} onChange={(v) => { upd({ weekdays: v }); diff.reset(); }} options={WEEKDAYS} placeholder="Weekday of the start date" />
+                </Field>
+              ) : null}
+              {d.cadence === 'monthly' ? (
+                <>
+                  <Field label="Day of month">
+                    <Input value={d.monthDay} onChange={(e) => { upd({ monthDay: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" placeholder="Day of the start date" />
+                  </Field>
+                  <Field label="When the month is shorter">
+                    <Select value={d.monthDayPolicy} onChange={(v) => { upd({ monthDayPolicy: (v as RuleDraft['monthDayPolicy']) ?? 'last_day_of_month' }); diff.reset(); }} options={MONTH_DAY_POLICIES.map((p) => ({ value: p, label: label('monthDayPolicy', p) }))} />
+                  </Field>
+                </>
+              ) : null}
+              <Field label="Time zone">
+                <Select value={d.timezone} onChange={(v) => { upd({ timezone: v ?? user.timezone }); diff.reset(); }} options={tzOptions} searchable />
+              </Field>
+              <Field label="Starts on" required>
+                <DateInput value={d.startsOn} onChange={(e) => { upd({ startsOn: e.target.value }); diff.reset(); }} />
+              </Field>
+              <Field label="Ends on">
+                <DateInput value={d.endsOn} onChange={(e) => { upd({ endsOn: e.target.value }); diff.reset(); }} />
+              </Field>
+              {d.mode === 'fixed_schedule' ? (
+                <>
+                  <Field label="Create ahead (days)" helper="1–30">
+                    <Input value={d.horizonDays} onChange={(e) => { upd({ horizonDays: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" />
+                  </Field>
+                  <Field label="After an outage, create up to" helper="0 = one overdue task plus the list of missed dates">
+                    <Input value={d.backfillLimit} onChange={(e) => { upd({ backfillLimit: e.target.value.replace(/\D/g, '') }); diff.reset(); }} inputMode="numeric" />
+                  </Field>
+                </>
+              ) : null}
+            </div>
+          </fieldset>
+          <div>
+            <h3 className="text-[12px] font-[550] text-fg-2">Next occurrences</h3>
+            {previewMut.data ? (
+              <ul className="mt-1 grid grid-cols-1 gap-1 text-[13px] sm:grid-cols-2">
+                {previewMut.data.occurrences.slice(0, 8).map((o) => (
+                  <li key={o.key} className="text-fg">
+                    {formatDateTime(o.scheduledFor, user.timezone)}
+                    {o.clampedToMonthEnd ? <Badge className="ml-2">Last day of month</Badge> : null}
+                    {o.dstShifted ? <Badge className="ml-2" tone="warning">Shifted by DST</Badge> : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1 text-[13px] text-fg-2">{previewMut.isError ? 'Check the schedule fields.' : 'Calculating…'}</p>
+            )}
+          </div>
         </div>
-      </div>
-    </Drawer>
+      </Drawer>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -370,7 +398,7 @@ export const RecurringView = ({ projectId }: { projectId?: string }) => {
           <DataTable caption="Recurring tasks" rows={q.data ?? []} columns={columns} getRowId={(r) => r.id} density={user.density} />
         )}
       </QueryState>
-      <RuleDrawer open={open} onOpenChange={setOpen} rule={editing} projectId={projectId} />
+      <RuleDrawer open={open} onOpenChange={setOpen} rule={editing ? (q.data?.find((x) => x.id === editing.id) ?? editing) : null} projectId={projectId} />
       <ConfirmDialog
         open={!!archiving}
         onOpenChange={(o) => !o && setArchiving(null)}

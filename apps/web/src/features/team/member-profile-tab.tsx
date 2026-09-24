@@ -7,6 +7,7 @@ import { isApiError } from '@castlane/api-client';
 import { RESPONSIBILITIES } from '@castlane/domain';
 import { Avatar, Badge, Banner, Button, ConfirmDialog, DataTable, DescriptionList, Dialog, Drawer, Field, Input, Panel, Select, formatDate } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect } from '@/components/common/entity-select';
 import { DirectionSelect, MemberSelect } from '@/components/common/pickers';
 import { useApiMutation } from '@/lib/hooks';
@@ -210,16 +211,19 @@ export const EditProfileDrawer = ({ m, open, onOpenChange }: { m: MemberDetail; 
   const [skills, setSkills] = useState(m.skills.join(', '));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<number | null>(null);
-  // The version the form was opened on: a concurrent change surfaces as a conflict instead of being overwritten.
-  const [version, setVersion] = useState(m.rowVersion);
+  const fill = (x: MemberDetail) => {
+    setTitle(x.title ?? '');
+    setManager(x.manager?.membershipId ?? null);
+    setSkills(x.skills.join(', '));
+  };
+  // The member as the drawer opened: a concurrent change surfaces as a conflict instead of being
+  // overwritten, and only the fields changed here are sent (T162).
+  const edit = useEditBase(m, { open, key: m.membershipId, onReload: fill });
+  const start = edit.start ?? m;
   const update = useApiMutation(teamEndpoints.update, { invalidate: ['team.'], successMessage: 'Profile saved', silentErrors: true });
   useEffect(() => {
     if (!open) return;
-    setTitle(m.title ?? '');
-    setManager(m.manager?.membershipId ?? null);
-    setSkills(m.skills.join(', '));
-    setVersion(m.rowVersion);
+    fill(m);
     setErrors({});
     setError(null);
     // Only when the drawer opens; live refreshes of the member must not wipe what is being typed.
@@ -229,7 +233,7 @@ export const EditProfileDrawer = ({ m, open, onOpenChange }: { m: MemberDetail; 
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const dirty = title !== (m.title ?? '') || manager !== (m.manager?.membershipId ?? null) || skillList.join(',') !== m.skills.join(',');
+  const dirty = title !== (start.title ?? '') || manager !== (start.manager?.membershipId ?? null) || skillList.join(',') !== start.skills.join(',');
   return (
     <>
       <Drawer
@@ -254,14 +258,13 @@ export const EditProfileDrawer = ({ m, open, onOpenChange }: { m: MemberDetail; 
                 if (bad) return setErrors({ skills: 'Each skill needs 2–40 characters.' });
                 if (skillList.length > 30) return setErrors({ skills: 'Use at most 30 skills.' });
                 try {
-                  await update.run(
-                    { params: { workspaceId: workspace.id, membershipId: m.membershipId }, body: { title: title.trim() || null, managerMembershipId: manager, skills: skillList } },
-                    { ifMatch: version },
-                  );
+                  const body = { title: title.trim() || null, managerMembershipId: manager, skills: skillList };
+                  const before = { title: start.title?.trim() || null, managerMembershipId: start.manager?.membershipId ?? null, skills: start.skills };
+                  await update.run({ params: { workspaceId: workspace.id, membershipId: m.membershipId }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
                   onOpenChange(false);
                 } catch (e) {
-                  if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(e.currentVersion ?? version);
-                  else if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field, f.message])));
+                  if (edit.catchConflict(e)) return;
+                  if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field, f.message])));
                   else setError(isApiError(e) ? e.message : 'The profile could not be saved.');
                 }
               }}
@@ -284,15 +287,7 @@ export const EditProfileDrawer = ({ m, open, onOpenChange }: { m: MemberDetail; 
           </Field>
         </div>
       </Drawer>
-      <ConflictDialog
-        open={conflict !== null}
-        onOpenChange={(o) => {
-          // Keep editing: the next save applies these values over the newer version.
-          if (!o && conflict !== null) setVersion(conflict);
-          if (!o) setConflict(null);
-        }}
-        onReload={() => window.location.reload()}
-      />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };

@@ -13,6 +13,8 @@ import { useApiInfinite, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useUrlState } from '@/lib/url-state';
 import { useCan, useWorkspace, useWsPath } from '@/lib/workspace-context';
+import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { FinanceNav, Money, ReasonDialog, apiMessage, decimalOk, isConflict, useFinanceParams, useFinanceMutation } from './common';
 import { rowKey } from './allocation-editor';
 
@@ -178,96 +180,101 @@ const ConfirmCandidateDialog = ({ candidate: c, onClose }: { candidate: SaleCand
   const [rows, setRows] = useState<AttrRow[]>(c.claimedAllocations.map((a) => ({ key: rowKey(), membershipId: a.member.membershipId, sharePercent: a.sharePercent })));
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Confirmed against the candidate as the dialog opened (T162).
+  const edit = useEditBase(c);
   const m = useFinanceMutation(F.saleCandidatesConfirm, { invalidate: ['finance.', 'ofm.'], silentErrors: true });
   const total = rows.reduce((a, r) => a + (Number(r.sharePercent) || 0), 0);
   const attrOk = rows.length === 0 || (rows.every((r) => r.membershipId && Number(r.sharePercent) > 0) && Math.abs(total - 100) < 1e-9);
   const chosen = categoryId ?? revenueCats[0]?.id ?? null;
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Confirm to Draft"
-      description="Creates a draft revenue entry with the reported gross, refund and fee components. It still needs posting by an approver."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={m.isPending}
-            disabled={!chosen || !attrOk}
-            onClick={() =>
-              void m
-                .run({ params: { ...params, candidateId: c.id }, body: { categoryId: chosen!, recognitionDate: date || undefined, attributions: rows.map((r) => ({ membershipId: r.membershipId!, sharePercent: r.sharePercent })), note: note.trim() || undefined } }, { ifMatch: c.rowVersion })
-                .then((r) => {
-                  toast.success('Draft entry created');
-                  onClose();
-                  router.push(wsPath(`/finance/entries/${r.entry.id}`));
-                })
-                .catch((e) => setError(apiMessage(e)))
-            }
-          >
-            Create Draft Entry
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {c.duplicate ? (
-          <Banner tone="warning">
-            This source transaction is already recorded as “{c.duplicate.title}”. Confirming would double the revenue — reject it as a duplicate instead.
-          </Banner>
-        ) : null}
-        <div className="flex flex-wrap gap-4 text-[13px]">
-          <span>
-            Gross <Money value={c.gross} />
-          </span>
-          <span>
-            Refund <Money value={c.refund} />
-          </span>
-          <span>
-            Fee <Money value={c.fee} />
-          </span>
-          <span>
-            Net <Money value={c.net} strong />
-          </span>
-        </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Revenue Category" required>
-            <Select value={chosen} onChange={setCategoryId} options={revenueCats.map((x) => ({ value: x.id, label: x.name }))} placeholder={cats.isLoading ? 'Loading…' : 'Choose a category'} />
-          </Field>
-          <Field label="Recognition Date">
-            <DateInput value={date} onChange={(e) => setDate(e.target.value)} />
-          </Field>
-        </div>
-        <fieldset className="flex flex-col gap-2">
-          <legend className="mb-1 text-[12px] font-[550] text-fg">Revenue Attribution</legend>
-          {rows.length === 0 ? <p className="text-[13px] text-fg-2">No attribution. Revenue-share rules will not use this revenue.</p> : null}
-          {rows.map((r, i) => (
-            <div key={r.key} className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="min-w-0 flex-1">
-                <MemberSelect aria-label={`Member ${i + 1}`} value={r.membershipId} onChange={(v) => setRows(rows.map((x, j) => (j === i ? { ...x, membershipId: v } : x)))} />
-              </div>
-              <div className="relative w-full sm:w-[110px]">
-                <Input aria-label={`Share ${i + 1}`} inputMode="decimal" className="pr-8 text-right font-mono" value={r.sharePercent} onChange={(e) => decimalOk(e.target.value) && setRows(rows.map((x, j) => (j === i ? { ...x, sharePercent: e.target.value } : x)))} />
-                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] text-fg-2">%</span>
-              </div>
-              <Button size="sm" variant="ghost" onClick={() => setRows(rows.filter((_, j) => j !== i))}>
-                Remove
-              </Button>
-            </div>
-          ))}
-          <div className="flex items-center justify-between">
-            <Button size="sm" onClick={() => setRows([...rows, { key: rowKey(), membershipId: null, sharePercent: rows.length ? '' : '100' }])}>
-              Add Member
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Confirm to Draft"
+        description="Creates a draft revenue entry with the reported gross, refund and fee components. It still needs posting by an approver."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={m.isPending}
+              disabled={!chosen || !attrOk}
+              onClick={() =>
+                void m
+                  .run({ params: { ...params, candidateId: c.id }, body: { categoryId: chosen!, recognitionDate: date || undefined, attributions: rows.map((r) => ({ membershipId: r.membershipId!, sharePercent: r.sharePercent })), note: note.trim() || undefined } }, { ifMatch: edit.version })
+                  .then((r) => {
+                    toast.success('Draft entry created');
+                    onClose();
+                    router.push(wsPath(`/finance/entries/${r.entry.id}`));
+                  })
+                  .catch((e) => (edit.catchConflict(e) ? undefined : setError(apiMessage(e))))
+              }
+            >
+              Create Draft Entry
             </Button>
-            {rows.length ? <span className={attrOk ? 'text-[12px] text-fg-2' : 'text-[12px] text-warning'}>Total {total}% of 100%</span> : null}
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {c.duplicate ? (
+            <Banner tone="warning">
+              This source transaction is already recorded as “{c.duplicate.title}”. Confirming would double the revenue — reject it as a duplicate instead.
+            </Banner>
+          ) : null}
+          <div className="flex flex-wrap gap-4 text-[13px]">
+            <span>
+              Gross <Money value={c.gross} />
+            </span>
+            <span>
+              Refund <Money value={c.refund} />
+            </span>
+            <span>
+              Fee <Money value={c.fee} />
+            </span>
+            <span>
+              Net <Money value={c.net} strong />
+            </span>
           </div>
-        </fieldset>
-        <Field label="Note">
-          <Textarea value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} className="min-h-[64px]" />
-        </Field>
-      </div>
-    </Dialog>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Revenue Category" required>
+              <Select value={chosen} onChange={setCategoryId} options={revenueCats.map((x) => ({ value: x.id, label: x.name }))} placeholder={cats.isLoading ? 'Loading…' : 'Choose a category'} />
+            </Field>
+            <Field label="Recognition Date">
+              <DateInput value={date} onChange={(e) => setDate(e.target.value)} />
+            </Field>
+          </div>
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-1 text-[12px] font-[550] text-fg">Revenue Attribution</legend>
+            {rows.length === 0 ? <p className="text-[13px] text-fg-2">No attribution. Revenue-share rules will not use this revenue.</p> : null}
+            {rows.map((r, i) => (
+              <div key={r.key} className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                <div className="min-w-0 flex-1">
+                  <MemberSelect aria-label={`Member ${i + 1}`} value={r.membershipId} onChange={(v) => setRows(rows.map((x, j) => (j === i ? { ...x, membershipId: v } : x)))} />
+                </div>
+                <div className="relative w-full sm:w-[110px]">
+                  <Input aria-label={`Share ${i + 1}`} inputMode="decimal" className="pr-8 text-right font-mono" value={r.sharePercent} onChange={(e) => decimalOk(e.target.value) && setRows(rows.map((x, j) => (j === i ? { ...x, sharePercent: e.target.value } : x)))} />
+                  <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[12px] text-fg-2">%</span>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => setRows(rows.filter((_, j) => j !== i))}>
+                  Remove
+                </Button>
+              </div>
+            ))}
+            <div className="flex items-center justify-between">
+              <Button size="sm" onClick={() => setRows([...rows, { key: rowKey(), membershipId: null, sharePercent: rows.length ? '' : '100' }])}>
+                Add Member
+              </Button>
+              {rows.length ? <span className={attrOk ? 'text-[12px] text-fg-2' : 'text-[12px] text-warning'}>Total {total}% of 100%</span> : null}
+            </div>
+          </fieldset>
+          <Field label="Note">
+            <Textarea value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} className="min-h-[64px]" />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };

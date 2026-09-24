@@ -35,11 +35,13 @@ import {
   toast,
   type MenuItem,
 } from '@castlane/ui';
+import { ConflictDialog } from '@/components/common/conflict';
 import { EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { FileUploader } from '@/components/media/file-uploader';
 import { api } from '@/lib/api';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { DEAL_PANELS } from '@/lib/slots';
@@ -247,7 +249,9 @@ export const DealWorkspace = ({ dealId }: { dealId: string }) => {
                 <StageDialog deal={d} target={target} onClose={() => setTarget(null)} />
                 <CampaignDialog deal={d} open={campaignOpen} onOpenChange={setCampaignOpen} />
                 <LogInteractionDialog partner={{ id: d.partner.id }} dealId={d.id} open={logOpen} onOpenChange={setLogOpen} />
-                {deliverable ? <DeliverableDialog deal={d} deliverable={deliverable === 'new' ? null : deliverable} onClose={() => setDeliverable(null)} /> : null}
+                {deliverable ? (
+                  <DeliverableDialog deal={d} deliverable={deliverable === 'new' ? null : (d.deliverableItems.find((x) => x.id === deliverable.id) ?? deliverable)} onClose={() => setDeliverable(null)} />
+                ) : null}
                 <ConfirmDialog
                   open={archiveOpen}
                   onOpenChange={setArchiveOpen}
@@ -413,87 +417,115 @@ const DeliverableDialog = ({ deal, deliverable, onClose }: { deal: DealDetail; d
   const [amount, setAmount] = useState(deliverable?.agreedAmount?.amount ?? '');
   const currency = deliverable?.agreedAmount?.currency ?? deal.amount?.currency ?? workspace.baseCurrency;
   const [error, setError] = useState<string | null>(null);
+  // The deliverable as the dialog opened; only the fields changed since then are sent (T162).
+  const edit = useEditBase(deliverable, {
+    onReload: (x) => {
+      setTitle(x.title);
+      setFormat(x.format ?? null);
+      setProjectId(x.project?.id ?? null);
+      setAccountId(x.account?.id ?? null);
+      setDueAt(toLocalInput(x.dueAt));
+      setCriteria(x.acceptanceCriteria ?? '');
+      setContentItemId(x.contentItem?.id ?? null);
+      setAmount(x.agreedAmount?.amount ?? '');
+    },
+  });
   const create = useApiMutation(dealEndpoints.createDeliverable, { invalidate: ['deals.'], silentErrors: true, successMessage: 'Deliverable added' });
   const update = useApiMutation(dealEndpoints.updateDeliverable, { invalidate: ['deals.'], silentErrors: true, successMessage: 'Deliverable saved' });
   const amountValid = !amount || /^\d+(\.\d{1,3})?$/.test(amount.trim());
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      dirty={title !== (deliverable?.title ?? '')}
-      title={deliverable ? `Edit ${deliverable.title}` : 'Add deliverable'}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={title.trim().length < 2 || !amountValid}
-            loading={create.isPending || update.isPending}
-            onClick={async () => {
-              setError(null);
-              const body = {
-                title: title.trim(),
-                format: (format as never) ?? null,
-                projectId,
-                accountId,
-                dueAt: dueAt ? new Date(dueAt).toISOString() : null,
-                acceptanceCriteria: criteria.trim() || null,
-                contentItemId,
-                ...(deal.permissions.editAmounts ? { agreedAmount: amount.trim() ? { amount: amount.trim(), currency } : null } : {}),
-              };
-              try {
-                if (deliverable) await update.run({ params: { workspaceId: workspace.id, deliverableId: deliverable.id }, body }, { ifMatch: deliverable.rowVersion });
-                else await create.run({ params: { workspaceId: workspace.id, dealId: deal.id }, body });
-                onClose();
-              } catch (e) {
-                setError(isApiError(e) ? (e.code === 'VERSION_CONFLICT' ? 'This record changed while you were editing it. Compare changes before saving.' : (e.fieldErrors[0]?.message ?? e.message)) : 'The deliverable could not be saved.');
-              }
-            }}
-          >
-            {deliverable ? 'Save' : 'Add Deliverable'}
-          </Button>
-        </>
-      }
-    >
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {error ? <Banner tone="danger" className="sm:col-span-2">{error}</Banner> : null}
-        <Field label="Title" required className="sm:col-span-2">
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} />
-        </Field>
-        <Field label="Format">
-          <Select value={format} onChange={setFormat} clearable options={CONTENT_FORMATS.map((f) => ({ value: f, label: label('contentFormat', f) }))} />
-        </Field>
-        <Field label="Project">
-          <Select
-            value={projectId}
-            onChange={(v) => {
-              setProjectId(v);
-              setAccountId(null);
-              setContentItemId(null);
-            }}
-            clearable
-            options={deal.projects.map((p) => ({ value: p.id, label: p.name }))}
-          />
-        </Field>
-        <Field label="Account" helper="Account of the chosen project where it will be published.">
-          <EntitySelect type="account" filters={projectId ? { projectId } : undefined} value={accountId} onChange={setAccountId} clearable disabled={!projectId} />
-        </Field>
-        <Field label="Due">
-          <DateTimeInput value={dueAt} onChange={(e) => setDueAt(e.target.value)} timezone={user.timezone} />
-        </Field>
-        <Field label="Linked content" className="sm:col-span-2">
-          <EntitySelect type="content_item" filters={projectId ? { projectId } : undefined} value={contentItemId} onChange={setContentItemId} clearable disabled={!projectId} />
-        </Field>
-        <Field label="Acceptance criteria" className="sm:col-span-2">
-          <Textarea value={criteria} onChange={(e) => setCriteria(e.target.value)} maxLength={LIMITS.noteMax} />
-        </Field>
-        {deal.permissions.editAmounts ? (
-          <Field label="Agreed amount" error={amountValid ? null : 'Enter an amount like 250.00.'} helper="A plan, not revenue.">
-            <AmountInput value={amount} onChange={(e) => setAmount(e.target.value)} currency={currency} />
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        dirty={title !== ((edit.start ?? deliverable)?.title ?? '')}
+        title={deliverable ? `Edit ${deliverable.title}` : 'Add deliverable'}
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={title.trim().length < 2 || !amountValid}
+              loading={create.isPending || update.isPending}
+              onClick={async () => {
+                setError(null);
+                const body = {
+                  title: title.trim(),
+                  format: (format as never) ?? null,
+                  projectId,
+                  accountId,
+                  dueAt: dueAt ? new Date(dueAt).toISOString() : null,
+                  acceptanceCriteria: criteria.trim() || null,
+                  contentItemId,
+                  ...(deal.permissions.editAmounts ? { agreedAmount: amount.trim() ? { amount: amount.trim(), currency } : null } : {}),
+                };
+                try {
+                  if (deliverable) {
+                    const b = edit.start ?? deliverable;
+                    const before = {
+                      title: b.title,
+                      format: (b.format as never) ?? null,
+                      projectId: b.project?.id ?? null,
+                      accountId: b.account?.id ?? null,
+                      dueAt: b.dueAt ? new Date(toLocalInput(b.dueAt)).toISOString() : null,
+                      acceptanceCriteria: b.acceptanceCriteria?.trim() || null,
+                      contentItemId: b.contentItem?.id ?? null,
+                      ...(deal.permissions.editAmounts ? { agreedAmount: b.agreedAmount ? { amount: b.agreedAmount.amount, currency: b.agreedAmount.currency } : null } : {}),
+                    } as typeof body;
+                    await update.run({ params: { workspaceId: workspace.id, deliverableId: deliverable.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
+                  } else await create.run({ params: { workspaceId: workspace.id, dealId: deal.id }, body });
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The deliverable could not be saved.');
+                }
+              }}
+            >
+              {deliverable ? 'Save' : 'Add Deliverable'}
+            </Button>
+          </>
+        }
+      >
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          {error ? <Banner tone="danger" className="sm:col-span-2">{error}</Banner> : null}
+          <Field label="Title" required className="sm:col-span-2">
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} />
           </Field>
-        ) : null}
-      </div>
-    </Dialog>
+          <Field label="Format">
+            <Select value={format} onChange={setFormat} clearable options={CONTENT_FORMATS.map((f) => ({ value: f, label: label('contentFormat', f) }))} />
+          </Field>
+          <Field label="Project">
+            <Select
+              value={projectId}
+              onChange={(v) => {
+                setProjectId(v);
+                setAccountId(null);
+                setContentItemId(null);
+              }}
+              clearable
+              options={deal.projects.map((p) => ({ value: p.id, label: p.name }))}
+            />
+          </Field>
+          <Field label="Account" helper="Account of the chosen project where it will be published.">
+            <EntitySelect type="account" filters={projectId ? { projectId } : undefined} value={accountId} onChange={setAccountId} clearable disabled={!projectId} />
+          </Field>
+          <Field label="Due">
+            <DateTimeInput value={dueAt} onChange={(e) => setDueAt(e.target.value)} timezone={user.timezone} />
+          </Field>
+          <Field label="Linked content" className="sm:col-span-2">
+            <EntitySelect type="content_item" filters={projectId ? { projectId } : undefined} value={contentItemId} onChange={setContentItemId} clearable disabled={!projectId} />
+          </Field>
+          <Field label="Acceptance criteria" className="sm:col-span-2">
+            <Textarea value={criteria} onChange={(e) => setCriteria(e.target.value)} maxLength={LIMITS.noteMax} />
+          </Field>
+          {deal.permissions.editAmounts ? (
+            <Field label="Agreed amount" error={amountValid ? null : 'Enter an amount like 250.00.'} helper="A plan, not revenue.">
+              <AmountInput value={amount} onChange={(e) => setAmount(e.target.value)} currency={currency} />
+            </Field>
+          ) : null}
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

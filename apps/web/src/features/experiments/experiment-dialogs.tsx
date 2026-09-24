@@ -6,6 +6,7 @@ import { isApiError } from '@castlane/api-client';
 import { METRIC_SEGMENTS } from '@castlane/domain';
 import { Banner, Button, DateTimeInput, DescriptionList, Dialog, Field, Select, Textarea } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { EntitySelect, MultiEntitySelect } from '@/components/common/entity-select';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
@@ -17,10 +18,11 @@ import { EXPERIMENT_INVALIDATE, ORGANIC_CAVEAT, windowText } from './labels';
 type Errors = Record<string, string>;
 const fieldErrors = (e: unknown): Errors | null => (isApiError(e) && e.fieldErrors.length ? Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])) : null);
 
-const useConflict = () => {
-  const [conflict, setConflict] = useState(false);
-  const node = <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />;
-  return { node, onError: (e: unknown) => (isApiError(e) && e.code === 'VERSION_CONFLICT' ? (setConflict(true), true) : false) };
+/** Each dialog acts on the experiment as it opened (T162): `version` is its If-Match, a 412 opens the Conflict dialog. */
+const useConflict = (experiment: ExperimentDetail, onReload?: (latest: ExperimentDetail) => void) => {
+  const edit = useEditBase(experiment, { onReload });
+  const node = <ConflictDialog {...edit.conflictDialog} />;
+  return { version: edit.version, node, onError: edit.catchConflict };
 };
 
 /** Start: the plan (hypothesis, variants, metric, window, sample, limitations) is frozen as version 1. */
@@ -28,13 +30,13 @@ export const StartExperimentDialog = ({ experiment: e, onClose }: { experiment: 
   const { workspace, user } = useWorkspace();
   const [startAt, setStartAt] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const conflict = useConflict();
+  const conflict = useConflict(e);
   const m = useApiMutation(X.start, { invalidate: EXPERIMENT_INVALIDATE, silentErrors: true, successMessage: 'Experiment started; plan version 1 frozen' });
   const submit = async () => {
     setError(null);
     try {
       const at = startAt ? fromLocalInput(startAt, user.timezone) : null;
-      await m.run({ params: { workspaceId: workspace.id, experimentId: e.id }, body: at ? { startAt: at } : {} }, { ifMatch: e.rowVersion });
+      await m.run({ params: { workspaceId: workspace.id, experimentId: e.id }, body: at ? { startAt: at } : {} }, { ifMatch: conflict.version });
       onClose();
     } catch (err) {
       if (!conflict.onError(err)) setError(fieldErrors(err)?.startAt ?? (isApiError(err) ? err.message : 'The experiment could not be started.'));
@@ -91,7 +93,10 @@ export const ConcludeExperimentDialog = ({ experiment: e, onClose }: { experimen
   const [rationale, setRationale] = useState('');
   const [errors, setErrors] = useState<Errors>({});
   const [error, setError] = useState<string | null>(null);
-  const conflict = useConflict();
+  const conflict = useConflict(e, (x) => {
+    setFindings(x.resultNote ?? '');
+    setLimitations(x.limitations ?? '');
+  });
   const m = useApiMutation(X.conclude, { invalidate: EXPERIMENT_INVALIDATE, silentErrors: true, successMessage: 'Experiment concluded' });
   const mayChoose = e.owner.membershipId === membershipId || isOwner;
   const submit = async () => {
@@ -108,7 +113,7 @@ export const ConcludeExperimentDialog = ({ experiment: e, onClose }: { experimen
           params: { workspaceId: workspace.id, experimentId: e.id },
           body: { findings: findings.trim(), limitations: limitations.trim(), selectedVariantId: variantId, ...(variantId ? { selectionRationale: rationale.trim() } : {}) },
         },
-        { ifMatch: e.rowVersion },
+        { ifMatch: conflict.version },
       );
       onClose();
     } catch (err) {
@@ -184,7 +189,7 @@ export const LinkPublicationsDialog = ({ experiment: e, onClose, initialVariantI
   const [reason, setReason] = useState('');
   const [errors, setErrors] = useState<Errors>({});
   const [error, setError] = useState<string | null>(null);
-  const conflict = useConflict();
+  const conflict = useConflict(e);
   const running = e.status === 'running';
   const m = useApiMutation(X.linkPublications, { invalidate: EXPERIMENT_INVALIDATE, silentErrors: true, successMessage: 'Publications linked' });
   const submit = async () => {
@@ -196,7 +201,7 @@ export const LinkPublicationsDialog = ({ experiment: e, onClose, initialVariantI
     setError(null);
     if (Object.keys(next).length) return;
     try {
-      await m.run({ params: { workspaceId: workspace.id, experimentId: e.id }, body: { variantId: variantId!, publicationIds: ids, segment, ...(running ? { reason: reason.trim() } : {}) } }, { ifMatch: e.rowVersion });
+      await m.run({ params: { workspaceId: workspace.id, experimentId: e.id }, body: { variantId: variantId!, publicationIds: ids, segment, ...(running ? { reason: reason.trim() } : {}) } }, { ifMatch: conflict.version });
       onClose();
     } catch (err) {
       if (conflict.onError(err)) return;
@@ -254,7 +259,7 @@ export const UnlinkPublicationDialog = ({ experiment: e, link, onClose }: { expe
   const { workspace } = useWorkspace();
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const conflict = useConflict();
+  const conflict = useConflict(e);
   const running = e.status === 'running';
   const m = useApiMutation(X.unlinkPublication, { invalidate: EXPERIMENT_INVALIDATE, silentErrors: true, successMessage: 'Publication removed from the experiment' });
   const submit = async () => {
@@ -264,7 +269,7 @@ export const UnlinkPublicationDialog = ({ experiment: e, link, onClose }: { expe
       return;
     }
     try {
-      await m.run({ params: { workspaceId: workspace.id, experimentId: e.id, linkId: link.linkId }, body: running ? { reason: reason.trim() } : {} }, { ifMatch: e.rowVersion });
+      await m.run({ params: { workspaceId: workspace.id, experimentId: e.id, linkId: link.linkId }, body: running ? { reason: reason.trim() } : {} }, { ifMatch: conflict.version });
       onClose();
     } catch (err) {
       if (!conflict.onError(err)) setError(isApiError(err) ? err.message : 'The publication could not be removed.');
@@ -355,12 +360,12 @@ export const ArchiveExperimentDialog = ({ experiment: e, onClose }: { experiment
   const { workspace } = useWorkspace();
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const conflict = useConflict();
+  const conflict = useConflict(e);
   const m = useApiMutation(X.archive, { invalidate: EXPERIMENT_INVALIDATE, silentErrors: true, successMessage: 'Experiment archived' });
   const submit = async () => {
     setError(null);
     try {
-      await m.run({ params: { workspaceId: workspace.id, experimentId: e.id }, body: reason.trim().length >= 3 ? { reason: reason.trim() } : {} }, { ifMatch: e.rowVersion });
+      await m.run({ params: { workspaceId: workspace.id, experimentId: e.id }, body: reason.trim().length >= 3 ? { reason: reason.trim() } : {} }, { ifMatch: conflict.version });
       onClose();
     } catch (err) {
       if (!conflict.onError(err)) setError(isApiError(err) ? err.message : 'The experiment could not be archived.');

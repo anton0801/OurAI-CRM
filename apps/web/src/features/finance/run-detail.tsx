@@ -34,6 +34,7 @@ import {
 import { MultiMemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useUrlState } from '@/lib/url-state';
@@ -421,7 +422,7 @@ const RunView = ({ run: r, refetch }: { run: RunDetail; refetch: () => void }) =
       />
       {dialog === 'adjust' ? <AdjustmentDialog run={r} onClose={() => setDialog(null)} /> : null}
       {dialog === 'pay' && payFor ? <PaymentDialog run={r} total={payFor} onClose={() => { setDialog(null); setPayFor(null); }} guardAct={guard.act} /> : null}
-      {dialog === 'edit' ? <EditRunDialog run={r} onClose={() => setDialog(null)} onConflict={() => { setDialog(null); setConflict(true); }} /> : null}
+      {dialog === 'edit' ? <EditRunDialog run={r} onClose={() => setDialog(null)} /> : null}
       <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => { setConflict(false); refetch(); }} />
       {guard.dialog}
     </div>
@@ -673,51 +674,72 @@ const PaymentDialog = ({ run: r, total, onClose, guardAct }: { run: RunDetail; t
   );
 };
 
-const EditRunDialog = ({ run: r, onClose, onConflict }: { run: RunDetail; onClose: () => void; onConflict: () => void }) => {
+const EditRunDialog = ({ run: r, onClose }: { run: RunDetail; onClose: () => void }) => {
   const params = useFinanceParams();
   const [start, setStart] = useState(r.periodStart);
   const [end, setEnd] = useState(r.periodEnd);
   const [participants, setParticipants] = useState(r.participants.map((m) => m.membershipId));
   const [error, setError] = useState<string | null>(null);
+  // Edited against the run as the dialog opened; only the changed parts are sent (T162).
+  const edit = useEditBase(r, {
+    onReload: (x) => {
+      setStart(x.periodStart);
+      setEnd(x.periodEnd);
+      setParticipants(x.participants.map((m) => m.membershipId));
+    },
+  });
+  const s0 = edit.start ?? r;
   const m = useFinanceMutation(F.runsUpdate, { invalidate: ['finance.'], silentErrors: true, successMessage: 'Run updated. Recalculate to refresh the lines.' });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Edit Period and Participants"
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={m.isPending}
-            disabled={!start || !end || end < start || participants.length === 0}
-            onClick={() =>
-              void m
-                .run({ params: { ...params, runId: r.id }, body: { periodStart: start, periodEnd: end, participantMembershipIds: participants } }, { ifMatch: r.rowVersion })
-                .then(onClose)
-                .catch((e) => (isConflict(e) ? onConflict() : setError(apiMessage(e))))
-            }
-          >
-            Save
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Period Start" required>
-            <DateInput value={start} onChange={(e) => setStart(e.target.value)} />
-          </Field>
-          <Field label="Period End" required>
-            <DateInput value={end} onChange={(e) => setEnd(e.target.value)} />
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Edit Period and Participants"
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={m.isPending}
+              disabled={!start || !end || end < start || participants.length === 0}
+              onClick={() =>
+                void m
+                  .run(
+                    {
+                      params: { ...params, runId: r.id },
+                      body: {
+                        ...(start !== s0.periodStart || end !== s0.periodEnd ? { periodStart: start, periodEnd: end } : {}),
+                        ...(JSON.stringify(participants) !== JSON.stringify(s0.participants.map((m) => m.membershipId)) ? { participantMembershipIds: participants } : {}),
+                      },
+                    },
+                    { ifMatch: edit.version },
+                  )
+                  .then(onClose)
+                  .catch((e) => (edit.catchConflict(e) ? undefined : setError(apiMessage(e))))
+              }
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Period Start" required>
+              <DateInput value={start} onChange={(e) => setStart(e.target.value)} />
+            </Field>
+            <Field label="Period End" required>
+              <DateInput value={end} onChange={(e) => setEnd(e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Participants" required>
+            <MultiMemberSelect value={participants} onChange={setParticipants} />
           </Field>
         </div>
-        <Field label="Participants" required>
-          <MultiMemberSelect value={participants} onChange={setParticipants} />
-        </Field>
-      </div>
-    </Dialog>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
