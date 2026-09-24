@@ -197,7 +197,13 @@ export const knowledgeEndpoints = {
     permission: 'knowledge.read',
     params: wsId({}),
     query: z.object({ includeArchived: boolQuery.optional() }),
-    response: z.array(categoryView),
+    response: z.object({
+      items: z.array(categoryView),
+      /** Categories are one workspace-wide taxonomy: only workspace-wide knowledge editors manage them. */
+      canManage: z.boolean(),
+      /** The member can create articles in at least one scope. */
+      canCreateArticles: z.boolean(),
+    }),
   }),
   createCategory: endpoint({
     id: 'knowledge.categories.create',

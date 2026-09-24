@@ -1,5 +1,6 @@
 import { and, asc, count, eq, isNull, ne, sql } from 'drizzle-orm';
 import { articleCategories, articles } from '@castlane/database';
+import { hasAnywhere } from '@castlane/authorization';
 import { AppError, forbidden, newId, normalizeKey, notFound } from '@castlane/domain';
 import { allowed, requirePermission } from '../core/access';
 import { audit, diffFields } from '../core/audit';
@@ -43,7 +44,11 @@ export const listCategories = async (ctx: QueryContext, input: { includeArchived
     .where(and(eq(articleCategories.workspaceId, ctx.actor.workspaceId), input.includeArchived ? undefined : isNull(articleCategories.archivedAt)))
     .orderBy(asc(articleCategories.sortOrder), asc(articleCategories.nameKey));
   const counts = await countsFor(ctx);
-  return rows.map((c) => toView(c, counts.get(c.id) ?? 0));
+  return {
+    items: rows.map((c) => toView(c, counts.get(c.id) ?? 0)),
+    canManage: allowed(ctx, 'knowledge.write'),
+    canCreateArticles: hasAnywhere(ctx.actor.access, 'knowledge.write'),
+  };
 };
 
 export const getCategoryView = async (ctx: QueryContext, id: string) => {

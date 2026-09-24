@@ -50,6 +50,8 @@ const PREFIXES: Record<string, string[]> = {
   export_job: ['exports.'],
   incident: ['incidents.', 'health.'],
   notification: ['notifications.', 'inbox.'],
+  folder: ['folders.', 'assets.'],
+  article_category: ['knowledge.'],
 };
 
 export const useLiveEvents = (workspaceId: string) => {

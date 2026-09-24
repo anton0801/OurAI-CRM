@@ -163,7 +163,8 @@ describe('knowledge access: drafts for editors, published text in the article sc
     const list = await creator.c.call(K.list, { params: { workspaceId: w }, query: {} });
     expect(list.items.map((i) => i.title).sort()).toEqual(['P1 guide', 'Team handbook']);
     const cats = await creator.c.call(K.listCategories, { params: { workspaceId: w }, query: {} });
-    expect(cats.find((c) => c.id === cat.id)?.articleCount).toBe(2);
+    expect(cats.items.find((c) => c.id === cat.id)?.articleCount).toBe(2);
+    expect(cats.canManage).toBe(false);
     // Editing needs knowledge.write: 403 on a visible article.
     const upd = await creator.c.attempt(K.update, { params: { workspaceId: w, articleId: inP1.id }, body: { title: 'Hack' } }, { ifMatch: seen.rowVersion });
     expect(upd.status).toBe(403);
