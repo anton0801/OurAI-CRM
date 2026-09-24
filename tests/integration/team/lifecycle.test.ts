@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { and, eq, isNull } from 'drizzle-orm';
-import { authEndpoints, projectEndpoints, teamEndpoints } from '@castlane/api-contracts';
+import { authEndpoints, ofmEndpoints, projectEndpoints, teamEndpoints } from '@castlane/api-contracts';
 import { loadMemberRefs } from '@castlane/application';
-import { directions, invitations, memberships, projectMemberships, projects, roleAssignments, sessions, tasks } from '@castlane/database';
+import { auditEvents, directions, invitations, memberships, ofmAssignments, projectMemberships, projects, roleAssignments, sessions, shifts, tasks } from '@castlane/database';
 import { newId } from '@castlane/domain';
 import { addMember, assignToProject, createDirection, createProject } from '../../support';
+import { at as ofmAt, ofmSetup } from '../ofm/helpers';
 import { db, expireRecentAuth, ownerSetup, signedIn } from './helpers';
 
 // Open tasks are handed over by the tasks module's real provider ('tasks.assignee').
@@ -142,6 +143,40 @@ describe('deactivation (F12)', () => {
     // Deactivated members cannot be picked as project owners or successors any more.
     const pick = await owner2.attempt(projectEndpoints.update, { params: { workspaceId: ws.workspaceId, projectId: proj.id }, body: { ownerMembershipId: leaving.membershipId } }, { ifMatch: p!.rowVersion });
     expect(pick.status).toBe(422);
+  });
+
+  it('a member with scheduled OFM shifts: the preview lists them; the chosen successor gets one, the other is cancelled with history (T019)', async () => {
+    const s = await ofmSetup();
+    // Mona holds assignments on A and B and two scheduled shifts; Nick is assigned to A (support lane).
+    const kept = await s.schedule(s.manager.membershipId, 30, 36);
+    const dropped = await s.owner.call(ofmEndpoints.createShift, { params: s.p, body: { membershipId: s.manager.membershipId, primaryAccountId: s.accountB, scheduledStart: ofmAt(40), scheduledEnd: ofmAt(44), timezone: 'UTC' } });
+    const params = { workspaceId: s.ws.workspaceId, membershipId: s.manager.membershipId };
+
+    const p0 = await s.owner.call(teamEndpoints.deactivationPreview, { params, body: { resolutions: [] } });
+    const shiftGroup = p0.groups.find((g) => g.kind === 'ofm.shifts')!;
+    expect(shiftGroup.items.map((i) => i.entityId).sort()).toEqual([kept.id, dropped.id].sort());
+    expect(shiftGroup.unassignedBehaviour).toMatch(/Cancelled/);
+    expect(p0.groups.find((g) => g.kind === 'ofm.assignments')!.items).toHaveLength(2);
+
+    const resolutions = [{ kind: 'ofm.shifts', entityId: kept.id, successorMembershipId: s.manager2.membershipId }];
+    const p1 = await s.owner.call(teamEndpoints.deactivationPreview, { params, body: { resolutions } });
+    expect(p1.invalidSuccessors).toEqual([]);
+    expect(p1.impactToken).toBeTruthy();
+    const detail = await s.owner.call(teamEndpoints.get, { params });
+    const done = await s.owner.call(teamEndpoints.deactivate, { params, body: { impactToken: p1.impactToken!, resolutions, reason: 'Contract ended' } }, { ifMatch: detail.rowVersion });
+    expect(done.status).toBe('deactivated');
+
+    // The chosen shift moved (same id, times and account); the other one is cancelled, not deleted.
+    const [moved] = await db().select().from(shifts).where(eq(shifts.id, kept.id));
+    expect(moved).toMatchObject({ membershipId: s.manager2.membershipId, state: 'scheduled', primaryAccountId: s.accountA });
+    expect(moved!.scheduledStart.toISOString()).toBe(kept.scheduledStart);
+    const [cancelled] = await db().select().from(shifts).where(eq(shifts.id, dropped.id));
+    expect(cancelled).toMatchObject({ membershipId: s.manager.membershipId, state: 'cancelled' });
+    expect(await db().select().from(auditEvents).where(and(eq(auditEvents.entityId, kept.id), eq(auditEvents.action, 'shift.reassigned')))).toHaveLength(1);
+    // Assignments without a successor ended; sessions revoked.
+    const open = await db().select().from(ofmAssignments).where(and(eq(ofmAssignments.membershipId, s.manager.membershipId), isNull(ofmAssignments.endedAt)));
+    expect(open).toEqual([]);
+    expect(await db().select().from(sessions).where(and(eq(sessions.userId, s.manager.userId), isNull(sessions.revokedAt)))).toEqual([]);
   });
 
   it('restore does not silently bring back sensitive grants (T020)', async () => {

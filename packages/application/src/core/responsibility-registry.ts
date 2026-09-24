@@ -31,6 +31,12 @@ export interface ResponsibilityProvider {
   label: string;
   /** What happens to items without a successor, e.g. "Moved to the project lead's Unassigned queue". */
   unassignedBehaviour: string;
+  /**
+   * Provider kinds whose items must be transferred before this provider's (e.g. OFM assignments
+   * can only end once the member's scheduled shifts on the account were moved or cancelled as the
+   * preview showed). Providers are otherwise transferred in the order the preview lists them.
+   */
+  transferAfter?: string[];
   list(ctx: QueryContext | CommandContext, membershipId: string): Promise<ResponsibilityItem[]>;
   transfer(ctx: CommandContext, fromMembershipId: string, resolutions: ResponsibilityResolution[]): Promise<void>;
 }
@@ -39,4 +45,15 @@ export const RESPONSIBILITY_PROVIDERS = new Map<string, ResponsibilityProvider>(
 
 export const defineResponsibilityProvider = (p: ResponsibilityProvider) => {
   RESPONSIBILITY_PROVIDERS.set(p.kind, p);
+};
+
+/** Order groups for transfer: preview order, except that a provider runs after the kinds it names in `transferAfter`. */
+export const inTransferOrder = <G extends { kind: string }>(groups: G[]): G[] => {
+  const out: G[] = [];
+  const pending = [...groups];
+  while (pending.length) {
+    const ready = pending.findIndex((g) => !(RESPONSIBILITY_PROVIDERS.get(g.kind)?.transferAfter ?? []).some((k) => pending.some((o) => o !== g && o.kind === k)));
+    out.push(...pending.splice(ready === -1 ? 0 : ready, 1));
+  }
+  return out;
 };

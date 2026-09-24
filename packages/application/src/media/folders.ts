@@ -1,7 +1,7 @@
 import { and, asc, count, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { listFilter } from '@castlane/authorization';
 import { assets, folders, projects } from '@castlane/database';
-import { AppError, normalizeKey, newId, notFound } from '@castlane/domain';
+import { AppError, LIMITS, normalizeKey, newId, notFound } from '@castlane/domain';
 import type { ImpactItem } from '@castlane/api-contracts';
 import { allowed, authorizeObject, requirePermission } from '../core/access';
 import { audit, diffFields } from '../core/audit';
@@ -105,8 +105,8 @@ export const getFolder = async (ctx: QueryContext, id: string) => {
   };
 };
 
-const nameTaken = async (ctx: CommandContext, parentId: string | null, nameKey: string, exceptId?: string) => {
-  const [dup] = await ctx.tx
+const nameTaken = async (ctx: QueryContext | CommandContext, parentId: string | null, nameKey: string, exceptId?: string) => {
+  const [dup] = await dbOf(ctx)
     .select({ id: folders.id })
     .from(folders)
     .where(
@@ -248,7 +248,36 @@ export const archiveFolder = async (ctx: CommandContext, id: string, input: { re
   return id;
 };
 
-export const restoreFolder = async (ctx: CommandContext, id: string, opts: { skipVersion?: boolean } = {}) => {
+/**
+ * Restore preview (T155): an active sibling with the same name is a collision that needs an explicit
+ * new name; a first free “<name> (restored)” is offered.
+ */
+export const folderRestorePreview = async (ctx: QueryContext, id: string) => {
+  const f = await loadReadableFolder(ctx, id);
+  authorizeObject(ctx, 'assets.archive', folderScope(f), 'assets.read');
+  if (!f.archivedAt) throw new AppError('INVALID_STATE', 'This folder is not archived.');
+  if (!(await nameTaken(ctx, f.parentId, f.nameKey, f.id))) return { title: f.name, items: [], collisions: [] };
+  let suggestion: string | null = null;
+  for (let n = 1; n <= 50 && !suggestion; n++) {
+    const suffix = n === 1 ? ' (restored)' : ` (restored ${n})`;
+    const candidate = `${f.name.slice(0, LIMITS.shortNameMax - suffix.length)}${suffix}`;
+    if (!(await nameTaken(ctx, f.parentId, normalizeKey(candidate), f.id))) suggestion = candidate;
+  }
+  return {
+    title: f.name,
+    items: [],
+    collisions: [
+      {
+        field: 'name',
+        value: f.name,
+        message: 'An active folder in the same place uses this name. Choose a new name for the restored folder.',
+        options: suggestion ? [{ value: suggestion, label: `Rename to “${suggestion}”` }] : [],
+      },
+    ],
+  };
+};
+
+export const restoreFolder = async (ctx: CommandContext, id: string, opts: { skipVersion?: boolean; name?: string } = {}) => {
   const f = await loadReadableFolder(ctx, id, true);
   authorizeObject(ctx, 'assets.archive', folderScope(f), 'assets.read');
   if (!opts.skipVersion) assertVersion(ctx, f);
@@ -257,9 +286,17 @@ export const restoreFolder = async (ctx: CommandContext, id: string, opts: { ski
     const [p] = await ctx.tx.select({ archivedAt: folders.archivedAt }).from(folders).where(eq(folders.id, f.parentId));
     if (!p || p.archivedAt) throw new AppError('INVALID_STATE', 'Restore the parent folder first.');
   }
-  if (await nameTaken(ctx, f.parentId, f.nameKey, f.id)) throw new AppError('DUPLICATE', 'An active folder with the same name exists in the same place. Rename it first.');
-  const [row] = await ctx.tx.update(folders).set({ archivedAt: null, archivedBy: null, archiveReason: null, ...touch(ctx, folders) }).where(eq(folders.id, id)).returning();
-  await audit(ctx, { action: 'folder.restored', entityType: 'folder', entityId: id, projectId: f.projectId });
+  const name = opts.name === undefined ? f.name : opts.name.trim();
+  if (name.length < LIMITS.shortNameMin || name.length > LIMITS.shortNameMax)
+    throw new AppError('VALIDATION_FAILED', 'Enter a name for the restored folder.', { fieldErrors: [{ field: 'name', code: 'LENGTH', message: `Use ${LIMITS.shortNameMin}–${LIMITS.shortNameMax} characters.` }] });
+  if (await nameTaken(ctx, f.parentId, normalizeKey(name), f.id))
+    throw new AppError('DUPLICATE', opts.name === undefined ? 'An active folder with the same name exists in the same place. Restore it with a new name from Archive / Trash, or rename the active folder first.' : 'An active folder in the same place already uses this name. Choose another name.');
+  const [row] = await ctx.tx
+    .update(folders)
+    .set({ name, nameKey: normalizeKey(name), archivedAt: null, archivedBy: null, archiveReason: null, ...touch(ctx, folders) })
+    .where(eq(folders.id, id))
+    .returning();
+  await audit(ctx, { action: 'folder.restored', entityType: 'folder', entityId: id, projectId: f.projectId, diff: name !== f.name ? { name: { from: f.name, to: name } } : undefined });
   await emit(ctx, { type: 'folder.restored', entityType: 'folder', entityId: id, revision: row!.rowVersion });
   return id;
 };

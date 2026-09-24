@@ -18,8 +18,13 @@ describe('editor inline markup', () => {
     ]);
   });
 
-  it('never turns unsafe schemes into links and keeps escaped characters literal', () => {
+  it('never turns javascript:, data: or file: URLs into links and keeps escaped characters literal (T160)', () => {
     expect(parseInlines('[x](javascript:alert(1))')).toEqual([{ type: 'text', text: '[x](javascript:alert(1))' }]);
+    for (const url of ['JavaScript:alert(1)', 'data:text/html,<b>x</b>', 'file:///etc/passwd', '//evil.example/x']) {
+      const runs = parseInlines(`see [x](${url}) now`);
+      expect(runs.some((r) => r.href !== undefined), url).toBe(false);
+      expect(runs.map((r) => r.text).join('')).toBe(`see [x](${url}) now`);
+    }
     expect(parseInlines('2 \\* 3 = 6')).toEqual([{ type: 'text', text: '2 * 3 = 6' }]);
     expect(parseInlines('use snake_case_names')).toEqual([{ type: 'text', text: 'use snake_case_names' }]);
   });

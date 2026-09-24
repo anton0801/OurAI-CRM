@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
+import { newIdempotencyKey } from '@castlane/api-client';
 import { financeEndpoints as F, type EndpointBody } from '@castlane/api-contracts';
-import { compensationAdjustments, compensationLines, financialEntries, shifts, tasks, timeEntries } from '@castlane/database';
+import { compensationAdjustments, compensationClaims, compensationLines, financialEntries, shifts, tasks, timeEntries } from '@castlane/database';
 import { newId } from '@castlane/domain';
 import { addMember, clientFor, createAccount, sessionFor, type TestClient } from '../../support';
 import { MARCH, db, financeSetup, onProject, postedEntry } from './helpers';
@@ -196,7 +197,7 @@ describe('compensation rules and runs', () => {
     expect(slip.carryForward).toEqual([{ amount: '-30.00', currency: 'EUR' }]);
   });
 
-  it('an entitlement is claimed by one approved run only; manual compensation expenses must be reconciled (T130)', async () => {
+  it('an entitlement is claimed by one approved run only; a replayed approve adds no document or claim; manual compensation expenses must be reconciled (T130)', async () => {
     const { ws, owner, fmc, p, cat } = await financeSetup();
     const m = await addMember(db(), ws, { roleKey: 'creator', scopeType: 'assigned_projects' });
     await approvedRule(fmc, owner, p, { name: 'Retainer', recipientScopeType: 'member', recipientMembershipId: m.membershipId, componentKey: 'retainer', version: { type: 'fixed_period', effectiveFrom: '2024-01-01', rate: '500.00', currency: 'EUR' } });
@@ -213,11 +214,23 @@ describe('compensation rules and runs', () => {
     expect(blocked.status).toBe(409);
     expect((blocked.error as { details?: { reason?: string } }).details?.reason).toBe('manual_compensation_expense');
     const manual = await db().select().from(financialEntries).where(eq(financialEntries.title, 'Manual retainer'));
-    const linked = await owner.call(F.runsApprove, { params: { ...p, runId: a.id }, body: { calculationVersion: a.calculationVersion, sourceDigest: a.sourceDigest!, linkExistingEntryId: manual[0]!.id } }, { ifMatch: a.rowVersion });
+    const approveKey = newIdempotencyKey();
+    const approveBody = { calculationVersion: a.calculationVersion, sourceDigest: a.sourceDigest!, linkExistingEntryId: manual[0]!.id };
+    const linked = await owner.call(F.runsApprove, { params: { ...p, runId: a.id }, body: approveBody }, { ifMatch: a.rowVersion, idempotencyKey: approveKey });
     expect(linked.expenseEntryId).toBe(manual[0]!.id);
+    // The approval is replayed (lost response): the stored result comes back, nothing is written again.
+    const replay = await owner.call(F.runsApprove, { params: { ...p, runId: a.id }, body: approveBody }, { ifMatch: a.rowVersion, idempotencyKey: approveKey });
+    expect(replay).toMatchObject({ state: 'approved', expenseEntryId: linked.expenseEntryId, rowVersion: linked.rowVersion });
+    const again = await owner.attempt(F.runsApprove, { params: { ...p, runId: a.id }, body: approveBody }, { ifMatch: linked.rowVersion });
+    expect(again.status).toBe(409);
     // The second run computed the same entitlement: its approval is refused and nothing is claimed twice.
     const second = await owner.attempt(F.runsApprove, { params: { ...p, runId: b.id }, body: { calculationVersion: b.calculationVersion, sourceDigest: b.sourceDigest! } }, { ifMatch: b.rowVersion });
     expect(second.status).toBe(409);
+    // Exactly one expense document (the reconciled manual one) and one entitlement claim.
+    const documents = await db().select().from(financialEntries).where(eq(financialEntries.workspaceId, ws.workspaceId));
+    expect(documents.map((d) => d.id)).toEqual([manual[0]!.id]);
+    const claims = await db().select().from(compensationClaims).where(eq(compensationClaims.workspaceId, ws.workspaceId));
+    expect(claims.map((c) => c.runId)).toEqual([a.id]);
     const o = await owner.call(F.overview, { params: p, query: MARCH });
     expect(o.accrual.compensationExpense.amount).toBe('500.00');
     // Cancel is allowed before approval only.

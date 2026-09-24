@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { folderEndpoints as F, lookupEndpoints, mediaEndpoints as M, shellEndpoints } from '@castlane/api-contracts';
-import { ARCHIVE_HANDLERS, EXPORT_DATASETS_REGISTRY, getAppServices, memberJobContext, setAppServices } from '@castlane/application';
-import { assetLinks, assets, assetVersions, jobs, memberships, roleAssignments, roles, workspaces } from '@castlane/database';
+import { ARCHIVE_HANDLERS, EXPORT_DATASETS_REGISTRY, enqueueJob, getAppServices, memberJobContext, setAppServices } from '@castlane/application';
+import { assetLinks, assets, assetVersions, jobs, memberships, roleAssignments, roles, uploadSessions, workspaces } from '@castlane/database';
 import { newId } from '@castlane/domain';
 import { addMember, assignToProject, clientFor, createProject, createWorkspace, resetClock, runQueuedJobs, sessionFor, setClock } from '../../support';
 import { db, png, putParts, uploadFile } from './helpers';
@@ -348,7 +348,7 @@ describe('bulk move / tag / archive with preview', () => {
   });
 });
 
-describe('upload pipeline additions (T074, T075, T077)', () => {
+describe('upload pipeline additions', () => {
   it('rejects an avatar over the decoded pixel limit and releases the reservation (T074)', async () => {
     const { w, owner } = await setup();
     const big = await png(4200, 4200, '#000000');
@@ -361,7 +361,7 @@ describe('upload pipeline additions (T074, T075, T077)', () => {
     expect(ws!.storageUsedBytes).toBe(0n);
   });
 
-  it('resumes an interrupted multipart upload within the session and lists it as unfinished (T075)', async () => {
+  it('resumes an interrupted multipart upload within the TTL into one file with one stored blob; after the TTL it expires cleanly (T075)', async () => {
     const { w, owner } = await setup();
     const body = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(9 * 1024 * 1024 - 4, 7)]);
     const init = await owner.call(M.initiateUpload, { params: { workspaceId: w }, body: { filename: 'project-files.zip', mimeType: 'application/zip', byteSize: body.length, purpose: 'general' } });
@@ -380,6 +380,48 @@ describe('upload pipeline additions (T074, T075, T077)', () => {
     expect(a.currentVersion).toMatchObject({ status: 'available', mime: 'application/zip', byteSize: body.length });
     expect(a.kind).toBe('archive');
     expect(await owner.call(M.listOpenUploads, { params: { workspaceId: w } })).toHaveLength(0);
+    // Replaying the completion changes nothing.
+    const replay = await owner.call(M.completeUpload, { params: { workspaceId: w, uploadId: init.uploadId }, body: { parts } });
+    expect(replay.assetVersionId).toBe(init.assetVersionId);
+
+    // One owner of the bytes: one asset, one version, one stored original, quota counted once, and
+    // nothing left in quarantine.
+    const storage = getAppServices().storage;
+    expect((await db().select().from(assets).where(eq(assets.workspaceId, w))).map((x) => x.id)).toEqual([init.assetId]);
+    const versions = await db().select().from(assetVersions).where(eq(assetVersions.workspaceId, w));
+    expect(versions.map((v) => [v.id, v.status])).toEqual([[init.assetVersionId, 'available']]);
+    expect(versions[0]!.storageKey).toBeTruthy();
+    expect((await storage.headObject(versions[0]!.storageKey!))?.size).toBe(body.length);
+    expect((await storage.listObjects(`assets/${w}/`)).filter((k) => k.endsWith('/original'))).toEqual([versions[0]!.storageKey]);
+    expect(await storage.listObjects(`quarantine/${w}/`)).toEqual([]);
+    const [wsAfter] = await db().select().from(workspaces).where(eq(workspaces.id, w));
+    expect(wsAfter!.storageUsedBytes).toBe(BigInt(body.length));
+    expect(wsAfter!.storageReservedBytes).toBe(0n);
+
+    // A second interrupted upload outlives its 24 h session: resume and completion are refused, and
+    // the expiry sweep aborts it, frees the reservation and leaves no empty file behind.
+    const late = await owner.call(M.initiateUpload, { params: { workspaceId: w }, body: { filename: 'late.zip', mimeType: 'application/zip', byteSize: body.length, purpose: 'general' } });
+    const lateParts = await putParts(late.parts.slice(0, 1), body, late.partSize);
+    const [reserved] = await db().select().from(workspaces).where(eq(workspaces.id, w));
+    expect(reserved!.storageReservedBytes).toBe(BigInt(body.length));
+    // The 24 h session TTL passes (the member's own sign-in session is unaffected).
+    const [lateSession] = await db().select().from(uploadSessions).where(eq(uploadSessions.id, late.uploadId));
+    expect(Math.round((lateSession!.expiresAt.getTime() - lateSession!.createdAt.getTime()) / 60_000)).toBe(24 * 60);
+    await db().update(uploadSessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(uploadSessions.id, late.uploadId));
+    const expired = await owner.call(M.resumeUpload, { params: { workspaceId: w, uploadId: late.uploadId } });
+    expect(expired).toMatchObject({ state: 'expired', uploaded: [], missing: [] });
+    const lateComplete = await owner.attempt(M.completeUpload, { params: { workspaceId: w, uploadId: late.uploadId }, body: { parts: [...lateParts, { partNumber: 2, etag: 'x' }] } });
+    expect(lateComplete.status).toBe(409);
+    expect(await owner.call(M.listOpenUploads, { params: { workspaceId: w } })).toHaveLength(0);
+    await enqueueJob(db(), { type: 'media.expireUploads', workspaceId: null, payload: {} });
+    await runQueuedJobs(['media.expireUploads']);
+    const [lateVersion] = await db().select().from(assetVersions).where(eq(assetVersions.id, late.assetVersionId));
+    expect(lateVersion).toMatchObject({ status: 'failed', storageKey: null });
+    const [wsLate] = await db().select().from(workspaces).where(eq(workspaces.id, w));
+    expect(wsLate!.storageReservedBytes).toBe(0n);
+    expect(wsLate!.storageUsedBytes).toBe(BigInt(body.length));
+    expect((await owner.call(M.list, { params: { workspaceId: w }, query: {} })).items.map((i) => i.id)).toEqual([init.assetId]);
+    expect(await storage.listObjects(`quarantine/${w}/`)).toEqual([]);
   });
 
   it('a cancelled first upload leaves no empty file in the Library', async () => {

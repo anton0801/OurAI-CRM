@@ -89,7 +89,13 @@ export const landingPath = async (db: DbOrTx, userId: string, returnTo?: string 
   const ownerPending = rows.find((r) => r.roleKey === 'owner' && r.setupStep !== 'completed');
   if (ownerPending) return `/setup/${ownerPending.setupStep === 'workspace' ? 'workspace' : ownerPending.setupStep}?w=${ownerPending.id}`;
   const safe = safeReturnTo(returnTo);
-  if (safe) return safe;
+  if (safe) {
+    // A workspace route is a destination only while the user is still an active member of that
+    // workspace (T011: after an expired session, sign-in returns to a route the user can open;
+    // anything else falls back to the default landing instead of a dead end or an existence probe).
+    const workspaceId = /^\/w\/([^/?#]+)/.exec(safe)?.[1];
+    if (!workspaceId || rows.some((r) => r.id === workspaceId)) return safe;
+  }
   const first = rows[0];
   if (!first) return '/auth/no-workspace';
   // Leads (roles that manage a project team or the workspace) land on Overview; staff on My Work (§17).

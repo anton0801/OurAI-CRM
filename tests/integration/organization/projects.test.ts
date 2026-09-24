@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { newIdempotencyKey } from '@castlane/api-client';
-import { directionEndpoints, projectEndpoints } from '@castlane/api-contracts';
+import { directionEndpoints, financeEndpoints as F, projectEndpoints } from '@castlane/api-contracts';
 import { getAppServices } from '@castlane/application';
-import { contentItems, projects, publications, seasons, shifts, tasks } from '@castlane/database';
+import { contentItems, financialAllocations, metricObservations, projects, publications, seasons, shifts, tasks } from '@castlane/database';
 import { newId } from '@castlane/domain';
 import { addMember, assignToProject, clientFor, createAccount, createDirection, createProject, createWorkspace, sessionFor } from '../../support';
+import { onProject, postedEntry } from '../finance/helpers';
+import { at, cumulativeBody, insertPublication, insightsFixture, isoDay, query, record, result } from '../insights/helpers';
 
 const db = () => getAppServices().db;
 
@@ -32,9 +34,18 @@ describe('projects', () => {
     expect(replay.id).toBe(ok[0]!.data!.id);
     const rows = await db().select().from(projects).where(eq(projects.workspaceId, ws.workspaceId));
     expect(rows).toHaveLength(1);
-    // Same key with a different body is rejected (T163).
+  });
+
+  it('the same key with a different body is 409 and creates nothing (T163)', async () => {
+    const { ws, owner, directionId } = await setup();
+    const key = newIdempotencyKey();
+    const body = { name: 'Night Shift', type: 'series' as const, directionId, ownerMembershipId: ws.owner.membershipId, briefSummary: 'Thriller' };
+    const first = await owner.call(projectEndpoints.create, { params: { workspaceId: ws.workspaceId }, body }, { idempotencyKey: key });
     const mismatch = await owner.attempt(projectEndpoints.create, { params: { workspaceId: ws.workspaceId }, body: { ...body, name: 'Other' } }, { idempotencyKey: key });
+    expect(mismatch.status).toBe(409);
     expect(mismatch.code).toBe('IDEMPOTENCY_PAYLOAD_MISMATCH');
+    const rows = await db().select().from(projects).where(eq(projects.workspaceId, ws.workspaceId));
+    expect(rows.map((r) => [r.id, r.name])).toEqual([[first.id, 'Night Shift']]);
   });
 
   it('requires If-Match and rejects stale versions (T164)', async () => {
@@ -119,6 +130,61 @@ describe('archiving an active project (T023)', () => {
   });
 });
 
+describe('archiving a completed project (T024)', () => {
+  it('keeps its historical analytics and finance readable and unchanged', async () => {
+    const f = await insightsFixture();
+    const W = f.p;
+    // History: a publication with metric observations, and a posted expense allocated to the project.
+    const pub = await insertPublication(f, { publishedAt: at(9, 12) });
+    await record(f.owner, f, cumulativeBody(pub, at(8, 12), { 'publication.views': '100' }));
+    await record(f.owner, f, cumulativeBody(pub, at(5, 12), { 'publication.views': '160' }));
+    const fm = await addMember(db(), f.ws, { roleKey: 'finance_manager' });
+    const fmc = await clientFor(await sessionFor(db(), fm.userId));
+    const cats = await f.owner.call(F.categoriesList, { params: W, query: {} });
+    const expense = await postedEntry(fmc, f.owner, W, {
+      type: 'expense',
+      title: 'Voice-over session',
+      recognitionDate: isoDay(6),
+      lines: [{ categoryId: cats.find((c) => c.key === 'production_services')!.id, amount: '250.00', currency: 'EUR' }],
+      allocation: onProject(f.projectId),
+    });
+    const period = { periodStart: isoDay(10), periodEnd: isoDay(1) };
+    const snapshot = async () => {
+      const q = await query(f.owner, f, ['M01', 'M15'], 10, 1, { projectIds: [f.projectId] });
+      const entries = await f.owner.call(F.entriesList, { params: W, query: { projectId: f.projectId } });
+      const summary = await f.owner.call(F.projectSummary, { params: { ...W, projectId: f.projectId }, query: period });
+      const allocations = await db().select().from(financialAllocations).where(eq(financialAllocations.entryId, expense.id));
+      return {
+        published: result(q, 'M01').total,
+        views: result(q, 'M15').total,
+        entries: entries.items.map((e) => [e.id, e.state]),
+        expenses: summary.accrual?.operatingExpenses,
+        recent: summary.recentEntries?.map((e) => e.id),
+        allocations: allocations.map((a) => [a.projectId, a.amountMinor]),
+      };
+    };
+    const before = await snapshot();
+    expect(before.published).toMatchObject({ status: 'known', value: '1' });
+    expect(before.views).toMatchObject({ status: 'known', value: '60' });
+    expect(before.entries).toEqual([[expense.id, 'posted']]);
+    expect(before.expenses?.amount).toBe('250.00');
+    expect(before.allocations).toEqual([[f.projectId, 25000n]]);
+
+    // Complete, then archive the project.
+    const detail = await f.owner.call(projectEndpoints.get, { params: { ...W, projectId: f.projectId } });
+    const done = await f.owner.call(projectEndpoints.transition, { params: { ...W, projectId: f.projectId }, body: { targetState: 'completed' } }, { ifMatch: detail.rowVersion });
+    const archived = await f.owner.call(projectEndpoints.transition, { params: { ...W, projectId: f.projectId }, body: { targetState: 'archived', reason: 'Season wrapped' } }, { ifMatch: done.rowVersion });
+    expect(archived.status).toBe('archived');
+
+    // The same analytics and finance, read after archiving, are identical.
+    expect(await snapshot()).toEqual(before);
+    expect((await f.owner.call(projectEndpoints.get, { params: { ...W, projectId: f.projectId } })).status).toBe('archived');
+    expect((await f.owner.call(F.entriesGet, { params: { ...W, entryId: expense.id } })).state).toBe('posted');
+    const observations = await db().select().from(metricObservations).where(eq(metricObservations.entityId, pub));
+    expect(observations.map((o) => o.projectId)).toEqual([f.projectId, f.projectId]);
+  });
+});
+
 describe('project access scope', () => {
   it('scoped roles see only their projects; out-of-scope ids are 404; budget field absent without finance rights (T016)', async () => {
     const { ws } = await setup();
@@ -153,14 +219,29 @@ describe('project access scope', () => {
     expect(r.status).toBe(404);
   });
 
-  it('revoking a role takes effect on the next request (T017)', async () => {
-    const { ws } = await setup();
-    const viewer = await addMember(db(), ws, { roleKey: 'viewer' });
-    const c = await clientFor(await sessionFor(db(), viewer.userId));
-    expect((await c.attempt(projectEndpoints.list, { params: { workspaceId: ws.workspaceId }, query: {} })).ok).toBe(true);
-    await db().execute(`UPDATE role_assignments SET revoked_at = now() WHERE membership_id = '${viewer.membershipId}'`);
-    const after = await c.attempt(projectEndpoints.list, { params: { workspaceId: ws.workspaceId }, query: {} });
+  it('revoking a role takes effect on the next read and write, with zero mutation (T017)', async () => {
+    const { ws, directionId } = await setup();
+    const p = await createProject(db(), ws, { directionId, name: 'Night Shift' });
+    const lead = await addMember(db(), ws, { roleKey: 'project_lead', scopeType: 'assigned_projects' });
+    await assignToProject(db(), ws, p.id, lead.membershipId);
+    const c = await clientFor(await sessionFor(db(), lead.userId));
+    const W = { workspaceId: ws.workspaceId };
+    expect((await c.attempt(projectEndpoints.list, { params: W, query: {} })).ok).toBe(true);
+    // The open tab still holds the record and its version; the edit it was about to save worked a moment ago.
+    const open = await c.call(projectEndpoints.get, { params: { ...W, projectId: p.id } });
+    const edited = await c.call(projectEndpoints.update, { params: { ...W, projectId: p.id }, body: { description: 'First pass' } }, { ifMatch: open.rowVersion });
+    await db().execute(`UPDATE role_assignments SET revoked_at = now() WHERE membership_id = '${lead.membershipId}'`);
+    const after = await c.attempt(projectEndpoints.list, { params: W, query: {} });
     expect(after.status).toBe(403);
+    expect((await c.attempt(projectEndpoints.get, { params: { ...W, projectId: p.id } })).ok).toBe(false);
+    const write = await c.attempt(projectEndpoints.update, { params: { ...W, projectId: p.id }, body: { name: 'Renamed after revoke', description: 'Second pass' } }, { ifMatch: edited.rowVersion });
+    expect(write.ok).toBe(false);
+    expect([403, 404]).toContain(write.status);
+    const create = await c.attempt(projectEndpoints.create, { params: W, body: { name: 'Sneaky project', type: 'series', directionId, ownerMembershipId: lead.membershipId } });
+    expect(create.ok).toBe(false);
+    const [row] = await db().select().from(projects).where(eq(projects.id, p.id));
+    expect(row).toMatchObject({ name: 'Night Shift', description: 'First pass', rowVersion: edited.rowVersion });
+    expect(await db().select().from(projects).where(eq(projects.workspaceId, ws.workspaceId))).toHaveLength(1);
   });
 
   it('direction names must be unique among active directions', async () => {

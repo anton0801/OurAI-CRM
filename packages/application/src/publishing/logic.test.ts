@@ -132,11 +132,11 @@ describe('campaign cost split (T071)', () => {
   });
 });
 
-describe('comparable results (T072)', () => {
+describe('comparable results', () => {
   const now = new Date('2030-06-10T12:00:00Z');
   const pub = (hoursAgo: number) => new Date(now.getTime() - h(hoursAgo));
 
-  it('compares only values observed at the same post age', () => {
+  it('compares only values observed at the same post age (T072)', () => {
     const tol = comparisonTolerance(24, [{ key: 'pub_24h', offsetHours: 24, toleranceHours: 2 }]);
     expect(tol).toBe(2);
     expect(comparisonTolerance(72, [])).toBe(6);
@@ -149,7 +149,7 @@ describe('comparable results (T072)', () => {
     expect(classifyComparable({ ...base, publicationId: 'e', publishedAt: null, observations: [] }, now, 24, tol).state).toBe('not_published');
   });
 
-  it('never produces a comparable status when a variant has no comparable value', () => {
+  it('never produces a comparable status when a variant has no comparable value (T072)', () => {
     fc.assert(
       fc.property(fc.array(fc.constantFrom('comparable', 'too_young', 'no_observation_in_window', 'unknown_value') as fc.Arbitrary<'comparable'>, { minLength: 1, maxLength: 10 }), (states) => {
         const items = states.map((s, i) => ({ publicationId: `p${i}`, variantId: i % 2 ? 'b' : 'a', segment: 'organic' as const, state: s, ageHours: 30, value: s === 'comparable' ? '5' : null, observedAt: null, observedAgeHours: null }));

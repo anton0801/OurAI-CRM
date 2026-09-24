@@ -103,8 +103,8 @@ describe('Shift reports (§13.3)', () => {
   });
 });
 
-describe('Handovers (S44, T094)', () => {
-  it('routes to the next shift, requires acknowledgement at start, and acknowledgement never completes or clones tasks', async () => {
+describe('Handovers (S44)', () => {
+  it('routes to the next shift, requires acknowledgement at start, and acknowledgement never completes or clones tasks (T094)', async () => {
     const s = await ofmSetup();
     const next = await s.schedule(s.manager2.membershipId, 5, 9);
     const { shift, clock } = await workShift(s, 'manager', 1, 4);

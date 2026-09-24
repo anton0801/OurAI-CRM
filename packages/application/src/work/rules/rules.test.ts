@@ -44,8 +44,8 @@ describe('task status rules', () => {
   });
 });
 
-describe('dependency graph (T048)', () => {
-  it('rejects self edges and cycles with the offending path', () => {
+describe('dependency graph', () => {
+  it('rejects self edges and cycles with the offending path (T048)', () => {
     const edges: DependencyEdge[] = [
       { predecessorId: 'a', successorId: 'b' },
       { predecessorId: 'b', successorId: 'c' },
@@ -56,7 +56,7 @@ describe('dependency graph (T048)', () => {
     expect([...reachableFrom(edges, 'a')].sort()).toEqual(['b', 'c']);
   });
 
-  it('property: accepting only edges that do not close a cycle keeps the graph acyclic', () => {
+  it('property: accepting only edges that do not close a cycle keeps the graph acyclic (T048)', () => {
     fc.assert(
       fc.property(fc.array(fc.tuple(fc.constantFrom(...ids), fc.constantFrom(...ids)), { maxLength: 60 }), (pairs) => {
         const edges: DependencyEdge[] = [];
@@ -70,7 +70,7 @@ describe('dependency graph (T048)', () => {
     );
   });
 
-  it('property: createsCycle agrees with a brute-force acyclicity check', () => {
+  it('property: createsCycle agrees with a brute-force acyclicity check (T048)', () => {
     fc.assert(
       fc.property(
         fc.array(fc.tuple(fc.constantFrom(...ids), fc.constantFrom(...ids)), { maxLength: 25 }),
@@ -140,8 +140,8 @@ const baseSpec: RecurrenceSpec = {
   endsOn: null,
 };
 
-describe('recurrence (T054, T055)', () => {
-  it('monthly on the 31st uses the last day of shorter months, reproducibly', () => {
+describe('recurrence', () => {
+  it('monthly on the 31st uses the last day of shorter months, reproducibly (T055)', () => {
     const dates = occurrenceDates(baseSpec, '2026-01-01', '2026-06-30').map((o) => o.date);
     expect(dates).toEqual(['2026-01-31', '2026-02-28', '2026-03-31', '2026-04-30', '2026-05-31', '2026-06-30']);
     expect(occurrenceDates(baseSpec, '2028-02-01', '2028-02-29').map((o) => o.date)).toEqual(['2028-02-29']);
@@ -162,7 +162,7 @@ describe('recurrence (T054, T055)', () => {
     expect(occ.map((o) => o.scheduledFor.toISOString())).toEqual(['2026-10-24T07:00:00.000Z', '2026-10-25T08:00:00.000Z', '2026-10-26T08:00:00.000Z']);
   });
 
-  it('after an outage only one overdue occurrence is created and the rest are listed as missed', () => {
+  it('after an outage only one overdue occurrence is created and the rest are listed as missed (T054)', () => {
     const daily: RecurrenceSpec = { ...baseSpec, cadence: 'daily', monthDay: null, startsOn: '2026-09-01' };
     const plan = planGeneration(daily, {
       now: new Date('2026-10-10T12:00:00Z'),
@@ -213,8 +213,8 @@ describe('recurrence (T054, T055)', () => {
   });
 });
 
-describe('workload (T060)', () => {
-  it('spreads remaining estimates over available working days; unestimated is a count, not zero hours', () => {
+describe('workload', () => {
+  it('spreads remaining estimates over available working days; unestimated is a count, not zero hours (T060)', () => {
     const r = computeWorkload({
       from: '2026-10-05',
       to: '2026-10-11',
@@ -239,7 +239,7 @@ describe('workload (T060)', () => {
     expect(r.overloadMinutes).toBe(0);
   });
 
-  it('capacity that is not set stays unknown (never assumed)', () => {
+  it('capacity that is not set stays unknown (never assumed) (T060)', () => {
     const r = computeWorkload({ from: '2026-10-05', to: '2026-10-06', today: '2026-10-05', profiles: [], absentDates: new Set(), tasks: [], manual: new Map() });
     expect(r.capacityMinutes).toBeNull();
     expect(r.overloadMinutes).toBeNull();
@@ -257,8 +257,8 @@ describe('workload (T060)', () => {
   });
 });
 
-describe('time entries (T059)', () => {
-  it('detects overlapping intervals but not touching ones', () => {
+describe('time entries', () => {
+  it('detects overlapping intervals but not touching ones (T059)', () => {
     const t = (h: number) => new Date(Date.UTC(2026, 9, 5, h));
     expect(
       findOverlaps([

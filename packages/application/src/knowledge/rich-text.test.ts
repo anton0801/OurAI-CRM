@@ -19,10 +19,15 @@ describe('rich text normalisation (§14 structured rich text, no HTML)', () => {
     expect(() => richTextDoc.parse({ type: 'doc', content: [{ type: 'iframe', src: 'https://evil.test' }] })).toThrow();
   });
 
-  it('rejects unsafe links instead of keeping them', () => {
+  it('rejects javascript:, data: and file: links instead of keeping them (T160)', () => {
     const r = normalizeDoc(doc({ type: 'paragraph', content: [{ type: 'text', text: 'click', href: 'javascript:alert(1)' }] }));
     expect(r.issues[0]?.code).toBe('UNSAFE_LINK');
     expect(JSON.stringify(r.doc)).not.toContain('javascript');
+    for (const href of ['JAVASCRIPT:alert(1)', 'data:text/html;base64,PHNjcmlwdD4=', 'file:///etc/passwd', 'vbscript:msgbox(1)']) {
+      const bad = normalizeDoc(doc({ type: 'paragraph', content: [{ type: 'text', text: 'click', href }] }));
+      expect(bad.issues.map((i) => i.code), href).toEqual(['UNSAFE_LINK']);
+      expect(JSON.stringify(bad.doc), href).not.toContain(href.slice(0, 8));
+    }
     const ok = normalizeDoc(doc({ type: 'paragraph', content: [{ type: 'text', text: 'docs', href: 'https://example.com/a' }] }));
     expect(ok.issues).toHaveLength(0);
   });

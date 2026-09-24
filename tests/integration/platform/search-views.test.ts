@@ -13,8 +13,8 @@ const setup = async () => {
   return { ws, owner, params, make };
 };
 
-describe('search page (S11, T159)', () => {
-  it('never leaks results, snippets or counts of hidden records', async () => {
+describe('search page (S11)', () => {
+  it('never leaks results, snippets or counts of hidden records (T159)', async () => {
     const { ws, params, make } = await setup();
     const visible = await make('Harbor Lights', 'A quiet harbor mystery');
     const hidden = await make('Harbor Secrets', 'Confidential harbor launch plan');

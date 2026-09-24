@@ -69,8 +69,8 @@ describe('XLSX parsing (T152)', () => {
   });
 });
 
-describe('value coercion (T149)', () => {
-  it('never guesses grouping separators', () => {
+describe('value coercion', () => {
+  it('never guesses grouping separators: an ambiguous amount needs the separator mapping (T149)', () => {
     expect(parseDecimal('1,234', '.')).toMatchObject({ ok: false, code: 'AMBIGUOUS_NUMBER' });
     expect(parseDecimal('1.234', ',')).toMatchObject({ ok: false, code: 'AMBIGUOUS_NUMBER' });
     expect(parseDecimal('1 234', '.')).toMatchObject({ ok: false });
@@ -78,7 +78,7 @@ describe('value coercion (T149)', () => {
     expect(parseDecimal('-0012.50', '.')).toEqual({ ok: true, value: '-12.50' });
   });
 
-  it('round-trips any decimal written with the chosen separator', () => {
+  it('with the chosen separator every amount is read exactly, never rescaled (T149)', () => {
     fc.assert(
       fc.property(fc.integer({ min: -1_000_000, max: 1_000_000 }), fc.nat({ max: 9999 }), fc.constantFrom('.', ','), (i, f, sep) => {
         const text = `${i}${sep}${String(f).padStart(4, '0')}`;
@@ -88,7 +88,7 @@ describe('value coercion (T149)', () => {
     );
   });
 
-  it('accepts ISO dates or the explicitly chosen format only', () => {
+  it('accepts ISO dates or the explicitly chosen format only; an ambiguous date is not guessed (T149)', () => {
     expect(parseDate('2026-10-01', 'iso')).toEqual({ ok: true, value: '2026-10-01' });
     expect(parseDate('01/10/2026', 'iso')).toMatchObject({ ok: false, code: 'DATE_FORMAT' });
     expect(parseDate('01/10/2026', 'dd/mm/yyyy')).toEqual({ ok: true, value: '2026-10-01' });

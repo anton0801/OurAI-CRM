@@ -130,8 +130,8 @@ describe('automation schedules', () => {
   });
 });
 
-describe('automation chain limits (T141)', () => {
-  it('stops at depth, recursion and budget', () => {
+describe('automation chain limits', () => {
+  it('stops at depth, recursion and budget (T141)', () => {
     expect(automationChainVerdict({ depth: 5, ruleAlreadyInChain: false, effectsInChain: 0, plannedEffects: 1 }).ok).toBe(true);
     expect(automationChainVerdict({ depth: 6, ruleAlreadyInChain: false, effectsInChain: 0, plannedEffects: 1 })).toMatchObject({ ok: false, code: 'DEPTH_LIMIT' });
     expect(automationChainVerdict({ depth: 1, ruleAlreadyInChain: true, effectsInChain: 0, plannedEffects: 1 })).toMatchObject({ ok: false, code: 'RECURSION' });
@@ -139,7 +139,7 @@ describe('automation chain limits (T141)', () => {
     expect(automationChainVerdict({ depth: 1, ruleAlreadyInChain: false, effectsInChain: 49, plannedEffects: 1 }).ok).toBe(true);
   });
 
-  it('throttles above the hourly rate without dropping runs', () => {
+  it('throttles above the hourly rate without dropping runs (T141)', () => {
     const now = new Date('2026-09-24T12:00:00Z');
     const starts = Array.from({ length: AUTOMATION_LIMITS.runsPerHour }, (_, i) => new Date(now.getTime() - (3_000_000 - i * 1000)));
     const until = automationThrottleUntil(starts, now);

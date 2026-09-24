@@ -38,7 +38,7 @@ const memberClient = async (ws: Awaited<ReturnType<typeof createWorkspace>>, rol
   return { ...m, c: await clientFor(await sessionFor(db(), m.userId)) };
 };
 
-describe('knowledge articles: publish, frozen versions, drafts (T082)', () => {
+describe('knowledge articles: publish, frozen versions, drafts', () => {
   it('publishing freezes the version; a later edit becomes a new draft and never changes the published text (T082)', async () => {
     const { w, owner, newArticle, publish, edit } = await setup();
     const created = await newArticle();
@@ -199,7 +199,7 @@ describe('knowledge access: drafts for editors, published text in the article sc
   });
 });
 
-describe('required reading and acknowledgements (T083, T084)', () => {
+describe('required reading and acknowledgements', () => {
   it('opening the article does not acknowledge it; only the explicit action does, idempotently (T083)', async () => {
     const { ws, w, owner, newArticle, publish } = await setup();
     const viewer = await memberClient(ws, 'viewer');

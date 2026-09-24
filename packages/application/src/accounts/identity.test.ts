@@ -6,8 +6,8 @@ import { ACCOUNT_TRANSITIONS } from './accounts';
 const handle = fc.stringMatching(/^[a-z0-9._]{3,20}$/);
 const tracking = fc.subarray(['utm_source=ig', 'utm_medium=social', 'igshid=abc123', 'igsh=zz', 'fbclid=x1', 'ref=bio'], { minLength: 0 });
 
-describe('profile URL identity (T028/T029)', () => {
-  it('tracking parameters, www/m hosts, trailing slashes and handle case never change an Instagram identity', () => {
+describe('profile URL identity', () => {
+  it('tracking parameters, www/m hosts, trailing slashes and handle case never change an Instagram identity (T028)', () => {
     fc.assert(
       fc.property(handle, tracking, fc.constantFrom('', 'www.', 'm.'), fc.boolean(), fc.boolean(), (h, params, prefix, slash, upper) => {
         const base = normalizeProfileUrl(`https://instagram.com/${h}`, 'instagram');
@@ -19,7 +19,7 @@ describe('profile URL identity (T028/T029)', () => {
     );
   });
 
-  it('custom sites keep case-sensitive paths distinct', () => {
+  it('custom sites keep case-sensitive paths distinct (T029)', () => {
     fc.assert(
       fc.property(fc.stringMatching(/^[A-Za-z]{3,12}$/).filter((s) => s !== s.toLowerCase()), (seg) => {
         const a = normalizeProfileUrl(`https://fans.example.com/${seg}`, 'other');

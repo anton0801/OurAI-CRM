@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { authEndpoints, mediaEndpoints, projectEndpoints, shellEndpoints } from '@castlane/api-contracts';
+import { accountEndpoints, authEndpoints, mediaEndpoints, projectEndpoints, publicationEndpoints, shellEndpoints } from '@castlane/api-contracts';
 import { getAppServices } from '@castlane/application';
-import { projects } from '@castlane/database';
-import { TestClient, addMember, assignToProject, clientFor, createDirection, createProject, createUser, createWorkspace, sessionFor, DEFAULT_TEST_PASSWORD } from '../support';
+import { assets, contentItems, projects, publications, socialAccounts, tasks } from '@castlane/database';
+import { newId } from '@castlane/domain';
+import { TestClient, addMember, assignToProject, clientFor, createAccount, createDirection, createProject, createUser, createWorkspace, sessionFor, DEFAULT_TEST_PASSWORD } from '../support';
 
 const db = () => getAppServices().db;
 
@@ -56,6 +57,26 @@ describe('API security', () => {
     // Search in A never returns B's records.
     const found = await ownerA.call(shellEndpoints.search, { params: { workspaceId: a.workspaceId }, query: { q: 'Secret' } });
     expect(JSON.stringify(found)).not.toContain(projectB);
+
+    // Below the API, composite tenant foreign keys refuse a link across workspaces even for a
+    // direct write: a task of A pointing at B's project, a project of A in B's direction.
+    const foreignKeyViolation = async (write: Promise<unknown>) => {
+      const e = (await write.then(() => null, (x: unknown) => x)) as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } } | null;
+      expect(e, 'the write must be refused').not.toBeNull();
+      return { code: e!.code ?? e!.cause?.code, constraint: e!.constraint ?? e!.cause?.constraint };
+    };
+    const now = new Date();
+    expect(await foreignKeyViolation(db().insert(tasks).values({ id: newId(), workspaceId: a.workspaceId, projectId: projectB, title: 'Cross-tenant task', createdAt: now, updatedAt: now }))).toEqual({ code: '23503', constraint: 'tasks_project_fk' });
+    const { id: projectA } = await createProject(db(), a, { name: 'Alpha A' });
+    expect(
+      (await foreignKeyViolation(db().update(projects).set({ directionId: directionB }).where(eq(projects.id, projectA)))).code,
+    ).toBe('23503');
+    const accountB = await createAccount(db(), b, { projectId: projectB });
+    expect(
+      (await foreignKeyViolation(db().insert(tasks).values({ id: newId(), workspaceId: a.workspaceId, projectId: projectA, accountId: accountB, title: 'Cross-tenant account', createdAt: now, updatedAt: now }))).constraint,
+    ).toBe('tasks_account_fk');
+    expect(await db().select().from(tasks).where(eq(tasks.workspaceId, a.workspaceId))).toEqual([]);
+    expect((await db().select().from(projects).where(eq(projects.id, projectA)))[0]?.directionId).not.toBe(directionB);
   });
 
   it('search never leaks titles, snippets or counts of out-of-scope objects (T159)', async () => {
@@ -79,13 +100,36 @@ describe('API security', () => {
     expect(text).not.toContain('Aurora hidden');
   });
 
-  it('rejects javascript:, data: and file: links (T160)', async () => {
+  it('rejects javascript:, data: and file: links on every URL-accepting API, storing nothing (T160)', async () => {
     const ws = await createWorkspace(db());
     const owner = await clientFor(await sessionFor(db(), ws.owner.userId));
-    for (const url of ['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'file:///etc/passwd', 'JaVaScRiPt:alert(1)']) {
-      const r = await owner.attempt(mediaEndpoints.externalLink, { params: { workspaceId: ws.workspaceId }, body: { url, title: 'Bad link' } });
-      expect(r.status, url).toBe(422);
+    const W = { workspaceId: ws.workspaceId };
+    const { id: projectId } = await createProject(db(), ws, { name: 'Link Probe' });
+    const accountId = await createAccount(db(), ws, { projectId });
+    const now = new Date();
+    const contentItemId = newId();
+    await db().insert(contentItems).values({ id: contentItemId, workspaceId: ws.workspaceId, projectId, title: 'Teaser', format: 'short_video', stage: 'approved', ownerMembershipId: ws.owner.membershipId, createdAt: now, updatedAt: now });
+    const publicationId = newId();
+    await db().insert(publications).values({ id: publicationId, workspaceId: ws.workspaceId, contentItemId, accountId, projectId, ownerMembershipId: ws.owner.membershipId, status: 'scheduled', scheduledAt: new Date(now.getTime() - 60_000), createdAt: now, updatedAt: now });
+    const unsafe = ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', ' javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'file:///etc/passwd'];
+    for (const url of unsafe) {
+      // Media library: external link.
+      const media = await owner.attempt(mediaEndpoints.externalLink, { params: W, body: { url, title: 'Bad link' } });
+      expect(media.status, `media ${url}`).toBe(422);
+      // Accounts: profile URL (a custom platform accepts any host, never another scheme).
+      const account = await owner.attempt(accountEndpoints.create, { params: W, body: { platform: 'other', profileUrl: url, ownerMembershipId: ws.owner.membershipId, projectId } });
+      expect(account.status, `account ${url}`).toBe(422);
+      // Publications: the external post URL when confirming a placement.
+      const pub = await owner.attempt(publicationEndpoints.markPublished, { params: { ...W, publicationId }, body: { actualPublishedAt: now.toISOString(), externalUrl: url } }, { ifMatch: 1 });
+      expect(pub.status, `publication ${url}`).toBe(422);
     }
+    expect(await db().select().from(assets).where(eq(assets.workspaceId, ws.workspaceId))).toEqual([]);
+    expect((await db().select().from(socialAccounts).where(eq(socialAccounts.workspaceId, ws.workspaceId))).map((a) => a.id)).toEqual([accountId]);
+    const [pub] = await db().select().from(publications).where(eq(publications.id, publicationId));
+    expect(pub?.status).toBe('scheduled');
+    expect(pub?.externalPostUrl).toBeNull();
+    // Control: an https link is accepted by the same endpoint.
+    expect((await owner.attempt(mediaEndpoints.externalLink, { params: W, body: { url: 'https://example.com/clip', title: 'Good link' } })).ok).toBe(true);
   });
 
   it('requires a session for workspace data and sets hardened session cookies', async () => {

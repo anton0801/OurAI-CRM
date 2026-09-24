@@ -13,7 +13,7 @@ import { MARCH, db, expenseBody, financeSetup, postedEntry, statementBody } from
  * production expense is paid Cash Movement = 720 − 200 − 30 = 490.
  */
 describe('finance control example (§18.7)', () => {
-  it('reproduces 720 / 448 / 42 / 490 and keeps values on replay (T119, T120, T121)', async () => {
+  it('reproduces 720 / 448 / 42 / 490; a replayed compensation approve leaves one expense document and one claim (T119, T120, T121, T130)', async () => {
     const { ws, owner, fmc, project, p, cat } = await financeSetup();
     const manager = await addMember(db(), ws, { roleKey: 'ofm_manager', scopeType: 'assigned_accounts', name: 'Mara Manager' });
 

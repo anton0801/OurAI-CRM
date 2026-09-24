@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { newIdempotencyKey } from '@castlane/api-client';
-import { taskEndpoints as T } from '@castlane/api-contracts';
+import { analyticsEndpoints, projectEndpoints, taskEndpoints as T } from '@castlane/api-contracts';
 import { auditEvents, notifications, taskDependencies, tasks, taskStatusEvents } from '@castlane/database';
 import { resetClock, setClock } from '../../support';
 import { db, getTask, member, newTask, transition, workFixture } from './helpers';
@@ -22,7 +22,11 @@ describe('task create/edit', () => {
     const rows = await db().select().from(tasks).where(eq(tasks.workspaceId, f.ws.workspaceId));
     expect(rows).toHaveLength(1);
     const mismatch = await f.owner.attempt(T.create, { params: f.params, body: { ...body, title: 'Different' } }, { idempotencyKey: key });
+    expect(mismatch.status).toBe(409);
     expect(mismatch.code).toBe('IDEMPOTENCY_PAYLOAD_MISMATCH');
+    // No second effect: still exactly the first task, unchanged.
+    const after = await db().select().from(tasks).where(eq(tasks.workspaceId, f.ws.workspaceId));
+    expect(after.map((r) => [r.id, r.title])).toEqual([[a.id, 'Storyboard episode 1']]);
     const missing = await f.owner.attempt(T.update, { params: { ...f.params, taskId: a.id }, body: { title: 'Renamed' } });
     expect(missing.status).toBe(428);
     const ok = await f.owner.call(T.update, { params: { ...f.params, taskId: a.id }, body: { title: 'Renamed' } }, { ifMatch: a.rowVersion });
@@ -82,7 +86,7 @@ describe('task create/edit', () => {
   });
 });
 
-describe('task access scope (T014)', () => {
+describe('task access scope', () => {
   it('lists, counts and reads only tasks in scope; out-of-scope ids are 404; module without permission is 403', async () => {
     const f = await workFixture();
     const creator = await member(f, 'creator', { projects: [f.projectId] });
@@ -107,7 +111,7 @@ describe('task access scope (T014)', () => {
     expect(denied.status).toBe(403);
   });
 
-  it('a contractor sees only tasks assigned to them, with no project payload (T014)', async () => {
+  it('a contractor requesting project detail gets no project payload, only the permitted task projection (T014)', async () => {
     const f = await workFixture();
     const contractor = await member(f, 'contractor');
     const mine = await newTask(f.owner, f, { title: 'Edit trailer', assigneeMembershipId: contractor.membershipId });
@@ -115,7 +119,21 @@ describe('task access scope (T014)', () => {
     const list = await contractor.client.call(T.list, { params: f.params, query: {} });
     expect(list.items.map((i) => i.title)).toEqual(['Edit trailer']);
     const detail = await getTask(contractor.client, f, mine.id);
-    expect(Object.keys(detail.project).sort()).toEqual(['id', 'name']);
+    expect(detail.project).toEqual({ id: f.projectId, name: 'Night Shift' });
+    // The project of their own task: no detail, no list, no neighbouring project either.
+    for (const projectId of [f.projectId, f.otherProjectId]) {
+      const direct = await contractor.client.attempt(projectEndpoints.get, { params: { ...f.params, projectId } });
+      expect(direct.ok).toBe(false);
+      expect([403, 404]).toContain(direct.status);
+      expect(direct.data).toBeNull();
+    }
+    const projectsList = await contractor.client.attempt(projectEndpoints.list, { params: f.params, query: {} });
+    expect(projectsList.ok).toBe(false);
+    expect(projectsList.status).toBe(403);
+    // Control: the Owner's project detail carries the full payload the contractor does not get.
+    const full = await f.owner.call(projectEndpoints.get, { params: { ...f.params, projectId: f.projectId } });
+    expect(full.briefSummary).toBe('Test brief');
+    expect(JSON.stringify(detail)).not.toContain('Test brief');
   });
 
   it('an assignee must be able to access the project; following never grants access', async () => {
@@ -225,7 +243,7 @@ describe('task lifecycle', () => {
     expect(approved.data?.status).toBe('done');
   });
 
-  it('reopen creates a new cycle and keeps one completion per cycle (T051)', async () => {
+  it('reopen creates a new cycle event; the task is not counted again as a produced unit (T051)', async () => {
     const f = await workFixture();
     const t = await newTask(f.owner, f, { assigneeMembershipId: f.ws.owner.membershipId });
     let cur = (await transition(f.owner, f, t, 'in_progress')).data!;
@@ -243,6 +261,18 @@ describe('task lifecycle', () => {
     const reopen = events.find((e) => e.fromStatus === 'done');
     expect(reopen?.reason).toBe('Colour grading was wrong');
     expect(reopen?.cycle).toBe(2);
+
+    // Delivery metrics count the task once (its last valid Done), not once per Done event; the
+    // reopen is reported next to the count. A second task done once makes the total 2, not 3.
+    const other = await newTask(f.owner, f, { title: 'Second deliverable', assigneeMembershipId: f.ws.owner.membershipId });
+    let o = (await transition(f.owner, f, other, 'in_progress')).data!;
+    o = (await transition(f.owner, f, o, 'done')).data!;
+    const q = await f.owner.call(analyticsEndpoints.query, { params: f.params, body: { metrics: ['X02'], period: { preset: 'last_7_days' }, compare: false, filters: {}, groupBy: 'member' } });
+    const completed = q.results.find((r) => r.metricId === 'X02')! as unknown as { total: { status: string; value: string | null; note?: string }; groups: { key: string | null; value: { value: string | null } }[] };
+    expect(completed.total).toMatchObject({ status: 'known', value: '2', note: 'Reopened at least once: 1' });
+    expect(completed.groups.map((g) => [g.key, g.value.value])).toEqual([[f.ws.owner.membershipId, '2']]);
+    const doneEvents = await db().select().from(taskStatusEvents).where(and(eq(taskStatusEvents.workspaceId, f.ws.workspaceId), eq(taskStatusEvents.toStatus, 'done')));
+    expect(doneEvents).toHaveLength(3);
   });
 
   it('a parent completes only when required subtasks are done or cancelled with an accepted reason', async () => {

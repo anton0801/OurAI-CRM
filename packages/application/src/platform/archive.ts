@@ -133,7 +133,12 @@ const saveToken = async (ctx: QueryContext, action: string, items: (EntityPrevie
       id,
       actorMembershipId: ctx.actor.membershipId!,
       action,
-      params: { ...params, states: Object.fromEntries(items.map((i) => [refKey(i), i.state ?? null])), collisions: Object.fromEntries(items.map((i) => [refKey(i), i.collisions.map((x) => x.field)])) },
+      params: {
+        ...params,
+        states: Object.fromEntries(items.map((i) => [refKey(i), i.state ?? null])),
+        collisions: Object.fromEntries(items.map((i) => [refKey(i), i.collisions.map((x) => x.field)])),
+        messages: Object.fromEntries(items.filter((i) => i.status !== 'ok').map((i) => [refKey(i), i.message ?? null])),
+      },
       targets: items.map((i) => ({ type: i.entityType, id: i.entityId, rowVersion: i.rowVersion ?? 0, status: i.status === 'ok' ? ('ok' as const) : i.status === 'forbidden' ? ('forbidden' as const) : ('conflict' as const) })),
       accessRevision: ctx.actor.access.accessRevision,
       summary: { ok: items.filter((i) => i.status === 'ok').length, total: items.length },
@@ -150,6 +155,14 @@ const consumeToken = async (ctx: CommandContext, token: string, action: string) 
   if (p.accessRevision !== ctx.actor.access.accessRevision) throw new AppError('INVALID_STATE', 'Your access changed after the preview. Preview again.');
   await ctx.tx.update(bulkPreviews).set({ consumedAt: ctx.app.clock.now() }).where(eq(bulkPreviews.id, p.id));
   return p;
+};
+
+type TokenParams = { states?: Record<string, string | null>; collisions?: Record<string, string[]>; messages?: Record<string, string | null> };
+
+/** A target the preview did not allow is reported with the preview's reason — never silently dropped. */
+const notDone = (verb: string, params: TokenParams, key: string) => {
+  const why = params.messages?.[key];
+  return why ? `Not ${verb}: ${why}` : `Not ${verb}: the preview did not allow this record. Preview again.`;
 };
 
 const outcome = (t: Target, e: unknown, title = 'Record'): EntityPreviewItem => {
@@ -203,13 +216,16 @@ export const archivePreview = async (ctx: QueryContext, targets: Target[]) => {
 
 export const archiveEntities = async (ctx: CommandContext, input: { previewToken: string; reason?: string; resolutions?: Record<string, Record<string, string>> }) => {
   const p = await consumeToken(ctx, input.previewToken, 'entities.archive');
+  const params = p.params as TokenParams;
   const done: Target[] = [];
   const failed: (Target & { message: string })[] = [];
   for (const t of p.targets) {
     const ref = { entityType: t.type, entityId: t.id };
-    if (t.status !== 'ok') continue;
     const h = getArchiveHandler(t.type);
-    if (!h) continue;
+    if (t.status !== 'ok' || !h) {
+      failed.push({ ...ref, message: notDone('archived', params, refKey(ref)) });
+      continue;
+    }
     const err = await perItem(ctx, async () => {
       const now = await h.preview(ctx, t.id);
       if (now.rowVersion !== t.rowVersion) throw new AppError('INVALID_STATE', 'The record changed after the preview. Preview again.');
@@ -279,15 +295,18 @@ export const restorePreview = async (ctx: QueryContext, targets: Target[]) => {
 /** Restore with current authorisation; unique collisions need an explicit resolution (T155). */
 export const restoreEntities = async (ctx: CommandContext, input: { previewToken: string; resolutions?: Record<string, Record<string, string>> }) => {
   const p = await consumeToken(ctx, input.previewToken, 'entities.restore');
-  const params = p.params as { states?: Record<string, string | null>; collisions?: Record<string, string[]> };
+  const params = p.params as TokenParams;
   const done: Target[] = [];
   const failed: (Target & { message: string })[] = [];
   for (const t of p.targets) {
-    if (t.status !== 'ok') continue;
     const ref = { entityType: t.type, entityId: t.id };
     const key = refKey(ref);
     const h = getArchiveHandler(t.type);
-    if (!h) continue;
+    // Blocked, forbidden or unsupported targets are listed as not restored, with the reason.
+    if (t.status !== 'ok' || !h) {
+      failed.push({ ...ref, message: notDone('restored', params, key) });
+      continue;
+    }
     const res = input.resolutions?.[key] ?? {};
     const missing = (params.collisions?.[key] ?? []).filter((f) => !res[f]);
     if (missing.length) {

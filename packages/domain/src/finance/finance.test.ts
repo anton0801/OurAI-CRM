@@ -187,7 +187,7 @@ describe('allocation (§18.3, T127)', () => {
   });
 });
 
-describe('fx (§18.3–18.4, T126/T128)', () => {
+describe('fx (§18.3–18.4)', () => {
   const rates = [
     { id: '1', fromCurrency: 'USD', toCurrency: 'EUR', rate: '0.9000000000', effectiveDate: '2026-09-01', source: 'bank' },
     { id: '2', fromCurrency: 'USD', toCurrency: 'EUR', rate: '0.9200000000', effectiveDate: '2026-09-15', source: 'bank' },

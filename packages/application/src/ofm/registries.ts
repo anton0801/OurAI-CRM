@@ -153,6 +153,9 @@ defineResponsibilityProvider({
   kind: 'ofm.assignments',
   label: 'OFM account assignments',
   unassignedBehaviour: 'Ended now; the account keeps its other assignments and history.',
+  // Scheduled shifts are moved or cancelled first (their own choices in the preview), so ending or
+  // transferring the assignment never trips over them (T019).
+  transferAfter: ['ofm.shifts'],
   async list(ctx, membershipId) {
     const now = ctx.app.clock.now();
     const rows = await dbOf(ctx)
