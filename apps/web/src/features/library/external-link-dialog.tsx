@@ -34,12 +34,15 @@ export const ExternalLinkDialog = ({
   onOpenChange,
   folderId,
   defaultProjectId,
+  projectLocked = false,
   onCreated,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   folderId: string | null;
   defaultProjectId: string | null;
+  /** The target folder belongs to a project: the link takes that project. */
+  projectLocked?: boolean;
   onCreated?: (assetId: string) => void;
 }) => {
   const { workspace } = useWorkspace();
@@ -86,11 +89,13 @@ export const ExternalLinkDialog = ({
         <Field label="Title" required error={form.formState.errors.title?.message}>
           <Input {...form.register('title')} maxLength={120} />
         </Field>
-        {!folderId ? (
-          <Field label="Project" helper="Leave empty for the workspace library (needs workspace-wide file access).">
+        {!projectLocked ? (
+          <Field label="Project" helper="The project decides who can see the link. Leave empty for the workspace library (needs workspace-wide file access).">
             <Controller control={form.control} name="projectId" render={({ field }) => <EntitySelect type="project" value={field.value} onChange={(v) => field.onChange(v)} clearable />} />
           </Field>
-        ) : null}
+        ) : (
+          <p className="text-[13px] text-fg-2">The link belongs to the project of this folder.</p>
+        )}
         <Field label="Description" error={form.formState.errors.description?.message}>
           <Textarea {...form.register('description')} maxLength={2000} />
         </Field>

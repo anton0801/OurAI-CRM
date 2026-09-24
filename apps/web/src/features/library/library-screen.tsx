@@ -111,7 +111,7 @@ export const LibraryScreen = () => {
     workspaceId: workspace.id,
     purpose: 'general',
     folderId,
-    projectId: current?.projectId ?? (current ? null : uploadProject),
+    projectId: current?.projectId ?? uploadProject,
     sensitivity,
     checkDuplicates: true,
     onUploaded: () => void data.refetch(),
@@ -359,21 +359,24 @@ export const LibraryScreen = () => {
           {hasSelection ? (
             <div className="flex flex-wrap items-center gap-2 rounded-[8px] bg-selection px-3 py-2 text-[13px] text-fg" role="status">
               <span>{allMatching ? 'All matching files selected' : `${selected.size} selected`}</span>
-              {!allMatching && data.hasNextPage ? (
+              {/* The table has its own Select All Matching / Clear Selection controls. */}
+              {state.view !== 'table' && !allMatching && data.hasNextPage ? (
                 <Button size="sm" variant="ghost" onClick={() => setAllMatching(true)}>
                   Select All Matching
                 </Button>
               ) : null}
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setSelected(new Set());
-                  setAllMatching(false);
-                }}
-              >
-                Clear Selection
-              </Button>
+              {state.view !== 'table' ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setSelected(new Set());
+                    setAllMatching(false);
+                  }}
+                >
+                  Clear Selection
+                </Button>
+              ) : null}
               <span className="ml-auto flex flex-wrap gap-1">
                 {canUpload ? (
                   <>
@@ -443,6 +446,13 @@ export const LibraryScreen = () => {
               />
             ) : (
               <div className="flex flex-col gap-3">
+                {(canUpload || canArchive) && !hasSelection ? (
+                  <div>
+                    <Button size="sm" variant="ghost" onClick={() => setSelected(new Set(data.items.map((i) => i.id)))}>
+                      Select Visible ({data.items.length})
+                    </Button>
+                  </div>
+                ) : null}
                 <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
                   {data.items.map((a) => (
                     <li key={a.id} className="relative">
@@ -499,6 +509,7 @@ export const LibraryScreen = () => {
         onOpenChange={setExternalOpen}
         folderId={folderId}
         defaultProjectId={current?.projectId ?? state.projectId ?? null}
+        projectLocked={!!current?.projectId}
         onCreated={(id) => router.push(wsPath(`/library/assets/${id}`))}
       />
       <FolderFormDialog

@@ -67,11 +67,9 @@ export const UploadDrawer = ({
           </div>
         ) : null}
         {!folder?.projectId ? (
-          folder ? null : (
-            <Field label="Project" helper="Files without a project belong to the workspace library (workspace-wide file access needed).">
-              <EntitySelect type="project" value={projectId} onChange={(v) => onProjectChange(v)} clearable placeholder="Workspace library" />
-            </Field>
-          )
+          <Field label="Project" helper="The project decides who can see the files. Files without a project belong to the workspace library (workspace-wide file access needed).">
+            <EntitySelect type="project" value={projectId} onChange={(v) => onProjectChange(v)} clearable placeholder="Workspace library" />
+          </Field>
         ) : (
           <p className="text-[13px] text-fg-2">Files uploaded here belong to the project {folder.projectName ?? 'of this folder'}.</p>
         )}
