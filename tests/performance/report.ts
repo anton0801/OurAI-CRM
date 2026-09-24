@@ -670,13 +670,28 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
     achieved < offered * 0.95;
   const pass = r.classes.filter((c) => c.verdict === 'PASS').length;
   const host = r.environment.host;
-  out.push(
-    `**Verdict on this machine.** ${pass} of ${r.classes.length} classes met the p95 threshold under the full §28.3 profile.` +
-      (saturated
-        ? ` The cause is saturation, not slow queries. The server completed ${Math.round((achieved / offered) * 100)} % of the offered requests (${(achieved / r.profile.measuredSeconds).toFixed(1)} of ${(offered / r.profile.measuredSeconds).toFixed(1)} per second over the measured phases). The open-model backlog reached the in-flight cap of ${r.profile.maxInFlight}, so waiting time, not service time, sets the latency. The p95 figures cover successful responses only. Timeouts count as errors, and a class with more than 1 % errors fails on its own.`
-        : ''),
-    '',
-  );
+  const cap = Number((r.config as { maxInFlight?: number }).maxInFlight ?? 500);
+  const steady = r.profile.phases.find((p) => p.name === 'steady');
+  const burst = r.profile.phases.find((p) => p.name === 'burst');
+  const steadyOk = r.classes.every((c) => c.byPhase.steady != null && c.byPhase.steady <= c.threshold);
+  const qp = r.queue.byPhase;
+  const verdict = [`**Verdict on this machine.** ${pass} of ${r.classes.length} classes met the p95 threshold over all measured phases of the full §28.3 profile.`];
+  if (steadyOk && steady)
+    verdict.push(
+      `In the steady state (${steady.offeredReadPerS} reads/s + ${steady.offeredWritePerS} writes/s for ${steady.seconds} s) every class met its threshold: ${r.classes.map((c) => `${c.label} ${ms(c.byPhase.steady ?? null)}`).join(', ')} (p95), with the host at ${qp.steady?.cpuAvgPct ?? '—'} % of its ${host.cpus} cores.`,
+    );
+  if (saturated && burst) {
+    const bOff = burst.offeredReadPerS + burst.offeredWritePerS;
+    const bAch = burst.achievedReadPerS + burst.achievedWritePerS;
+    verdict.push(
+      `The ×${burst.factor} burst (${bOff} requests/s) was more than this host can serve: it completed ${bAch.toFixed(1)} requests/s while the host ran at ${qp.burst?.cpuAvgPct ?? '—'} % CPU. The open-model backlog${r.profile.maxInFlight >= cap ? ` reached the runner's in-flight cap of ${cap} and` : ''} carried into the cool-down, so waiting time, not service time, sets the p95 of the burst and the cool-down, and with it the p95 over all phases.`,
+    );
+  } else if (saturated)
+    verdict.push(
+      `The cause is saturation, not slow queries. The server completed ${Math.round((achieved / offered) * 100)} % of the offered requests (${(achieved / r.profile.measuredSeconds).toFixed(1)} of ${(offered / r.profile.measuredSeconds).toFixed(1)} per second over the measured phases), so waiting time, not service time, sets the latency.`,
+    );
+  verdict.push('The p95 figures cover successful responses only. Timeouts count as errors, and a class with more than 1 % errors fails on its own.');
+  out.push(verdict.join(' '), '');
   const byCls = new Map<string, ServiceTime[]>();
   for (const t of r.serviceTimes ?? []) byCls.set(t.cls, [...(byCls.get(t.cls) ?? []), t]);
   if (byCls.size) {
@@ -701,12 +716,12 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
   }
   if (supplementary.length) {
     out.push(
-      '**Other runs** on the same data and host, each with its own report next to this one:',
+      '**Other runs** on the same data and host (each with its own report next to this one), compared with this run:',
       '',
       '| Run | Commit | Steady-state p95: list / detail / search / writes / heavy / analytics | Worst p95 in burst and cool-down | CPU in steady state (100 % = one core) |',
       '|---|---|---|---|---|',
     );
-    for (const x of supplementary) {
+    for (const x of [{ label: '', r }, ...supplementary]) {
       const worst = Math.max(
         ...x.r.classes.flatMap((c) => ['burst', 'cooldown'].map((ph) => c.byPhase[ph] ?? 0)),
       );
@@ -718,14 +733,32 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
         x.r.profile.excluded?.length ? `without ${x.r.profile.excluded.join(', ')}` : 'full mix',
       ].join(', ');
       out.push(
-        `| [${x.label}](${fileBase('performance-report', x.label)}.md): ${ph ? `${ph.offeredReadPerS} reads/s + ${ph.offeredWritePerS} writes/s, ` : ''}${note} | \`${x.r.environment.commit}\` | ${['list', 'detail', 'search', 'write', 'heavy', 'analytics'].map((c) => sec(steadyP95(x.r, c))).join(' / ')} | ${sec(worst || null)} | web ${cpu?.webCpuAvgPct ?? '—'} %, PostgreSQL ${cpu?.pgCpuAvgPct ?? '—'} %, host ${cpu?.cpuAvgPct ?? '—'} % of ${x.r.environment.host.cpus} cores |`,
+        `| ${x.label ? `[${x.label}](${fileBase('performance-report', x.label)}.md)` : '**This run**'}: ${ph ? `${ph.offeredReadPerS} reads/s + ${ph.offeredWritePerS} writes/s, ` : ''}${note} | \`${x.r.environment.commit}\` | ${['list', 'detail', 'search', 'write', 'heavy', 'analytics'].map((c) => sec(steadyP95(x.r, c))).join(' / ')} | ${sec(worst || null)} | web ${cpu?.webCpuAvgPct ?? '—'} %, PostgreSQL ${cpu?.pgCpuAvgPct ?? '—'} %, host ${cpu?.cpuAvgPct ?? '—'} % of ${x.r.environment.host.cpus} cores |`,
       );
     }
     out.push('');
-    const clean = supplementary.find((x) => x.r.profile.excluded?.includes('analytics.dashboard'));
+  }
+  {
+    const clean = steadyOk ? { label: '', r } : supplementary.find((x) => x.r.profile.excluded?.includes('analytics.dashboard'));
     const cpu = clean ? phaseCpu(clean.r, 'steady') : undefined;
     const ph = clean?.r.profile.phases.find((p) => p.name === 'steady');
-    if (clean && cpu?.webCpuAvgPct && cpu.pgCpuAvgPct && ph) {
+    const bf = clean?.r.profile.phases.find((p) => p.name === 'burst')?.factor ?? 3;
+    if (clean && !clean.label && cpu?.webCpuAvgPct && cpu.pgCpuAvgPct && cpu.cpuAvgPct && ph) {
+      const rate = ph.achievedReadPerS + ph.achievedWritePerS;
+      const webMs = (cpu.webCpuAvgPct * 10) / rate;
+      const pgMs = (cpu.pgCpuAvgPct * 10) / rate;
+      const hostMs = (cpu.cpuAvgPct * host.cpus * 10) / rate;
+      const burstRate = (ph.offeredReadPerS + ph.offeredWritePerS) * bf;
+      const webs = webProcessesOf(r);
+      out.push(
+        `**Capacity arithmetic.** The steady state was not saturated, so its CPU use is the cost of the mix. ${rate.toFixed(1)} requests/s used ${cpu.webCpuAvgPct} % of a core in the web processes (about ${webMs.toFixed(0)} ms of web CPU per request), ${cpu.pgCpuAvgPct} % in the PostgreSQL backends of the load database (about ${pgMs.toFixed(0)} ms per request) and ${cpu.cpuAvgPct} % of the host's ${host.cpus} cores in total (about ${hostMs.toFixed(0)} ms per request). The total includes the worker (dashboard refreshes, exports), the load balancer, the load generator, PostgreSQL's parallel-query and background processes and the kernel.`,
+        '',
+        `- **Burst:** ${burstRate} requests/s at these costs needs about ${((burstRate * hostMs) / 1000).toFixed(1)} cores: ${((burstRate * webMs) / 1000).toFixed(1)} for the web processes, ${((burstRate * pgMs) / 1000).toFixed(1)} for PostgreSQL backends and the rest for everything else. This host has ${host.cpus}, shared by all of it.`,
+        `- **Web:** one web process uses at most one core and serves about ${Math.floor(1000 / webMs)} requests/s of this mix, so ${webs} process${webs > 1 ? 'es' : ''} can take about ${Math.floor((1000 / webMs) * webs)} requests/s once ${webs > 1 ? 'they have' : 'it has'} the cores.`,
+        `- **This host:** 1-minute load average ${host.loadAverageAtStart?.[0] ?? host.loadAverageBefore?.[0] ?? '—'} when the runner started and ${host.loadAverageBefore?.[0] ?? '—'} when the measured load started (after the read-model warm-up); no other workload was running on it.`,
+        '',
+      );
+    } else if (clean && cpu?.webCpuAvgPct && cpu.pgCpuAvgPct && ph) {
       const rate = ph.achievedReadPerS + ph.achievedWritePerS;
       const webMs = (cpu.webCpuAvgPct * 10) / rate;
       const pgMs = (cpu.pgCpuAvgPct * 10) / rate;
@@ -741,8 +774,11 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
     }
   }
   const q = Object.values(r.queue.byPhase);
+  const later = ['burst', 'cooldown'].map((ph) => qp[ph]).filter((x) => !!x);
   out.push(
-    `**Queue lag.** The oldest due job was at most ${Math.max(...q.map((x) => x.oldestJobMaxS)).toFixed(1)} s old during the run. Outbox dispatch p95 was ${s1(r.queue.outbox.p95)}. Exports were ready ${s1(r.queue.exports.p95)} after the request (p95). The queues ${r.queue.drained ? 'drained without a backlog' : 'had NOT drained'} after the load, so background processing is not the bottleneck.`,
+    qp.steady && later.length && saturated
+      ? `**Queue lag.** In the steady state the oldest due job was at most ${qp.steady.oldestJobMaxS.toFixed(1)} s old and the oldest undispatched outbox event ${qp.steady.oldestOutboxMaxS.toFixed(1)} s. While the host was saturated (burst and cool-down) they reached ${Math.max(...later.map((x) => x.oldestJobMaxS)).toFixed(1)} s and ${Math.max(...later.map((x) => x.oldestOutboxMaxS)).toFixed(1)} s. Over the run, outbox dispatch p95 was ${s1(r.queue.outbox.p95)} and exports were ready ${s1(r.queue.exports.p95)} after the request (p95). The queues ${r.queue.drained ? `drained ${r.queue.drainSeconds} s after the load ended` : 'had NOT drained after the load'}.`
+      : `**Queue lag.** The oldest due job was at most ${Math.max(...q.map((x) => x.oldestJobMaxS)).toFixed(1)} s old during the run. Outbox dispatch p95 was ${s1(r.queue.outbox.p95)}. Exports were ready ${s1(r.queue.exports.p95)} after the request (p95). The queues ${r.queue.drained ? 'drained without a backlog' : 'had NOT drained'} after the load.`,
     '',
     '### Defects found and fixed during this measurement',
     '',

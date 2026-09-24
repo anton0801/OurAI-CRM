@@ -61,9 +61,12 @@ behind Caddy (`infra/caddy/Caddyfile`):
   `DATABASE_POOL_MAX` (default 10) connections.
 
 Measured capacity is in `docs/acceptance/performance-report.md`. It was measured on a 4-vCPU
-development container, not on staging, so repeat the run on staging to size production. For the
-§28.3 profile (50 sessions, 30 reads/s and 5 writes/s with ×3 bursts), plan at least three web
-processes and give PostgreSQL its own cores.
+development container, not on staging, so repeat the run on staging to size production. There,
+one request of the §28.3 mix cost about 16 ms of web CPU and 22 ms of PostgreSQL backend CPU. The
+steady load of the §28.3 profile (30 reads/s and 5 writes/s) used about half of the container.
+The ×3 burst (105 requests/s) needs about 1.6 cores of web processes and 2.3 cores of PostgreSQL
+backends, plus the worker and PostgreSQL's own background work. Plan at least three web processes,
+give PostgreSQL its own cores (four or more) and run the worker separately.
 
 State held inside a web process:
 
