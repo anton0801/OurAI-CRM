@@ -5,10 +5,16 @@ import { E2E_BASE_URL, E2E_PORT, OWNER_STATE, serverEnv } from './support/env';
 /**
  * End-to-end suite: real Next.js server + worker against an isolated database.
  *   pnpm test:e2e            (starts both servers; first run compiles pages on demand)
+ *   E2E_REUSE_SERVER=1 …     (use servers already running on E2E_PORT with the same environment)
  * Chromium is pre-installed at /opt/pw-browsers in CI containers.
+ *
+ * Project order: first-run (bootstraps the Owner) → empty (asserts the untouched production
+ * workspace, so it must run before anything creates data) → desktop and mobile.
  */
 // Use a pre-installed Chromium when present (CI containers ship one at /opt/pw-browsers/chromium).
 const chromium = process.env.PLAYWRIGHT_CHROMIUM_PATH ?? (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : undefined);
+const reuse = process.env.E2E_REUSE_SERVER === '1';
+const desktop = { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } };
 
 export default defineConfig({
   testDir: './specs',
@@ -27,16 +33,17 @@ export default defineConfig({
     launchOptions: { executablePath: chromium },
   },
   projects: [
-    { name: 'first-run', testMatch: /first-run\.setup\.ts/, use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
+    { name: 'first-run', testMatch: /first-run\.setup\.ts/, use: desktop },
+    { name: 'empty', dependencies: ['first-run'], testMatch: /empty-workspace\.spec\.ts/, use: { ...desktop, storageState: OWNER_STATE } },
     {
       name: 'desktop',
-      dependencies: ['first-run'],
-      testIgnore: /\.setup\.ts$|mobile/,
-      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 }, storageState: OWNER_STATE },
+      dependencies: ['empty'],
+      testIgnore: /\.setup\.ts$|mobile|empty-workspace/,
+      use: { ...desktop, storageState: OWNER_STATE },
     },
     {
       name: 'mobile',
-      dependencies: ['first-run'],
+      dependencies: ['empty'],
       testMatch: /mobile.*\.spec\.ts/,
       use: { ...devices['Pixel 7'], viewport: { width: 390, height: 844 }, storageState: OWNER_STATE },
     },
@@ -47,7 +54,7 @@ export default defineConfig({
       url: `${E2E_BASE_URL}/auth/sign-in`,
       env: serverEnv(),
       timeout: 240_000,
-      reuseExistingServer: false,
+      reuseExistingServer: reuse,
       stdout: 'ignore',
       stderr: 'pipe',
     },
@@ -56,7 +63,7 @@ export default defineConfig({
       wait: { stdout: /worker_starting/ },
       env: { ...serverEnv(), LOG_LEVEL: 'info' },
       timeout: 60_000,
-      reuseExistingServer: false,
+      reuseExistingServer: reuse,
     },
   ],
 });

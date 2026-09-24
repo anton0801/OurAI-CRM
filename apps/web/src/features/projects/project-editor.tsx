@@ -43,6 +43,10 @@ export const ProjectEditor = ({ project }: { project?: ProjectDetail }) => {
   const wsPath = useWsPath();
   const { workspace, membershipId } = useWorkspace();
   const [conflict, setConflict] = useState(false);
+  // If-Match carries the version this form was opened with. Live updates refresh `project` in the
+  // background; saving against that newer version would overwrite changes the member never saw.
+  // Only after the Conflict dialog (Keep Editing) does the form move to the latest version.
+  const [baseVersion, setBaseVersion] = useState(project?.rowVersion);
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: project
@@ -85,9 +89,21 @@ export const ProjectEditor = ({ project }: { project?: ProjectDetail }) => {
     };
     try {
       if (project) {
-        const { directionId: _ignored, ...patch } = body;
-        void _ignored;
-        const r = await update.run({ params: { workspaceId: workspace.id, projectId: project.id }, body: { ...patch, type: v.type } }, { ifMatch: project.rowVersion });
+        // Send only what this member changed: after a version conflict ("Keep Editing") the save
+        // must not write back stale values of fields someone else updated meanwhile (T162).
+        // Compared with the values the form was opened with (the edit form never resets them).
+        const initial = form.formState.defaultValues ?? {};
+        const dirty = (k: keyof FormValues) => v[k] !== initial[k];
+        const patch: Record<string, unknown> = {};
+        for (const k of ['name', 'ownerMembershipId', 'briefSummary', 'description', 'language', 'targetMarkets', 'audience', 'tags', 'startDate'] as const)
+          if (dirty(k)) patch[k] = body[k];
+        if (dirty('type')) patch.type = v.type;
+        if (dirty('type') || dirty('ofmEnabled')) patch.ofmEnabled = body.ofmEnabled;
+        if (Object.keys(patch).length === 0) {
+          router.push(wsPath(`/projects/${project.id}`));
+          return;
+        }
+        const r = await update.run({ params: { workspaceId: workspace.id, projectId: project.id }, body: patch }, { ifMatch: baseVersion ?? project.rowVersion });
         router.push(wsPath(`/projects/${r.id}`));
       } else {
         const r = await create.run({ params: { workspaceId: workspace.id }, body: { ...body, type: v.type, activate: v.activate && !!body.briefSummary } });
@@ -196,7 +212,14 @@ export const ProjectEditor = ({ project }: { project?: ProjectDetail }) => {
           </Button>
         </div>
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog
+        open={conflict}
+        onOpenChange={(o) => {
+          setConflict(o);
+          if (!o) setBaseVersion(project?.rowVersion);
+        }}
+        onReload={() => window.location.reload()}
+      />
     </div>
   );
 };

@@ -159,6 +159,9 @@ const Dashboard = ({ d, tab, onDrill }: { d: AnalyticsDashboard; tab: Tab; onDri
               </Button>
             ) : null}
             {tab === 'accounts' || tab === 'content' ? <Button onClick={() => router.push(wsPath('/metrics'))}>Open Metrics Inbox</Button> : null}
+            {tab === 'production' && can('content.read') ? <Button onClick={() => router.push(wsPath('/content'))}>Open Content Pipeline</Button> : null}
+            {tab === 'ofm' && can('ofm.overview.read') ? <Button onClick={() => router.push(wsPath('/ofm'))}>Open OFM</Button> : null}
+            {tab === 'team' && can('tasks.read') ? <Button onClick={() => router.push(wsPath('/tasks'))}>Open Tasks</Button> : null}
             {tab === 'finance' && can('finance.create') ? <Button onClick={() => router.push(wsPath('/finance/entries/new'))}>Add Entry</Button> : null}
           </>
         }

@@ -29,7 +29,10 @@ export const Providers = ({ children }: { children: ReactNode }) => {
       new QueryClient({
         defaultOptions: {
           queries: { staleTime: 15_000, refetchOnWindowFocus: true, gcTime: 5 * 60_000 },
-          mutations: { retry: false },
+          // 'always': a save made while offline fails at once with an honest error. The default
+          // ('online') pauses the mutation and sends it on reconnect — a silent queue the member
+          // never confirmed (T165). Retrying is an explicit action (same Idempotency-Key).
+          mutations: { retry: false, networkMode: 'always' },
         },
       }),
   );
