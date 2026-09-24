@@ -88,7 +88,8 @@ export interface Environment {
     cpus: number;
     memoryGiB: number;
     os: string;
-    /** 1/5/15-minute load average when the load started and when the run ended. */
+    /** 1/5/15-minute load average when the runner started (before warm-ups), when the load started and when the run ended. */
+    loadAverageAtStart?: number[];
     loadAverageBefore?: number[];
     loadAverage: number[];
   };
@@ -608,7 +609,7 @@ export const renderReport = (
     '## Environment',
     '',
     `- Host: ${e.host.cpuModel}, ${e.host.cpus} CPUs, ${e.host.memoryGiB} GiB RAM, ${e.host.os}`,
-    `- Host load average (1 / 5 / 15 min): ${e.host.loadAverageBefore ? `${e.host.loadAverageBefore.join(' / ')} when the load started, ` : ''}${e.host.loadAverage.join(' / ')} when the run ended (the run itself contributes to it)`,
+    `- Host load average (1 / 5 / 15 min): ${e.host.loadAverageAtStart ? `${e.host.loadAverageAtStart.join(' / ')} when the runner started, before the warm-ups, ` : ''}${e.host.loadAverageBefore ? `${e.host.loadAverageBefore.join(' / ')} when the measured load started, ` : ''}${e.host.loadAverage.join(' / ')} when the run ended (the run itself contributes to the later values)`,
     `- Node.js ${e.node}; ${e.postgres.version.split(' on ')[0]}; settings ${Object.entries(
       e.postgres.settings,
     )
@@ -616,7 +617,7 @@ export const renderReport = (
       .join(', ')}`,
     `- Database size after the run: ${(e.postgres.databaseBytes / 1024 ** 3).toFixed(2)} GiB`,
     `- Server under test: ${c.serverNote}`,
-    `- Target ${[(r.config as { baseUrls?: string[]; baseUrl?: string }).baseUrls ?? [c.baseUrl]].flat().join(', ')} (${[(r.config as { baseUrls?: string[] }).baseUrls ?? [c.baseUrl]].flat().length} web server process(es), sessions spread over them); the load generator ran on the same host`,
+    `- Target ${[(r.config as { baseUrls?: string[]; baseUrl?: string }).baseUrls ?? [c.baseUrl]].flat().join(', ')} (${webProcessesOf(r)} web server process(es)${(r.config as { loadBalancer?: boolean }).loadBalancer ? ' behind the load balancer' : ', sessions spread over them'}); the load generator ran on the same host`,
     '',
   );
 
@@ -646,6 +647,10 @@ export const renderReport = (
 };
 
 const fileBase = (base: string, label: string) => (label ? `${base}-${label}` : base);
+const webProcessesOf = (r: RunResults): number => {
+  const c = r.config as { webProcesses?: number | null; baseUrls?: string[] };
+  return c.webProcesses ?? c.baseUrls?.length ?? 1;
+};
 
 // ——— Analysis (main report only): computed from this run and the supplementary runs next to it ———
 
@@ -707,7 +712,7 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
       );
       const cpu = phaseCpu(x.r, 'steady');
       const ph = x.r.profile.phases.find((p) => p.name === 'steady');
-      const webs = ((x.r.config as { baseUrls?: string[] }).baseUrls ?? ['']).length;
+      const webs = webProcessesOf(x.r);
       const note = [
         `${webs} web process${webs > 1 ? 'es' : ''}`,
         x.r.profile.excluded?.length ? `without ${x.r.profile.excluded.join(', ')}` : 'full mix',

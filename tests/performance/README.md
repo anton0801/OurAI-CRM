@@ -26,6 +26,12 @@ Stop it with Ctrl-C. `perf:stack --web-instances 2` starts two web processes on 
 the runner (`--base-url http://127.0.0.1:3200,http://127.0.0.1:3201`), and each session sticks to one of them.
 `--web-node-args "--cpu-prof --cpu-prof-dir=var/perf/prof"` profiles the web processes.
 
+To measure the reference deployment (three web processes behind Caddy, see `infra/caddy/Caddyfile`), pass a Caddy
+binary: `perf:stack --web-instances 3 --caddy /path/to/caddy` (or `CADDY_BIN`). The web processes then listen on
+3201–3203 and Caddy on 3200 with the same load-balancing directives (sticky cookie `castlane_upstream`, active health
+checks on `/api/v1/health/ready`), over plain HTTP. The runner keeps the affinity cookie per session like a browser
+and samples Caddy's CPU as "Load balancer".
+
 ## Synthetic data (`seed.ts`)
 
 - **Volumes at scale 1:** 200 members, 1 000 projects (10 directions), 5 000 accounts, 100 000 content items, 300 000
@@ -75,6 +81,11 @@ Options: `--scale <0..1>` (default 1), `--database <name>` (default `castlane_pe
   - A heavy request: a CSV export of one project's tasks, which returns 202 with a job.
   - Writes send `Origin`, `X-CSRF-Token`, `Idempotency-Key` and `If-Match` like the browser client. Media transfer is
     excluded, as §28.3 requires.
+- **Read-model warm-up:** spec §28.3 measures analytics "after warmed read models". Before the load, every session
+  opens each of its dashboard tabs once (two requests at a time), which stores a snapshot per tab and access scope in
+  `analytics_dashboard_snapshots`. During the load, the runner counts dashboards answered from the read model and
+  computed live, and the age of the figures served. The worker's `analytics.refreshSnapshots` job refreshes stale
+  snapshots meanwhile, so a `--steady` of 300 s or more lets the refresh overlap the measured window.
 - **Unloaded service time:** before the load, the runner sends a few sequential requests per operation
   (`--service-samples`, default 5). The report lists them as each endpoint's latency without queueing.
 - **Queue lag:** every 2 s the runner samples the age of the oldest due queued job and of the oldest undispatched

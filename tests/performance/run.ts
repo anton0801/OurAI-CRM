@@ -951,6 +951,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ——— Main ———
 
 const main = async () => {
+  const loadAtStart = os.loadavg();
   const pool = new pg.Pool({
     connectionString: cfg.databaseUrl,
     max: 3,
@@ -1153,11 +1154,19 @@ const main = async () => {
 
   const env = await environmentInfo(pool, cfg.databaseUrl);
   env.host.loadAverageBefore = loadBefore.map((x) => Math.round(x * 100) / 100);
+  env.host.loadAverageAtStart = loadAtStart.map((x) => Math.round(x * 100) / 100);
+  const stack = readStack();
   await pool.end();
 
   const measuredSeconds = phases.filter((p) => p.record).reduce((a, p) => a + p.seconds, 0);
   const results: RunResults = summarize({
-    cfg: { ...cfg, sessionsMinted: sessions.length, sessionPlan: planSessions(cfg.sessions) },
+    cfg: {
+      ...cfg,
+      sessionsMinted: sessions.length,
+      sessionPlan: planSessions(cfg.sessions),
+      webProcesses: stack.webPids?.length ?? null,
+      loadBalancer: !!stack.proxyPid,
+    },
     manifest,
     env,
     phases,
