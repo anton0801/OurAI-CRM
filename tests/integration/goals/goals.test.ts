@@ -95,6 +95,15 @@ describe('goals (S53, §17)', () => {
     expect(goal.progress).toMatchObject({ status: 'known', value: '0.00' });
     const options = await f.owner.call(G.metricOptions, { params: f.W });
     expect(options.map((o) => o.id)).toEqual(expect.arrayContaining(['TG1', 'TG2']));
+    // A change metric already subtracts the period start; a baseline would subtract it twice.
+    expect(options.find((o) => o.id === 'M11')).toMatchObject({ measuresChange: true });
+    expect(options.find((o) => o.id === 'TG1')).toMatchObject({ measuresChange: false });
+    const change = { ...base, scopeType: 'workspace' as const, scopeId: null, metricId: 'M11' };
+    const doubled = await f.owner.attempt(G.create, { params: f.W, body: { ...change, targetType: 'increase_by', targetValue: '3000', baselineValue: '11820' } });
+    expect(doubled.status).toBe(422);
+    expect((doubled.error as { fieldErrors: { field: string; code: string }[] }).fieldErrors).toContainEqual(expect.objectContaining({ field: 'targetType', code: 'CHANGE_METRIC' }));
+    const growth = await f.owner.call(G.create, { params: f.W, body: { ...change, name: 'Followers +3000', targetType: 'absolute', targetValue: '3000' } });
+    expect(growth).toMatchObject({ targetType: 'absolute', metric: { id: 'M11' } });
   });
 
   it('reads current value from the canonical metric in scope and labels over-target progress without clamping', async () => {

@@ -325,7 +325,7 @@ export const goalMetricOptions = (ctx: QueryContext) => {
   return [...METRIC_DEFINITIONS.values()]
     .filter((d) => hasAnywhere(ctx.actor.access, d.permission))
     .sort((a, b) => a.id.localeCompare(b.id, 'en', { numeric: true }))
-    .map((d) => ({ id: d.id, label: d.label, description: d.description, unit: d.unit, rate: !!d.rate, higherIsBetter: d.higherIsBetter ?? null }));
+    .map((d) => ({ id: d.id, label: d.label, description: d.description, unit: d.unit, rate: !!d.rate, higherIsBetter: d.higherIsBetter ?? null, measuresChange: !!d.measuresChange }));
 };
 
 // ——— Commands ———
@@ -360,6 +360,9 @@ const validateGoal = async (ctx: CommandContext, v: Required<Omit<GoalInput, 're
   const def = goalMetricDefinition(v.metricId);
   if (!def || !hasAnywhere(ctx.actor.access, def.permission)) errors.push(fe('metricId', 'UNAVAILABLE', 'Choose a metric you can measure.'));
   if (!isDecimalString(v.targetValue)) errors.push(fe('targetValue', 'INVALID', 'Enter a number.'));
+  // A change metric already subtracts the start of the period; a baseline would subtract it twice.
+  if (def?.measuresChange && v.targetType !== 'absolute')
+    errors.push(fe('targetType', 'CHANGE_METRIC', `${def.label} already measures a change within the period. Use an Absolute target (e.g. 3,000 for “+3,000”).`));
   if ((v.targetType === 'increase_by' || v.targetType === 'decrease_to') && (v.baselineValue === null || v.baselineValue === undefined))
     errors.push(fe('baselineValue', 'REQUIRED', 'A baseline is required for Increase By and Decrease To.'));
   if (v.periodEnd < v.periodStart) errors.push(fe('periodEnd', 'BEFORE_START', 'Choose an end on or after the start.'));

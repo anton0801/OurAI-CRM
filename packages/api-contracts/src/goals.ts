@@ -89,7 +89,7 @@ export const goalDetail = goalRow.extend({
 });
 export type GoalDetail = z.infer<typeof goalDetail>;
 
-export const goalMetricOption = z.object({ id: z.string(), label: z.string(), description: z.string(), unit: z.string(), rate: z.boolean(), higherIsBetter: z.boolean().nullable() });
+export const goalMetricOption = z.object({ id: z.string(), label: z.string(), description: z.string(), unit: z.string(), rate: z.boolean(), higherIsBetter: z.boolean().nullable(), measuresChange: z.boolean() });
 
 const goalFields = {
   name: shortName,

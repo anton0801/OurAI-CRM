@@ -12,6 +12,7 @@ import { audit } from '../core/audit';
 import type { CommandContext, QueryContext } from '../core/context';
 import { emit, streamEvent } from '../core/events';
 import { enqueueJob } from '../core/jobs';
+import { defineExportProducer } from '../core/export-registry';
 import { defineJob, memberJobContext } from '../core/jobs-registry';
 import { loadMemberRefs } from '../core/members';
 import { stamp } from '../core/rows';
@@ -72,13 +73,29 @@ const queuePackage = async (ctx: CommandContext, items: PackageItem[], filters: 
       sourceBoundAt: ctx.app.clock.now(),
     })
     .returning();
-  const jobId = await enqueueJob(ctx.tx, { type: 'content.package', pool: 'data', workspaceId: ctx.actor.workspaceId, payload: { exportId: id }, requestedBy: ctx.actor.membershipId, idempotencyKey: `content.package:${id}`, maxRetries: 0 });
+  const jobId = await enqueuePackageJob(ctx, id, 1);
   await ctx.tx.update(exportJobs).set({ jobId }).where(eq(exportJobs.id, id));
   await audit(ctx, { action: 'export.requested', entityType: 'export_job', entityId: id, metadata: { dataset: CONTENT_PACKAGE_DATASET, format: 'zip', items: items.length, classification: row!.classification } });
   await audit(ctx, { action: 'content.package_requested', entityType: auditTarget.entityType, entityId: auditTarget.entityId, projectId: auditTarget.projectId, metadata: { exportId: id, items: items.length } });
   await emit(ctx, { type: 'export.requested', entityType: 'export_job', entityId: id, revision: 1 });
   return id;
 };
+
+const enqueuePackageJob = (ctx: CommandContext, exportId: string, attempt: number) =>
+  enqueueJob(ctx.tx, { type: 'content.package', pool: 'data', workspaceId: ctx.actor.workspaceId, payload: { exportId }, requestedBy: ctx.actor.membershipId, idempotencyKey: attempt === 1 ? `content.package:${exportId}` : `content.package:${exportId}:${attempt}`, maxRetries: 0 });
+
+// Export Center: label, download re-check and Retry Failed for packages (generation re-authorises every item again).
+defineExportProducer({
+  key: CONTENT_PACKAGE_DATASET,
+  label: 'Content package (ZIP)',
+  downloadPermissions: ['assets.download'],
+  requeue: async (ctx, row) => {
+    const items = ((row.filters as { items?: PackageItem[] } | null)?.items ?? []).filter((i) => i && typeof i.contentItemId === 'string');
+    if (!items.length) throw new AppError('INVALID_STATE', 'This package has no content to export. Request it again from the content.');
+    for (const it of items) await readableContent(ctx, it.contentItemId);
+    return enqueuePackageJob(ctx, row.id, row.rowVersion);
+  },
+});
 
 const hasRestricted = async (ctx: CommandContext, versionIds: string[]) => (await loadVersionFiles(ctx.tx, ctx.actor.workspaceId, versionIds)).some((f) => f.sensitivity === 'restricted');
 

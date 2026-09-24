@@ -293,6 +293,7 @@ interface DeltaRec extends BaseRec {
 
 defineInsightMetric<DeltaRec>({
   id: 'M15',
+  measuresChange: true,
   key: 'period_views_delta',
   label: 'Period Views Delta',
   description: 'Cumulative views at the last observation minus the first observation of the same publication inside the period (same definition set and segment; real observation times shown). A negative delta is flagged Source Correction and is never shown as negative consumption.',

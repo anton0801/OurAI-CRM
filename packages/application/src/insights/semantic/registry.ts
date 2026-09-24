@@ -63,6 +63,8 @@ export interface InsightMetric<R extends BaseRec = BaseRec> {
   unit: MetricUnit;
   rate?: boolean;
   higherIsBetter?: boolean;
+  /** Measures a change within the period (followers change, net growth): goals take Absolute targets only. */
+  measuresChange?: boolean;
   family: MetricFamily;
   /** Analytics permission; its scope is applied in SQL inside `load`. */
   permission: string;
@@ -98,6 +100,7 @@ export const defineInsightMetric = <R extends BaseRec>(d: InsightMetric<R>) => {
     unit: d.unit,
     rate: d.rate,
     higherIsBetter: d.higherIsBetter,
+    measuresChange: d.measuresChange,
     permission: d.permission,
     dimensions: d.dimensions.map(toCoreDimension),
     grains: d.grains,

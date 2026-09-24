@@ -35,6 +35,7 @@ const OFM_DIMS = ['period', 'project', 'direction', 'account', 'platform'] as co
 
 defineInsightMetric<PeriodObsRec>({
   id: 'M24',
+  measuresChange: true,
   key: 'paid_subscriber_net_change',
   label: 'Paid Subscriber Net Change',
   description: 'Confirmed new paid subscriptions − confirmed cancellations over non-overlapping OFM period observations. It does not replace the change of active subscribers when the source is incomplete.',

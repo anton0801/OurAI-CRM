@@ -11,7 +11,7 @@ import type { CommandContext, QueryContext } from '../../core/context';
 import { dbOf } from '../../core/context';
 import { hmac, safeEqual } from '../../core/crypto';
 import { emit, streamEvent } from '../../core/events';
-import { EXPORT_DATASETS_REGISTRY, type ExportColumn, type ExportDatasetDefinition } from '../../core/export-registry';
+import { EXPORT_DATASETS_REGISTRY, EXPORT_PRODUCERS, type ExportColumn, type ExportDatasetDefinition } from '../../core/export-registry';
 import { enqueueJob } from '../../core/jobs';
 import { defineJob, memberJobContext } from '../../core/jobs-registry';
 import { loadMemberRefs, refOrUnknown } from '../../core/members';
@@ -102,7 +102,7 @@ const toItem = (ctx: QueryContext, r: ExportRow, refs: Awaited<ReturnType<typeof
   return {
     id: r.id,
     dataset: r.dataset,
-    datasetLabel: d?.label ?? r.dataset,
+    datasetLabel: d?.label ?? EXPORT_PRODUCERS.get(r.dataset)?.label ?? r.dataset,
     format: r.format,
     fields: r.fields,
     filters: r.filters,
@@ -269,11 +269,14 @@ export const deleteExportFile = async (ctx: CommandContext, id: string) => {
 export const retryExport = async (ctx: CommandContext, id: string) => {
   const r = await lockOwn(ctx, id);
   if (r.state !== 'failed') throw new AppError('INVALID_STATE', 'Only failed exports can be retried.');
-  const d = datasetOf(r.dataset);
-  assertDatasetAccess(ctx, d);
-  resolveColumns(ctx, d, r.fields);
+  const producer = EXPORT_PRODUCERS.get(r.dataset);
+  if (!producer) {
+    const d = datasetOf(r.dataset);
+    assertDatasetAccess(ctx, d);
+    resolveColumns(ctx, d, r.fields);
+  }
   const [row] = await ctx.tx.update(exportJobs).set({ state: 'queued', errorMessage: null, progress: 0, ...touch(ctx, exportJobs) }).where(eq(exportJobs.id, id)).returning();
-  const jobId = await enqueueGeneration(ctx, row!);
+  const jobId = producer ? await producer.requeue(ctx, row!) : await enqueueGeneration(ctx, row!);
   await ctx.tx.update(exportJobs).set({ jobId }).where(eq(exportJobs.id, id));
   await audit(ctx, { action: 'export.retried', entityType: 'export_job', entityId: id });
   await emit(ctx, { type: 'export.retried', entityType: 'export_job', entityId: id, revision: row!.rowVersion });
@@ -298,6 +301,7 @@ const assertDownloadAccess = (ctx: QueryContext, r: ExportRow) => {
       if (c && !columnAvailable(ctx, c)) throw revoked;
     }
   }
+  for (const p of EXPORT_PRODUCERS.get(r.dataset)?.downloadPermissions ?? []) if (!hasAnywhere(ctx.actor.access, p)) throw revoked;
   if (r.state !== 'completed' || !r.storageKey) throw new AppError('INVALID_STATE', 'This export has no file to download.');
   if (!r.expiresAt || r.expiresAt <= ctx.app.clock.now()) throw new AppError('INVALID_STATE', 'This export has expired. Request it again.');
 };

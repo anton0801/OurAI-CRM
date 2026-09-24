@@ -58,7 +58,7 @@ export const stageInsights = async (c: DemoCtx & { base: DemoBase; teaserPublica
       ownerMembershipId: team.modelLead.membershipId,
       scopeType: 'account',
       scopeId: base.accounts.miaInstagram,
-      metricId: 'M11',
+      metricId: 'X01',
       targetType: 'increase_by',
       targetValue: '3000',
       baselineValue: '11820',

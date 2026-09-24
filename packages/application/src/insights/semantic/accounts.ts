@@ -122,6 +122,7 @@ defineInsightMetric<SnapRec>({
 
 defineInsightMetric<SnapRec>({
   id: 'M11',
+  measuresChange: true,
   key: 'followers_change',
   label: 'Followers Change',
   description: 'Last usable follower snapshot minus the first usable snapshot inside the period, per account (the real observation times are shown). Fewer than two snapshots → Not Enough Data.',

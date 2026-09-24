@@ -69,6 +69,8 @@ export interface MetricDefinition {
   unit: MetricUnit;
   /** Rates compare in percentage points. */
   rate?: boolean;
+  /** The metric already measures a change within the period (e.g. followers change): goals may only use an Absolute target. */
+  measuresChange?: boolean;
   higherIsBetter?: boolean;
   /** Member needs this permission somewhere; scope is applied inside compute. */
   permission: string;

@@ -103,6 +103,11 @@ export const GoalFormDrawer = ({
   const update = useApiMutation(goalEndpoints.update, { invalidate: ['goals.'], successMessage: 'Goal saved', silentErrors: true });
   const v = form.watch();
   const metric = metrics.data?.find((m) => m.id === v.metricId);
+  // A change metric (followers change, net growth) already measures the period: only Absolute makes sense.
+  const changeMetric = !!metric?.measuresChange;
+  useEffect(() => {
+    if (changeMetric && form.getValues('targetType') !== 'absolute') form.setValue('targetType', 'absolute', { shouldDirty: true });
+  }, [changeMetric, form]);
   const targetChanged =
     !!goal && (v.targetType !== goal.targetType || !numEq(v.targetValue, goal.targetValue) || !numEq(v.baselineValue, goal.baselineValue) || v.periodStart !== goal.periodStart || v.periodEnd !== goal.periodEnd);
   const needsReason = !!goal?.periodStarted && targetChanged;
@@ -224,7 +229,7 @@ export const GoalFormDrawer = ({
               )}
             />
           </Field>
-          <Field label="Target type" required>
+          <Field label="Target type" required error={e.targetType?.message} helper={changeMetric ? `${metric?.label} already measures the change within the period, so the target is Absolute (e.g. 3000 for “+3000”).` : undefined}>
             <Controller
               control={form.control}
               name="targetType"
@@ -236,8 +241,8 @@ export const GoalFormDrawer = ({
                   onValueChange={field.onChange}
                   options={[
                     { value: 'absolute', label: 'Absolute', description: 'Progress = current ÷ target' },
-                    { value: 'increase_by', label: 'Increase By', description: 'Progress = (current − baseline) ÷ target' },
-                    { value: 'decrease_to', label: 'Decrease To', description: 'Progress = (baseline − current) ÷ (baseline − target)' },
+                    { value: 'increase_by', label: 'Increase By', description: 'Progress = (current − baseline) ÷ target', disabled: changeMetric },
+                    { value: 'decrease_to', label: 'Decrease To', description: 'Progress = (baseline − current) ÷ (baseline − target)', disabled: changeMetric },
                   ]}
                 />
               )}

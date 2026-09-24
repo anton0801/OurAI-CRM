@@ -1,4 +1,4 @@
-import type { QueryContext } from './context';
+import type { CommandContext, QueryContext } from './context';
 
 /**
  * Export Center datasets (spec §22.2): CSV/XLSX of permitted raw records. The platform module
@@ -36,4 +36,27 @@ export const EXPORT_DATASETS_REGISTRY = new Map<string, ExportDatasetDefinition>
 
 export const defineExportDataset = (d: ExportDatasetDefinition) => {
   EXPORT_DATASETS_REGISTRY.set(d.key, d);
+};
+
+/**
+ * Module-produced exports (ZIP content packages) share the export job table, the Export Center
+ * list, downloads and retention; the module names them and queues its own generation job again on
+ * Retry Failed.
+ */
+export interface ExportProducerDefinition {
+  key: string;
+  label: string;
+  /** Permissions the requester must still hold to download the file (in addition to exports.download). */
+  downloadPermissions: string[];
+  /**
+   * Retry Failed: re-check that the request is still allowed (throw otherwise; the transaction rolls
+   * back) and enqueue generation for the already re-queued row. Returns the job id (null when already queued).
+   */
+  requeue(ctx: CommandContext, row: { id: string; filters: unknown; rowVersion: number }): Promise<string | null>;
+}
+
+export const EXPORT_PRODUCERS = new Map<string, ExportProducerDefinition>();
+
+export const defineExportProducer = (d: ExportProducerDefinition) => {
+  EXPORT_PRODUCERS.set(d.key, d);
 };

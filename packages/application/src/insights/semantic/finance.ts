@@ -313,6 +313,7 @@ interface CashRec extends BaseRec {
 
 defineInsightMetric<CashRec>({
   id: 'M41',
+  measuresChange: true,
   key: 'cash_movement',
   label: 'Cash Movement',
   description: 'Confirmed cash inflows − confirmed cash outflows by settlement (payment) date, per currency; reversals count at their effective date. This is not the operating result.',

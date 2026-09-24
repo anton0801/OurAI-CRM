@@ -88,6 +88,14 @@ describe('content package export (§22.2)', () => {
     expect(failed.state).toBe('failed');
     expect(failed.errorMessage).toMatch(/revoked/);
     expect(failed.fileName).toBeNull();
+    expect(failed).toMatchObject({ datasetLabel: 'Content package (ZIP)', permissions: { retry: true } });
+    // Retry Failed from the Export Center re-queues the package job; it re-checks and fails honestly again.
+    const retried = await lead.client.call(exportEndpoints.retry, { params: { ...f.params, exportId: job.id } }, { ifMatch: failed.rowVersion });
+    expect(retried.state).toBe('queued');
+    await runQueuedJobs(['content.package']);
+    const again = await lead.client.call(exportEndpoints.get, { params: { ...f.params, exportId: job.id } });
+    expect(again).toMatchObject({ state: 'failed', fileName: null });
+    expect(again.errorMessage).toMatch(/revoked/);
     // Episode package.
     const seasonId = newId();
     await db().insert(seasons).values({ id: seasonId, workspaceId: f.ws.workspaceId, projectId: f.projectId, name: 'Season 1', orderNo: 1 });
