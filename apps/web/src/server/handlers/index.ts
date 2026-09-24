@@ -7,3 +7,6 @@ import './shell';
 import './organization';
 import './media';
 import './knowledge';
+import './accounts';
+import './creative';
+import './partners';

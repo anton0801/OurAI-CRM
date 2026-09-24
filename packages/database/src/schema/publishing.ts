@@ -314,7 +314,11 @@ export const partners = pgTable(
     notes: text('notes'),
     mergedIntoId: uuid('merged_into_id'),
   },
-  (t) => [tenantUnique('partners', t), tfk('partners_owner_fk', t.workspaceId, t.ownerMembershipId, memberships)],
+  (t) => [
+    tenantUnique('partners', t),
+    tfk('partners_owner_fk', t.workspaceId, t.ownerMembershipId, memberships),
+    index('partners_list_idx').on(t.workspaceId, t.updatedAt, t.id),
+  ],
 );
 
 export const partnerInteractions = pgTable(
@@ -328,7 +332,11 @@ export const partnerInteractions = pgTable(
     summary: text('summary').notNull(),
     membershipId: uuid('membership_id').notNull(),
   },
-  (t) => [tenantUnique('partner_interactions', t), tfk('pi_partner_fk', t.workspaceId, t.partnerId, partners)],
+  (t) => [
+    tenantUnique('partner_interactions', t),
+    tfk('pi_partner_fk', t.workspaceId, t.partnerId, partners),
+    index('pi_partner_idx').on(t.workspaceId, t.partnerId, t.occurredAt),
+  ],
 );
 
 export const deals = pgTable(
@@ -356,6 +364,8 @@ export const deals = pgTable(
     tenantUnique('deals', t),
     tfk('deals_partner_fk', t.workspaceId, t.partnerId, partners),
     tfk('deals_owner_fk', t.workspaceId, t.ownerMembershipId, memberships),
+    index('deals_list_idx').on(t.workspaceId, t.stage, t.updatedAt, t.id),
+    index('deals_partner_idx').on(t.workspaceId, t.partnerId),
     enumCheck('deals_stage_ck', 'stage', DEAL_STAGES),
   ],
 );
@@ -372,6 +382,7 @@ export const dealProjects = pgTable(
     tfk('deal_projects_deal_fk', t.workspaceId, t.dealId, deals),
     tfk('deal_projects_project_fk', t.workspaceId, t.projectId, projects),
     uniqueIndex('deal_projects_uq').on(t.dealId, t.projectId),
+    index('deal_projects_project_idx').on(t.workspaceId, t.projectId),
   ],
 );
 
@@ -405,5 +416,12 @@ export const deliverables = pgTable(
     currency: currency('currency'),
     status: text('status', { enum: ['open', 'delivered', 'accepted', 'cancelled'] }).notNull().default('open'),
   },
-  (t) => [tenantUnique('deliverables', t), tfk('deliverables_deal_fk', t.workspaceId, t.dealId, deals)],
+  (t) => [
+    tenantUnique('deliverables', t),
+    tfk('deliverables_deal_fk', t.workspaceId, t.dealId, deals),
+    tfk('deliverables_project_fk', t.workspaceId, t.projectId, projects),
+    tfk('deliverables_account_fk', t.workspaceId, t.accountId, socialAccounts),
+    tfk('deliverables_content_fk', t.workspaceId, t.contentItemId, contentItems),
+    index('deliverables_deal_idx').on(t.workspaceId, t.dealId),
+  ],
 );

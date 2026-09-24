@@ -22,6 +22,13 @@
       "when": 1790209549791,
       "tag": "0002_classy_nebula",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790216109538,
+      "tag": "0003_pink_dreaming_celestial",
+      "breakpoints": true
     }
   ]
 }

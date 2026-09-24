@@ -3,3 +3,4 @@
  */
 import './projects/register-tabs';
 import './library/register-tabs';
+import './accounts/register-project-tabs';

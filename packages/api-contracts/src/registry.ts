@@ -6,6 +6,9 @@ import { directionEndpoints, peopleEndpoints, projectEndpoints } from './organiz
 import { mediaEndpoints } from './media';
 import { folderEndpoints } from './media';
 import { knowledgeEndpoints } from './knowledge';
+import { accountEndpoints } from './accounts';
+import { characterEndpoints, referenceEndpoints, seriesEndpoints } from './creative';
+import { dealEndpoints, partnerEndpoints } from './partners';
 
 /**
  * Every endpoint group, used by the OpenAPI generator and contract tests.
@@ -22,6 +25,12 @@ export const ENDPOINT_GROUPS: Record<string, Record<string, AnyEndpoint>> = {
   media: mediaEndpoints,
   folders: folderEndpoints,
   knowledge: knowledgeEndpoints,
+  accounts: accountEndpoints,
+  characters: characterEndpoints,
+  series: seriesEndpoints,
+  references: referenceEndpoints,
+  partners: partnerEndpoints,
+  deals: dealEndpoints,
 };
 
 export const allEndpoints = (): AnyEndpoint[] => Object.values(ENDPOINT_GROUPS).flatMap((g) => Object.values(g));

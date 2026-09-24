@@ -4,3 +4,6 @@ export * from './platform';
 export * from './organization';
 export * from './media';
 export * from './knowledge';
+export * from './accounts';
+export * from './creative';
+export * from './partners';

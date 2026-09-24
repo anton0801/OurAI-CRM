@@ -8,3 +8,5 @@ packages/api-contracts/src/registry.ts merge=union
 apps/web/src/server/handlers/index.ts merge=union
 apps/web/src/features/project-tabs.ts merge=union
 apps/web/src/features/slots.ts merge=union
+packages/api-contracts/src/links.ts merge=union
+apps/web/src/lib/live-events.ts merge=union

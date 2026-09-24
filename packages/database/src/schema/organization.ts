@@ -16,6 +16,7 @@ import {
   enumText,
   integer,
   json,
+  rawCheck,
   sql,
   tenantBase,
   text,
@@ -221,6 +222,8 @@ export const characterVersions = pgTable(
     tenantUnique('character_versions', t),
     tfk('character_versions_character_fk', t.workspaceId, t.characterId, characters),
     uniqueIndex('character_versions_no_uq').on(t.characterId, t.versionNo),
+    /** At most one open (draft or submitted) profile version per character. */
+    uniqueIndex('character_versions_open_uq').on(t.characterId).where(sql`state IN ('draft', 'submitted')`),
     enumCheck('character_versions_state_ck', 'state', CHARACTER_VERSION_STATES),
   ],
 );
@@ -234,7 +237,11 @@ export const seasons = pgTable(
     name: text('name').notNull(),
     orderNo: integer('order_no').notNull(),
   },
-  (t) => [tenantUnique('seasons', t), tfk('seasons_project_fk', t.workspaceId, t.projectId, projects)],
+  (t) => [
+    tenantUnique('seasons', t),
+    tfk('seasons_project_fk', t.workspaceId, t.projectId, projects),
+    uniqueIndex('seasons_order_uq').on(t.projectId, t.orderNo).where(sql`archived_at IS NULL`),
+  ],
 );
 
 export const episodes = pgTable(
@@ -283,6 +290,7 @@ export const scenes = pgTable(
     tenantUnique('scenes', t),
     tfk('scenes_project_fk', t.workspaceId, t.projectId, projects),
     tfk('scenes_episode_fk', t.workspaceId, t.episodeId, episodes),
+    uniqueIndex('scenes_order_uq').on(t.episodeId, t.orderNo).where(sql`archived_at IS NULL`),
   ],
 );
 
@@ -362,6 +370,9 @@ export const accountAssignments = pgTable(
     tfk('account_assignments_account_fk', t.workspaceId, t.accountId, socialAccounts),
     tfk('account_assignments_member_fk', t.workspaceId, t.membershipId, memberships),
     index('account_assignments_member_idx').on(t.workspaceId, t.membershipId, t.validTo),
+    index('account_assignments_account_idx').on(t.workspaceId, t.accountId, t.validTo),
+    /** One open assignment per account + member + duty (history rows keep valid_to). */
+    uniqueIndex('account_assignments_open_uq').on(t.accountId, t.membershipId, t.duty).where(sql`valid_to IS NULL`),
   ],
 );
 
@@ -427,6 +438,8 @@ export const references = pgTable(
     tfk('references_owner_fk', t.workspaceId, t.ownerMembershipId, memberships),
     tfk('references_project_fk', t.workspaceId, t.projectId, projects),
     index('references_list_idx').on(t.workspaceId, t.updatedAt, t.id),
+    /** A reference always has at least one source (section 8.2). */
+    rawCheck('references_source_ck', '"source_url" IS NOT NULL OR "source_asset_id" IS NOT NULL'),
   ],
 );
 
@@ -437,11 +450,14 @@ export const referenceLinks = pgTable(
     referenceId: uuid('reference_id').notNull(),
     targetType: text('target_type', { enum: ['project', 'content_item', 'character'] }).notNull(),
     targetId: uuid('target_id').notNull(),
+    /** 'idea' marks the one content draft created with "Use as Idea" (T035); other links are 'link'. */
+    kind: text('kind', { enum: ['link', 'idea'] }).notNull().default('link'),
   },
   (t) => [
     tenantUnique('reference_links', t),
     tfk('reference_links_ref_fk', t.workspaceId, t.referenceId, references),
     uniqueIndex('reference_links_uq').on(t.referenceId, t.targetType, t.targetId),
+    uniqueIndex('reference_links_idea_uq').on(t.referenceId).where(sql`kind = 'idea'`),
     index('reference_links_target_idx').on(t.workspaceId, t.targetType, t.targetId),
   ],
 );

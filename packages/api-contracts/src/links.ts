@@ -42,6 +42,9 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   template: (id) => `/settings/templates?open=${id}`,
   folder: (id) => `/library?folder=${id}`,
   article_category: (id) => `/knowledge?category=${id}`,
+  season: (_id, c) => (c?.projectId ? `/projects/${c.projectId}/series` : `/projects`),
+  episode: (id, c) => (c?.projectId ? `/projects/${c.projectId}/series?episode=${id}` : `/projects`),
+  scene: (_id, c) => (c?.projectId ? `/projects/${c.projectId}/series` : `/projects`),
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {
