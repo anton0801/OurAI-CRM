@@ -68,6 +68,7 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   content_version: (id) => `/content/versions/${id}`,
   tracking_link: (id) => `/campaigns?link=${id}`,
   plan_baseline: () => `/calendar?view=plan`,
+  report_schedule: (id) => `/reports?tab=schedules&schedule=${id}`, metric_definition: (id) => `/metrics?tab=definitions&definition=${id}`,
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {

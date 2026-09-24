@@ -70,6 +70,7 @@ const PREFIXES: Record<string, string[]> = {
   period_lock: ['finance.'],
   finance_category: ['finance.'],
   tracking_link: ['trackingLinks.', 'campaigns.'], plan_baseline: ['planBaselines.', 'calendar.'], // publishing
+  report_schedule: ['reports.'], report_snapshot: ['reports.'], metric_revision: ['metrics.', 'analytics.'],
 };
 
 export const useLiveEvents = (workspaceId: string) => {

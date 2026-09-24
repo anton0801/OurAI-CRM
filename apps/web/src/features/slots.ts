@@ -9,3 +9,4 @@ import './ofm/register-slots';
 import './finance/register-slots';
 import './content/register-slots';
 import './publications/register-slots';
+import './metrics/register-slots';

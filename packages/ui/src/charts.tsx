@@ -39,6 +39,8 @@ interface CommonProps {
   height?: number;
   emptyText?: string;
   footer?: ReactNode;
+  /** Gridline style (default dashed); analytics dashboards use solid hairlines. */
+  gridlines?: 'dashed' | 'solid';
 }
 
 const ChartFrame = ({
@@ -116,7 +118,7 @@ const DataTableView = ({ series, xs, fmt, fx, unit }: { series: ChartSeries[]; x
   </div>
 );
 
-export const LineChart = ({ series: rawSeries, title, unit, formatValue, formatX, height = 260, emptyText = 'No data recorded for this period.' }: CommonProps & { series: ChartSeries[] }) => {
+export const LineChart = ({ series: rawSeries, title, unit, formatValue, formatX, height = 260, emptyText = 'No data recorded for this period.', gridlines = 'dashed' }: CommonProps & { series: ChartSeries[] }) => {
   const series = rawSeries.slice(0, 5);
   const fmt = formatValue ?? defaultFormat;
   const fx = formatX ?? ((x: string) => x);
@@ -220,7 +222,7 @@ export const LineChart = ({ series: rawSeries, title, unit, formatValue, formatX
           </defs>
           {ticks.map((t) => (
             <g key={t}>
-              <line x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} stroke="var(--c-line)" strokeWidth={1} strokeDasharray={t === minV ? undefined : '2 4'} />
+              <line x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} stroke="var(--c-line)" strokeWidth={1} strokeDasharray={t === minV || gridlines === 'solid' ? undefined : '2 4'} />
               <text x={pad.l - 8} y={y(t) + 4} textAnchor="end" fontSize={11} fill="var(--c-fg-2)">
                 {fmt(t)}
               </text>
@@ -292,7 +294,9 @@ export const BarChart = ({
   stacked = false,
   emptyText = 'No data recorded for this period.',
   onSelect,
-}: CommonProps & { data: BarDatum[]; series: { key: string; label: string }[]; stacked?: boolean; onSelect?: (d: BarDatum) => void }) => {
+  gridlines = 'dashed',
+  maxBarWidth = 48,
+}: CommonProps & { data: BarDatum[]; series: { key: string; label: string }[]; stacked?: boolean; onSelect?: (d: BarDatum) => void; maxBarWidth?: number }) => {
   const fmt = formatValue ?? defaultFormat;
   const ser = series.slice(0, 5);
   const [active, setActive] = useState<number | null>(null);
@@ -304,7 +308,7 @@ export const BarChart = ({
   const totals = data.map((d) => ser.reduce((a, s) => a + Math.max(0, d.values[s.key] ?? 0), 0));
   const maxV = niceMax(stacked ? Math.max(...totals) : Math.max(...known));
   const band = (W - pad.l - pad.r) / data.length;
-  const barW = Math.max(4, Math.min(48, (band - 8) / (stacked ? 1 : ser.length)));
+  const barW = Math.max(4, Math.min(maxBarWidth, (band - 8) / (stacked ? 1 : ser.length)));
   const y = (v: number) => pad.t + (1 - v / maxV) * (H - pad.t - pad.b);
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((t) => t * maxV);
 
@@ -323,7 +327,7 @@ export const BarChart = ({
         <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label={title}>
           {ticks.map((t) => (
             <g key={t}>
-              <line x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} stroke="var(--c-line)" strokeWidth={1} strokeDasharray={t === 0 ? undefined : '2 4'} />
+              <line x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} stroke="var(--c-line)" strokeWidth={1} strokeDasharray={t === 0 || gridlines === 'solid' ? undefined : '2 4'} />
               <text x={pad.l - 8} y={y(t) + 4} textAnchor="end" fontSize={11} fill="var(--c-fg-2)">
                 {fmt(t)}
               </text>

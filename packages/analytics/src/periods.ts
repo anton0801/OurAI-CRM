@@ -2,7 +2,7 @@ import { DateTime } from 'luxon';
 import { hasValue, unavailable, type MetricValue } from './value';
 import { ROUND_HALF_EVEN, toBig } from '@castlane/domain';
 
-export type PeriodPreset = 'today' | 'last_7_days' | 'last_30_days' | 'this_week' | 'last_week' | 'this_month' | 'last_month' | 'this_quarter' | 'last_quarter' | 'this_year' | 'custom';
+export type PeriodPreset = 'today' | 'last_7_days' | 'last_30_days' | 'last_90_days' | 'this_week' | 'last_week' | 'this_month' | 'last_month' | 'this_quarter' | 'last_quarter' | 'this_year' | 'custom';
 export type TimeGrain = 'day' | 'week' | 'month' | 'quarter';
 
 /** A half-open UTC interval [start, end) plus the local calendar dates it represents. */
@@ -41,6 +41,8 @@ export const resolvePeriod = (
       return toPeriod(day.minus({ days: 6 }), day.plus({ days: 1 }), zone);
     case 'last_30_days':
       return toPeriod(day.minus({ days: 29 }), day.plus({ days: 1 }), zone);
+    case 'last_90_days':
+      return toPeriod(day.minus({ days: 89 }), day.plus({ days: 1 }), zone);
     case 'this_week':
       return toPeriod(weekStart, weekStart.plus({ weeks: 1 }), zone);
     case 'last_week':

@@ -17,6 +17,7 @@ import { financeEndpoints } from './finance';
 import { contentEndpoints, contentVersionEndpoints, reviewEndpoints } from './production';
 import { PUBLISHING_ENDPOINT_GROUPS } from './publishing';
 import { automationEndpoints } from './automation'; import { goalEndpoints } from './goals'; import { overviewEndpoints } from './overview';
+import { analyticsEndpoints, metricsEndpoints, reportEndpoints } from './insights';
 
 /**
  * Every endpoint group, used by the OpenAPI generator and contract tests.
@@ -47,6 +48,7 @@ export const ENDPOINT_GROUPS: Record<string, Record<string, AnyEndpoint>> = {
   content: contentEndpoints, contentVersions: contentVersionEndpoints, reviews: reviewEndpoints,
   ...PUBLISHING_ENDPOINT_GROUPS,
   automations: automationEndpoints, goals: goalEndpoints, overview: overviewEndpoints,
+  metrics: metricsEndpoints, analytics: analyticsEndpoints, reports: reportEndpoints,
 };
 
 export const allEndpoints = (): AnyEndpoint[] => Object.values(ENDPOINT_GROUPS).flatMap((g) => Object.values(g));

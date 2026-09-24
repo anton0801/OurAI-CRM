@@ -1,32 +1,15 @@
+import { METRIC_UNITS, METRIC_VALUE_STATUSES } from '@castlane/domain';
+
 /**
  * Metric values with explicit availability (R17: missing data is never zero). Every number shown
  * on a dashboard, report or goal is one of these. `value` is a decimal string (never a float) and
- * is present only when `status` is 'known' or 'partial'.
+ * is present only when `status` is 'known' or 'partial'. The status vocabulary lives in
+ * @castlane/domain so API contracts share it.
  */
-export const METRIC_STATUSES = [
-  'known',
-  /** Some inputs missing: value shown with the list of missing inputs (e.g. Partial Interactions). */
-  'partial',
-  /** No observation/record exists for the period ("No data recorded for this period."). */
-  'no_data',
-  /** Formula undefined, e.g. denominator 0 (ER with 0 views, growth from 0). */
-  'not_defined',
-  /** Fewer usable points than the formula needs (e.g. one follower snapshot). */
-  'not_enough_data',
-  /** The source does not provide the needed field/denominator (e.g. churn cohort). */
-  'not_measured',
-  /** No attribution link (e.g. revenue per shift hour without attributed sales). */
-  'not_attributable',
-  /** Waiting for an event (e.g. shift without end). */
-  'pending',
-  /** The metric does not apply (e.g. no required handovers). */
-  'not_applicable',
-  /** Not comparable windows/definitions (experiments with unequal post ages). */
-  'not_comparable',
-] as const;
+export const METRIC_STATUSES = METRIC_VALUE_STATUSES;
 export type MetricStatus = (typeof METRIC_STATUSES)[number];
 
-export const METRIC_UNITS = ['count', 'percent', 'hours', 'seconds', 'money', 'ratio', 'score', 'number'] as const;
+export { METRIC_UNITS };
 export type MetricUnit = (typeof METRIC_UNITS)[number];
 
 export interface MetricValue {

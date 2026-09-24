@@ -11,3 +11,4 @@ export * from './state-machine';
 export * from './ofm';
 export * from './finance';
 export * from './automation';
+export * from './insights';

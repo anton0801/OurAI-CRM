@@ -81,6 +81,8 @@ export const metricObservations = pgTable(
     rootObservationId: uuid('root_observation_id').notNull(),
     supersedesId: uuid('supersedes_id'),
     correctionReason: text('correction_reason'),
+    /** Approval note or rejection reason of a correction / review decision. */
+    decisionNote: text('decision_note'),
     reviewedBy: uuid('reviewed_by'),
     reviewedAt: ts('reviewed_at'),
     checkpointId: uuid('checkpoint_id'),
@@ -98,6 +100,11 @@ export const metricObservations = pgTable(
     uniqueIndex('metric_observations_dedupe_uq')
       .on(t.workspaceId, t.dedupeKey)
       .where(sql`quality_state NOT IN ('superseded', 'rejected', 'pending_correction')`),
+    /** At most one correction awaiting review per revision chain (concurrent corrections conflict). */
+    uniqueIndex('metric_observations_pending_uq')
+      .on(t.workspaceId, t.rootObservationId)
+      .where(sql`quality_state = 'pending_correction'`),
+    index('metric_observations_publication_idx').on(t.workspaceId, t.publicationId, t.observedAt),
     rawCheck('metric_observations_period_ck', '"kind" <> \'period\' OR ("period_start" IS NOT NULL AND "period_end" IS NOT NULL AND "period_end" > "period_start")'),
     enumCheck('metric_observations_kind_ck', 'kind', OBSERVATION_KINDS),
     enumCheck('metric_observations_quality_ck', 'quality_state', METRIC_QUALITY_STATES),
@@ -234,12 +241,11 @@ export interface SavedReportConfig {
   dataset: string;
   dimensions: string[];
   metrics: string[];
-  filters: unknown;
-  timeGrain?: 'day' | 'week' | 'month';
+  filters: { directionId?: string; projectIds?: string[]; accountIds?: string[]; platforms?: string[]; formats?: string[]; memberIds?: string[]; statuses?: string[] };
+  timeGrain?: 'day' | 'week' | 'month' | 'quarter';
   sort?: { key: string; direction: 'asc' | 'desc' }[];
   chart?: 'line' | 'bar' | 'stacked_bar' | 'table';
-  datePolicy?: { kind: 'relative'; days: number } | { kind: 'fixed'; from: string; to: string };
-  projectIds?: string[];
+  datePolicy?: { kind: 'relative'; preset: string } | { kind: 'fixed'; from: string; to: string };
 }
 
 export const savedReports = pgTable(
@@ -257,6 +263,24 @@ export const savedReports = pgTable(
     duplicatedFromId: uuid('duplicated_from_id'),
   },
   (t) => [tenantUnique('saved_reports', t), tfk('saved_reports_owner_fk', t.workspaceId, t.ownerMembershipId, memberships)],
+);
+
+/** Configuration history of a saved report: every change of name/config is a new version (§17). */
+export const savedReportVersions = pgTable(
+  'saved_report_versions',
+  {
+    ...tenantBase(),
+    reportId: uuid('report_id').notNull(),
+    versionNo: integer('version_no').notNull(),
+    name: text('name').notNull(),
+    config: json<SavedReportConfig>('config').notNull(),
+    changeNote: text('change_note'),
+  },
+  (t) => [
+    tenantUnique('saved_report_versions', t),
+    tfk('saved_report_versions_report_fk', t.workspaceId, t.reportId, savedReports),
+    uniqueIndex('saved_report_versions_no_uq').on(t.reportId, t.versionNo),
+  ],
 );
 
 export const reportSnapshots = pgTable(
@@ -290,6 +314,8 @@ export const reportSchedules = pgTable(
     active: boolean('active').notNull().default(true),
     pausedReason: text('paused_reason'),
     emailNotify: boolean('email_notify').notNull().default(false),
+    /** Outcome of the last delivery: delivered / skipped recipients (no report data). */
+    lastRunResult: json<{ delivered: number; skipped: { membershipId: string; reason: string }[]; at: string }>('last_run_result'),
   },
   (t) => [tenantUnique('report_schedules', t), tfk('report_schedules_report_fk', t.workspaceId, t.reportId, savedReports)],
 );

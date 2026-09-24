@@ -9,7 +9,22 @@ import type { QueryContext } from './context';
  * Definitions live with the insights module (M01–M42); the scope of the requesting member is applied
  * inside `compute` in SQL before aggregation (`scopePredicate`).
  */
-export type MetricDimension = 'project' | 'direction' | 'account' | 'platform' | 'format' | 'member' | 'campaign' | 'category' | 'currency' | 'shift_account';
+export type MetricDimension =
+  | 'project'
+  | 'direction'
+  | 'account'
+  | 'platform'
+  | 'format'
+  | 'member'
+  | 'campaign'
+  | 'category'
+  | 'currency'
+  | 'shift_account'
+  | 'period'
+  | 'publication'
+  | 'status'
+  | 'priority'
+  | 'stage';
 
 export interface MetricFilters {
   directionIds?: string[];
@@ -20,6 +35,8 @@ export interface MetricFilters {
   platforms?: string[];
   formats?: string[];
   currency?: string;
+  /** Record statuses (task status, stage…) where the metric supports it. */
+  statuses?: string[];
 }
 
 export interface MetricQuery {
