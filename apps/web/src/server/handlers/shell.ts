@@ -1,8 +1,13 @@
-import { shellEndpoints as E } from '@castlane/api-contracts';
-import { globalSearch, membershipStillActive, readStream, streamHead, unreadCount } from '@castlane/application';
+import { lookupEndpoints, shellEndpoints as E } from '@castlane/api-contracts';
+import { globalSearch, membershipStillActive, readStream, runLookup, streamHead, unreadCount } from '@castlane/application';
 import { route } from '../http/router';
 
 route(E.search, async ({ ctx, input }) => globalSearch(ctx, input.query));
+
+route(lookupEndpoints.search, async ({ ctx, input }) => {
+  const { type } = input.params;
+  return runLookup(ctx, type, input.query);
+});
 
 route(E.unreadCount, async ({ ctx }) => ({ unread: await unreadCount(ctx.app.db, ctx.actor.workspaceId, ctx.actor.membershipId!) }));
 

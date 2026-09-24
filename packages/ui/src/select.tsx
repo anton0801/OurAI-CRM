@@ -26,6 +26,11 @@ interface BaseProps<V extends string> {
   searchable?: boolean;
   emptyText?: string;
   clearable?: boolean;
+  /**
+   * Server-side search: called (debounce in the caller) with the typed query. When set, the search
+   * box is always shown and options are not filtered locally.
+   */
+  onQueryChange?: (query: string) => void;
 }
 
 export interface SelectProps<V extends string> extends BaseProps<V> {
@@ -39,11 +44,12 @@ export interface MultiSelectProps<V extends string> extends BaseProps<V> {
   max?: number;
 }
 
-const useListNavigation = <V extends string>(options: SelectOption<V>[], query: string) => {
+const useListNavigation = <V extends string>(options: SelectOption<V>[], query: string, remote: boolean) => {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return q ? options.filter((o) => o.label.toLowerCase().includes(q) || o.description?.toLowerCase().includes(q)) : options;
-  }, [options, query]);
+    if (remote || !q) return options;
+    return options.filter((o) => o.label.toLowerCase().includes(q) || o.description?.toLowerCase().includes(q));
+  }, [options, query, remote]);
   const [active, setActive] = useState(0);
   useEffect(() => setActive(0), [query]);
   return { filtered, active, setActive };
@@ -102,14 +108,23 @@ const OptionList = <V extends string>({
   );
 };
 
-function useSelectCore<V extends string>(options: SelectOption<V>[], searchable?: boolean) {
+function useSelectCore<V extends string>(options: SelectOption<V>[], searchable?: boolean, onQueryChange?: (q: string) => void) {
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
-  const nav = useListNavigation(options, query);
+  const [query, setQueryState] = useState('');
+  const remote = !!onQueryChange;
+  const nav = useListNavigation(options, query, remote);
   const listId = useId();
-  const showSearch = searchable ?? options.length > 8;
+  const showSearch = remote || (searchable ?? options.length > 8);
+  const setQuery = (q: string) => {
+    setQueryState(q);
+    onQueryChange?.(q);
+  };
   useEffect(() => {
-    if (!open) setQuery('');
+    if (!open && query) {
+      setQueryState('');
+      onQueryChange?.('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
   return { open, setOpen, query, setQuery, listId, showSearch, ...nav };
 }
@@ -142,7 +157,7 @@ const Trigger = forwardRef<HTMLButtonElement, TriggerProps>(
 export function Select<V extends string>(rawProps: SelectProps<V>) {
   const props = useFieldControl(rawProps);
   const { options, value, onChange, placeholder = 'Select…', disabled, className, emptyText = 'No matches', clearable } = props;
-  const s = useSelectCore(options, props.searchable);
+  const s = useSelectCore(options, props.searchable, props.onQueryChange);
   const selected = options.find((o) => o.value === value);
   const pick = (o: SelectOption<V>) => {
     onChange(o.value);
@@ -239,7 +254,7 @@ export function Select<V extends string>(rawProps: SelectProps<V>) {
 export function MultiSelect<V extends string>(rawProps: MultiSelectProps<V>) {
   const props = useFieldControl(rawProps);
   const { options, value, onChange, placeholder = 'Select…', disabled, className, emptyText = 'No matches', max } = props;
-  const s = useSelectCore(options, props.searchable);
+  const s = useSelectCore(options, props.searchable, props.onQueryChange);
   const toggle = (o: SelectOption<V>) => {
     if (value.includes(o.value)) onChange(value.filter((v) => v !== o.value));
     else if (!max || value.length < max) onChange([...value, o.value]);

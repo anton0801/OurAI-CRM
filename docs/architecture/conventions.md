@@ -204,6 +204,17 @@ Rules:
 | `PREFIXES` | web/src/lib/live-events.ts | which cached queries refresh when an entity type changes |
 | `ENDPOINT_GROUPS` | api-contracts/src/registry.ts | OpenAPI + contract tests |
 | `defineJob/defineConsumer/defineSchedule` | application/core/jobs-registry | background work |
+| `defineLookup` | application/core/lookup-registry | picker search for an entity type (`LOOKUP_TYPES` in api-contracts/src/lookup.ts); UI: `EntitySelect` / `MultiEntitySelect` from `components/common/entity-select` |
+| `defineResponsibilityProvider` | application/core/responsibility-registry | open work a member holds; listed and transferred when a member is deactivated (F12) |
+| `defineImportDataset` | application/core/import-registry | Import Center dataset (columns, row validation, apply, undo) |
+| `defineExportDataset` | application/core/export-registry | Export Center dataset (columns, permission-scoped rows as of a boundary) |
+| slots (`ACCOUNT_TABS`, `MY_WORK_SECTIONS`, `MEMBER_TABS`, `CHARACTER_PANELS`, `EPISODE_PANELS`, `CAMPAIGN_TABS`, `DEAL_PANELS`) | web/src/lib/slots.ts | one module's screen shows another module's records; register in `features/<module>/register-slots.ts` and add one import line to `features/slots.ts` |
+| `registerLabels` | web/src/lib/labels.ts | enum label dictionaries per module (call from the module's `features/<module>/labels.ts`) |
+
+Barrel/registry files (`packages/application/src/index.ts`, `register-all.ts`, `core/index.ts`,
+`api-contracts/src/index.ts`, `registry.ts`, `server/handlers/index.ts`, `features/slots.ts`,
+`features/project-tabs.ts`) use git union merge (`.gitattributes`): only **append one line per
+module**, never reorder or rewrite existing lines.
 
 ## 10. UI conventions
 
@@ -221,9 +232,10 @@ Rules:
   On submit: map `fieldErrors` with `applyFieldErrors`; on `VERSION_CONFLICT` open `ConflictDialog`
   and keep the user's input. Close a drawer only after the server confirmed the save.
   Drawers/dialogs get `dirty` so closing with unsaved changes asks "Discard Changes / Keep Editing".
-* Pickers: `MemberSelect`, `MultiMemberSelect`, `DirectionSelect` in `components/common/pickers`.
-  Module-specific pickers (ProjectSelect, AccountSelect, …) live in the module's feature folder and
-  are exported for others.
+* Pickers: `MemberSelect`, `MultiMemberSelect`, `DirectionSelect` in `components/common/pickers`;
+  every other entity uses `<EntitySelect type="account" filters={{ projectId }} …/>` /
+  `MultiEntitySelect` (server-searched, scope-filtered). The module that owns the entity registers
+  its `defineLookup` provider (see `organization/lookups.ts`).
 * Files: `FileUploader` / `useUpload` / `AssetThumb` from `components/media`. Never show a public
   object URL; use the authorised thumbnail/download endpoints.
 * Tables: `DataTable` (sticky first column, right-aligned numbers, selection with "Select All

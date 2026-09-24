@@ -3,6 +3,7 @@ export * from './common';
 export * from './auth';
 export * from './shell';
 export * from './links';
+export * from './lookup';
 export * from './organization';
 export * from './media';
 export * from './registry';

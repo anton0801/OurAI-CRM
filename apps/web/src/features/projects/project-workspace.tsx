@@ -28,7 +28,7 @@ import { label } from '@/lib/labels';
 import { PROJECT_TABS } from '@/lib/project-tabs';
 import { useUrlState } from '@/lib/url-state';
 import { useCan, useWorkspace, useWsPath } from '@/lib/workspace-context';
-import '@/features/project-tabs';
+import '@/features/slots';
 
 type Transition = { target: ProjectDetail['status']; label: string; needsReason?: boolean; destructive?: boolean };
 

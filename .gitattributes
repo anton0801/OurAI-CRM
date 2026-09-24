@@ -1,0 +1,10 @@
+# Registry / barrel files: every module appends one line. Union merge avoids conflicts between
+# parallel module branches (review the result: order does not matter in these files).
+packages/application/src/index.ts merge=union
+packages/application/src/register-all.ts merge=union
+packages/application/src/core/index.ts merge=union
+packages/api-contracts/src/index.ts merge=union
+packages/api-contracts/src/registry.ts merge=union
+apps/web/src/server/handlers/index.ts merge=union
+apps/web/src/features/project-tabs.ts merge=union
+apps/web/src/features/slots.ts merge=union

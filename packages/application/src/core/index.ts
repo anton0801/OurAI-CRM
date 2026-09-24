@@ -16,3 +16,7 @@ export * from './jobs-registry';
 export * from './tags';
 export * from './archive-registry';
 export * from './members';
+export * from './lookup-registry';
+export * from './responsibility-registry';
+export * from './import-registry';
+export * from './export-registry';

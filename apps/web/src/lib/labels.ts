@@ -21,5 +21,10 @@ const LABELS: Record<string, Record<string, string>> = {
   },
 };
 
+/** Modules add their groups from their own feature folder: `registerLabels({ taskStatus: {...} })`. */
+export const registerLabels = (groups: Record<string, Record<string, string>>) => {
+  for (const [g, map] of Object.entries(groups)) LABELS[g] = { ...(LABELS[g] ?? {}), ...map };
+};
+
 export const label = (group: keyof typeof LABELS | string, key: string | null | undefined): string =>
   key ? (LABELS[group]?.[key] ?? humanize(key)) : '—';

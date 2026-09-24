@@ -1,6 +1,7 @@
 import type { AnyEndpoint } from './core';
 import { authEndpoints, setupEndpoints } from './auth';
 import { shellEndpoints } from './shell';
+import { lookupEndpoints } from './lookup';
 import { directionEndpoints, peopleEndpoints, projectEndpoints } from './organization';
 import { mediaEndpoints } from './media';
 
@@ -12,6 +13,7 @@ export const ENDPOINT_GROUPS: Record<string, Record<string, AnyEndpoint>> = {
   auth: authEndpoints,
   setup: setupEndpoints,
   shell: shellEndpoints,
+  lookup: lookupEndpoints,
   people: peopleEndpoints,
   directions: directionEndpoints,
   projects: projectEndpoints,
