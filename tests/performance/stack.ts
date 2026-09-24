@@ -29,6 +29,10 @@ const databaseUrl =
   'postgres://castlane:castlane@127.0.0.1:5432/castlane_perf';
 const logs = resolve(root, arg('logs') ?? 'var/perf');
 const origin = arg('origin') ?? process.env.PERF_APP_ORIGIN ?? 'https://perf.castlane.invalid';
+/** Web server processes on consecutive ports (the Next.js server uses one CPU core per process). */
+const webInstances = Math.max(1, Number(arg('web-instances') ?? 1));
+/** Extra Node.js flags for the web processes, e.g. "--cpu-prof --cpu-prof-dir=var/perf/prof". */
+const webNodeArgs = (arg('web-node-args') ?? '').split(' ').filter(Boolean);
 
 if (!existsSync(server)) {
   console.error(`Missing ${server}. Build first: NEXT_DIST_DIR=${distDir} pnpm --filter @castlane/web build`);
@@ -82,25 +86,34 @@ const shutdown = (code = 0) => {
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
 
-const web = start('web', process.execPath, [server], {
-  PORT: String(port),
-  HOSTNAME: '127.0.0.1',
-  CASTLANE_PROCESS: 'web',
-});
+const webs = Array.from({ length: webInstances }, (_, i) =>
+  start(webInstances > 1 ? `web-${i + 1}` : 'web', process.execPath, [...webNodeArgs, server], {
+    PORT: String(port + i),
+    HOSTNAME: '127.0.0.1',
+    CASTLANE_PROCESS: 'web',
+  }),
+);
+const ports = webs.map((_, i) => port + i);
 const worker = start('worker', 'pnpm', ['--filter', '@castlane/worker', 'exec', 'tsx', 'src/index.ts'], {
   CASTLANE_PROCESS: 'worker',
 });
 // The runner reads the process ids to attribute CPU time to web and worker (process trees).
 writeFileSync(
   join(logs, 'stack.json'),
-  JSON.stringify({ webPid: web.pid, workerPid: worker.pid, port, databaseUrl }),
+  JSON.stringify({ webPids: webs.map((w) => w.pid), workerPid: worker.pid, ports, databaseUrl }),
 );
 
 const ready = async () => {
   for (let i = 0; i < 120; i++) {
-    const ok = await fetch(`http://127.0.0.1:${port}/api/v1/health/live`)
-      .then((r) => r.ok)
-      .catch(() => false);
+    const ok = (
+      await Promise.all(
+        ports.map((p) =>
+          fetch(`http://127.0.0.1:${p}/api/v1/health/live`)
+            .then((r) => r.ok)
+            .catch(() => false),
+        ),
+      )
+    ).every(Boolean);
     if (ok) return true;
     await new Promise((r) => setTimeout(r, 500));
   }
@@ -113,6 +126,6 @@ void ready().then((ok) => {
     return;
   }
   console.log(
-    `ready: http://127.0.0.1:${port} (APP_ORIGIN ${origin}, database ${databaseUrl.replace(/\/\/[^@]*@/, '//…@')})`,
+    `ready: ${ports.map((p) => `http://127.0.0.1:${p}`).join(', ')} (APP_ORIGIN ${origin}, database ${databaseUrl.replace(/\/\/[^@]*@/, '//…@')})`,
   );
 });

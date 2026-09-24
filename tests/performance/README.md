@@ -22,7 +22,9 @@ pnpm perf:run --server-note "local: standalone web + worker, NODE_ENV=production
 ```
 
 The runner expects a server that is already running. `perf:stack` writes logs and export files to `var/perf/`.
-Stop it with Ctrl-C.
+Stop it with Ctrl-C. `perf:stack --web-instances 2` starts two web processes on consecutive ports. Pass both URLs to
+the runner (`--base-url http://127.0.0.1:3200,http://127.0.0.1:3201`), and each session sticks to one of them.
+`--web-node-args "--cpu-prof --cpu-prof-dir=var/perf/prof"` profiles the web processes.
 
 ## Synthetic data (`seed.ts`)
 

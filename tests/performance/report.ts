@@ -455,7 +455,7 @@ export const renderReport = (r: RunResults, label = ''): string => {
       '',
       'CPU by process during the run (100 % = one core; sampled every 2 s from /proc):',
       '',
-      '| Phase | Web server avg / max | Worker avg | PostgreSQL (load DB backends) avg | Load generator avg | Whole host avg |',
+      '| Phase | Web server(s) avg / max | Worker avg | PostgreSQL (load DB backends) avg | Load generator avg | Whole host avg |',
       '|---|---|---|---|---|---|',
       ...Object.entries(r.queue.byPhase).map(
         ([ph, q]) =>
@@ -567,7 +567,7 @@ export const renderReport = (r: RunResults, label = ''): string => {
       .join(', ')}`,
     `- Database size after the run: ${(e.postgres.databaseBytes / 1024 ** 3).toFixed(2)} GiB`,
     `- Server under test: ${c.serverNote}`,
-    `- Target ${c.baseUrl}; the load generator ran on the same host`,
+    `- Target ${[(r.config as { baseUrls?: string[]; baseUrl?: string }).baseUrls ?? [c.baseUrl]].flat().join(', ')} (${[(r.config as { baseUrls?: string[] }).baseUrls ?? [c.baseUrl]].flat().length} web server process(es), sessions spread over them); the load generator ran on the same host`,
     '',
   );
 

@@ -56,7 +56,10 @@ const num = (name: string, def: number) => {
 };
 
 const cfg = {
-  baseUrl: (arg('base-url') ?? process.env.PERF_BASE_URL ?? 'http://127.0.0.1:3200').replace(/\/$/, ''),
+  /** One or more web servers (comma-separated); each session sticks to one, like a sticky load balancer. */
+  baseUrls: (arg('base-url') ?? process.env.PERF_BASE_URL ?? 'http://127.0.0.1:3200')
+    .split(',')
+    .map((u) => u.trim().replace(/\/$/, '')),
   origin:
     arg('origin') ?? process.env.PERF_APP_ORIGIN ?? process.env.APP_ORIGIN ?? 'https://perf.castlane.invalid',
   databaseUrl:
@@ -177,7 +180,7 @@ const send = async (s: Session, spec: Spec): Promise<Outcome> => {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(spec.query ?? {}))
     if (v !== undefined && v !== '') qs.set(k, String(v));
-  const url = `${cfg.baseUrl}/api/v1${spec.path}${qs.size ? `?${qs}` : ''}`;
+  const url = `${cfg.baseUrls[s.idx % cfg.baseUrls.length]}/api/v1${spec.path}${qs.size ? `?${qs}` : ''}`;
   const headers: Record<string, string> = {
     accept: 'application/json',
     cookie: `castlane_session=${encodeURIComponent(s.token)}`,
@@ -785,6 +788,9 @@ const treeTicks = (rootPid: number): number | null => {
 };
 
 /** CPU ticks per process id (PostgreSQL backends of the load database). */
+const sumOrNull = (xs: (number | null)[]) =>
+  xs.some((x) => x === null) ? null : xs.reduce<number>((a, b) => a + (b ?? 0), 0);
+
 const pidTicks = (pids: number[]) => {
   const out = new Map<number, number>();
   for (const pid of pids) {
@@ -799,9 +805,9 @@ const pidTicks = (pids: number[]) => {
   return out;
 };
 
-const readStack = (): { webPid?: number; workerPid?: number } => {
+const readStack = (): { webPids?: number[]; workerPid?: number } => {
   try {
-    return JSON.parse(readFileSync(cfg.stackFile, 'utf8')) as { webPid?: number; workerPid?: number };
+    return JSON.parse(readFileSync(cfg.stackFile, 'utf8')) as { webPids?: number[]; workerPid?: number };
   } catch {
     return {};
   }
@@ -820,7 +826,7 @@ const startSampler = async (pool: pg.Pool, phaseOf: () => Phase, t0: number) => 
     const self = process.cpuUsage();
     return {
       at: performance.now(),
-      web: stack.webPid ? treeTicks(stack.webPid) : null,
+      web: stack.webPids?.length ? sumOrNull(stack.webPids.map((pid) => treeTicks(pid))) : null,
       worker: stack.workerPid ? treeTicks(stack.workerPid) : null,
       pg: pidTicks(backends),
       runner: (self.user + self.system) / 10_000,
@@ -931,10 +937,14 @@ const main = async () => {
     .rows[0] as { value: SeedManifest } | undefined;
   if (!m) throw new Error(`No seed manifest in ${cfg.databaseUrl}; run pnpm perf:seed first.`);
   manifest = m.value;
-  console.log(`Workspace ${manifest.workspaceId} (seed scale ${manifest.scale}); target ${cfg.baseUrl}`);
+  console.log(
+    `Workspace ${manifest.workspaceId} (seed scale ${manifest.scale}); target ${cfg.baseUrls.join(', ')}`,
+  );
 
-  const health = await fetch(`${cfg.baseUrl}/api/v1/auth/csrf`).catch(() => null);
-  if (!health) throw new Error(`Server ${cfg.baseUrl} is not reachable.`);
+  for (const base of cfg.baseUrls) {
+    const health = await fetch(`${base}/api/v1/auth/csrf`).catch(() => null);
+    if (!health) throw new Error(`Server ${base} is not reachable.`);
+  }
 
   const sessions = await mintSessions(pool);
   console.log(
