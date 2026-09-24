@@ -37,6 +37,7 @@ import {
   toast,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { QueryState } from '@/components/common/query-state';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
@@ -379,7 +380,9 @@ const CommentBlock = ({
   const [resolveOpen, setResolveOpen] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [note, setNote] = useState('');
-  const [conflict, setConflict] = useState(false);
+  // Each edit works against the comment as it was when it started (T162).
+  const edit = useEditBase(c, { open: editing, onReload: (latest) => setText(latest.body ?? '') });
+  const decide = useEditBase(c, { open: resolveOpen || reopenOpen, onReload: () => setNote('') });
   const update = useApiMutation(commentEndpoints.update, {
     invalidate: INVALIDATE,
     successMessage: 'Comment updated',
@@ -448,12 +451,11 @@ const CommentBlock = ({
                 disabled={!text.trim()}
                 onClick={async () => {
                   try {
-                    await update.run({ params, body: { body: text.trim() } }, { ifMatch: c.rowVersion });
+                    await update.run({ params, body: { body: text.trim() } }, { ifMatch: edit.version });
                     setEditing(false);
                     onChanged();
                   } catch (e) {
-                    if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-                    else toast.error(isApiError(e) ? e.message : 'The comment was not saved.');
+                    if (!edit.catchConflict(e)) toast.error(isApiError(e) ? e.message : 'The comment was not saved.');
                   }
                 }}
               >
@@ -533,13 +535,14 @@ const CommentBlock = ({
         confirmLabel="Resolve"
         loading={resolve.isPending}
         onConfirm={async () => {
-          await resolve.run(
-            { params, body: { resolutionNote: note.trim() || undefined } },
-            { ifMatch: c.rowVersion },
-          );
-          setResolveOpen(false);
-          setNote('');
-          onChanged();
+          try {
+            await resolve.run({ params, body: { resolutionNote: note.trim() || undefined } }, { ifMatch: decide.version });
+            setResolveOpen(false);
+            setNote('');
+            onChanged();
+          } catch (e) {
+            decide.catchConflict(e);
+          }
         }}
       >
         <Field label="What was fixed (optional)">
@@ -558,10 +561,14 @@ const CommentBlock = ({
         loading={reopen.isPending}
         confirmDisabled={note.trim().length < 3}
         onConfirm={async () => {
-          await reopen.run({ params, body: { reason: note.trim() } }, { ifMatch: c.rowVersion });
-          setReopenOpen(false);
-          setNote('');
-          onChanged();
+          try {
+            await reopen.run({ params, body: { reason: note.trim() } }, { ifMatch: decide.version });
+            setReopenOpen(false);
+            setNote('');
+            onChanged();
+          } catch (e) {
+            decide.catchConflict(e);
+          }
         }}
       >
         <Field label="Reason" required>
@@ -582,15 +589,8 @@ const CommentBlock = ({
           onChanged();
         }}
       />
-      <ConflictDialog
-        open={conflict}
-        onOpenChange={setConflict}
-        onReload={() => {
-          setConflict(false);
-          setEditing(false);
-          onChanged();
-        }}
-      />
+      <ConflictDialog {...edit.conflictDialog} />
+      <ConflictDialog {...decide.conflictDialog} />
     </article>
   );
 };

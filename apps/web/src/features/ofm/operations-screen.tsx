@@ -31,8 +31,10 @@ import {
   type Column,
 } from '@castlane/ui';
 import { MemberSelect } from '@/components/common/pickers';
+import { ConflictDialog } from '@/components/common/conflict';
 import { QueryState } from '@/components/common/query-state';
 import { useDebounced } from '@/components/common/use-debounced';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { useApiInfinite, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useUrlState } from '@/lib/url-state';
@@ -373,86 +375,93 @@ const SaleCandidateDetailDrawer = ({ id, onClose }: { id: string; onClose: () =>
 
 const EditSaleDialog = ({ c, onClose }: { c: OfmSaleCandidate; onClose: () => void }) => {
   const { workspace } = useWorkspace();
-  const [money, setMoney] = useState({ gross: c.money?.gross ?? '', refund: c.money?.refund ?? '', fee: c.money?.fee ?? '', net: c.money?.net ?? '' });
+  const moneyOf = (x: OfmSaleCandidate) => ({ gross: x.money?.gross ?? '', refund: x.money?.refund ?? '', fee: x.money?.fee ?? '', net: x.money?.net ?? '' });
+  const allocOf = (x: OfmSaleCandidate) => x.claimedAllocations.map((a) => ({ membershipId: a.member.membershipId as string, sharePercent: a.sharePercent }));
+  const [money, setMoney] = useState(moneyOf(c));
   const [note, setNote] = useState(c.sourceNote ?? '');
-  const [alloc, setAlloc] = useState(c.claimedAllocations.map((a) => ({ membershipId: a.member.membershipId as string, sharePercent: a.sharePercent })));
+  const [alloc, setAlloc] = useState(allocOf(c));
   const [error, setError] = useState<string | null>(null);
+  // `c` refreshes live; edits apply to the candidate as the dialog opened, changed fields only (T162).
+  const edit = useEditBase(c, {
+    onReload: (x) => {
+      setMoney(moneyOf(x));
+      setNote(x.sourceNote ?? '');
+      setAlloc(allocOf(x));
+    },
+  });
   const m = useOfmMutation(E.updateSaleCandidate, { successMessage: 'Sale candidate updated', also: ['finance.'] });
   const total = alloc.reduce((s, a) => s + (Number(a.sharePercent) || 0), 0);
   const amountOk = (v: string) => !v || /^-?\d{1,15}(\.\d{1,6})?$/.test(v);
   const valid = Object.values(money).every(amountOk) && total <= 100 && alloc.every((a) => a.membershipId && /^\d{1,3}(\.\d{1,2})?$/.test(a.sharePercent));
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Edit sale candidate"
-      description="Source transaction IDs cannot change once registered."
-      dirty
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!valid}
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run(
-                  {
-                    params: { workspaceId: workspace.id, candidateId: c.id },
-                    body: {
-                      ...(c.money ? { gross: money.gross || null, refund: money.refund || null, fee: money.fee || null, net: money.net || null } : {}),
-                      sourceNote: note.trim() || null,
-                      claimedAllocations: alloc,
-                    },
-                  },
-                  { ifMatch: c.rowVersion },
-                );
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Save Changes
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {c.money ? (
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            {(['gross', 'refund', 'fee', 'net'] as const).map((k) => (
-              <Field key={k} label={k[0]!.toUpperCase() + k.slice(1)} error={amountOk(money[k]) ? undefined : 'Decimal number'}>
-                <AmountInput currency={c.currency} value={money[k]} onChange={(e) => setMoney({ ...money, [k]: e.target.value.trim() })} />
-              </Field>
-            ))}
-          </div>
-        ) : null}
-        <fieldset className="flex flex-col gap-2">
-          <legend className="mb-1 text-[13px] font-[550] text-fg">Claimed Attribution</legend>
-          {alloc.map((a, i) => (
-            <div key={i} className="grid grid-cols-[1fr_110px_auto] items-start gap-2">
-              <MemberSelect aria-label={`Member ${i + 1}`} value={a.membershipId} onChange={(v) => setAlloc(alloc.map((x, n) => (n === i ? { ...x, membershipId: v ?? '' } : x)))} />
-              <Input aria-label={`Share ${i + 1} (percent)`} inputMode="decimal" value={a.sharePercent} onChange={(e) => setAlloc(alloc.map((x, n) => (n === i ? { ...x, sharePercent: e.target.value.trim() } : x)))} />
-              <IconButton label="Remove claim" icon={<Trash size={16} />} onClick={() => setAlloc(alloc.filter((_, n) => n !== i))} />
-            </div>
-          ))}
-          <p className={total > 100 ? 'text-[12px] text-danger' : 'text-[12px] text-fg-2'}>Claimed {total.toFixed(2)} % · Unassigned {Math.max(0, 100 - total).toFixed(2)} %</p>
-          {alloc.length < 10 ? (
-            <div>
-              <Button size="sm" icon={<Plus size={14} />} onClick={() => setAlloc([...alloc, { membershipId: '', sharePercent: '' }])}>
-                Add Claim
-              </Button>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Edit sale candidate"
+        description="Source transaction IDs cannot change once registered."
+        dirty
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={!valid}
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  const s = edit.start ?? c;
+                  const moneyBody = (x: typeof money) => (s.money ? { gross: x.gross || null, refund: x.refund || null, fee: x.fee || null, net: x.net || null } : {});
+                  const body = { ...moneyBody(money), sourceNote: note.trim() || null, claimedAllocations: alloc };
+                  const before = { ...moneyBody(moneyOf(s)), sourceNote: s.sourceNote?.trim() || null, claimedAllocations: allocOf(s) };
+                  await m.run({ params: { workspaceId: workspace.id, candidateId: c.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Save Changes
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {c.money ? (
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              {(['gross', 'refund', 'fee', 'net'] as const).map((k) => (
+                <Field key={k} label={k[0]!.toUpperCase() + k.slice(1)} error={amountOk(money[k]) ? undefined : 'Decimal number'}>
+                  <AmountInput currency={c.currency} value={money[k]} onChange={(e) => setMoney({ ...money, [k]: e.target.value.trim() })} />
+                </Field>
+              ))}
             </div>
           ) : null}
-        </fieldset>
-        <Field label="Source Note" helper="No card numbers or payment credentials.">
-          <Textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
-        </Field>
-      </div>
-    </Dialog>
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-1 text-[13px] font-[550] text-fg">Claimed Attribution</legend>
+            {alloc.map((a, i) => (
+              <div key={i} className="grid grid-cols-[1fr_110px_auto] items-start gap-2">
+                <MemberSelect aria-label={`Member ${i + 1}`} value={a.membershipId} onChange={(v) => setAlloc(alloc.map((x, n) => (n === i ? { ...x, membershipId: v ?? '' } : x)))} />
+                <Input aria-label={`Share ${i + 1} (percent)`} inputMode="decimal" value={a.sharePercent} onChange={(e) => setAlloc(alloc.map((x, n) => (n === i ? { ...x, sharePercent: e.target.value.trim() } : x)))} />
+                <IconButton label="Remove claim" icon={<Trash size={16} />} onClick={() => setAlloc(alloc.filter((_, n) => n !== i))} />
+              </div>
+            ))}
+            <p className={total > 100 ? 'text-[12px] text-danger' : 'text-[12px] text-fg-2'}>Claimed {total.toFixed(2)} % · Unassigned {Math.max(0, 100 - total).toFixed(2)} %</p>
+            {alloc.length < 10 ? (
+              <div>
+                <Button size="sm" icon={<Plus size={14} />} onClick={() => setAlloc([...alloc, { membershipId: '', sharePercent: '' }])}>
+                  Add Claim
+                </Button>
+              </div>
+            ) : null}
+          </fieldset>
+          <Field label="Source Note" helper="No card numbers or payment credentials.">
+            <Textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };

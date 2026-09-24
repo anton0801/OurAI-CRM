@@ -25,6 +25,7 @@ import {
   type MenuItem,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
@@ -231,7 +232,8 @@ export const ContactWorkspace = ({ contactId }: { contactId: string }) => {
             body="The contact leaves active lists. Business notes are deleted after the retention period (180 days by default). Financial references stay."
             confirmLabel="Archive"
             destructive
-            onConfirm={(reason) => archive.run({ params: { workspaceId: workspace.id, contactId: c.id }, body: { reason } }, { ifMatch: c.rowVersion })}
+            record={c}
+            onConfirm={(reason, ifMatch) => archive.run({ params: { workspaceId: workspace.id, contactId: c.id }, body: { reason } }, { ifMatch })}
           />
           <ReasonDialog
             open={dlg === 'erase'}
@@ -298,53 +300,57 @@ const EditInteractionDialog = ({ interaction, onClose }: { interaction: OfmInter
   const [when, setWhen] = useState(toLocalInput(interaction.occurredAt, user.timezone));
   const [note, setNote] = useState(interaction.businessNote);
   const [error, setError] = useState<string | null>(null);
+  // `interaction` is the row as the dialog opened; only changed fields are sent (T162).
+  const edit = useEditBase(interaction);
   const m = useOfmMutation(E.updateInteraction, { successMessage: 'Interaction updated' });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Edit interaction"
-      dirty={note !== interaction.businessNote}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!note.trim() || !when}
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run(
-                  { params: { workspaceId: workspace.id, interactionId: interaction.id }, body: { type, occurredAt: fromLocalInput(when, user.timezone) ?? undefined, businessNote: note.trim() } },
-                  { ifMatch: interaction.rowVersion },
-                );
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Save Changes
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Type">
-            <Select value={type} onChange={(t) => t && setType(t)} options={INTERACTION_TYPES.map((t) => ({ value: t, label: label('interactionType', t) }))} />
-          </Field>
-          <Field label="Occurred At">
-            <DateTimeInput timezone={user.timezone} value={when} onChange={(e) => setWhen(e.target.value)} />
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Edit interaction"
+        dirty={note !== interaction.businessNote}
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={!note.trim() || !when}
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  const body = { type, occurredAt: fromLocalInput(when, user.timezone) ?? undefined, businessNote: note.trim() };
+                  const before = { type: interaction.type, occurredAt: fromLocalInput(toLocalInput(interaction.occurredAt, user.timezone), user.timezone) ?? undefined, businessNote: interaction.businessNote.trim() };
+                  await m.run({ params: { workspaceId: workspace.id, interactionId: interaction.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Save Changes
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Type">
+              <Select value={type} onChange={(t) => t && setType(t)} options={INTERACTION_TYPES.map((t) => ({ value: t, label: label('interactionType', t) }))} />
+            </Field>
+            <Field label="Occurred At">
+              <DateTimeInput timezone={user.timezone} value={when} onChange={(e) => setWhen(e.target.value)} />
+            </Field>
+          </div>
+          <Field label="Business Note" required>
+            <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={5} maxLength={20000} />
           </Field>
         </div>
-        <Field label="Business Note" required>
-          <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={5} maxLength={20000} />
-        </Field>
-      </div>
-    </Dialog>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -356,7 +362,16 @@ const EditContactDialog = ({ contact, onClose }: { contact: OfmContactDetail; on
   const [follow, setFollow] = useState(toLocalInput(contact.nextFollowUpAt, user.timezone));
   const [restricted, setRestricted] = useState(contact.restricted);
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // Edits apply to the contact as the dialog opened; only changed fields are sent (T162).
+  const edit = useEditBase(contact, {
+    onReload: (x) => {
+      setAlias(x.alias);
+      setManager(x.manager?.membershipId ?? null);
+      setNotes(x.businessNotes ?? '');
+      setFollow(toLocalInput(x.nextFollowUpAt, user.timezone));
+      setRestricted(x.restricted);
+    },
+  });
   const m = useOfmMutation(E.updateContact, { successMessage: 'Contact updated' });
   return (
     <Dialog
@@ -375,23 +390,20 @@ const EditContactDialog = ({ contact, onClose }: { contact: OfmContactDetail; on
             onClick={async () => {
               setError(null);
               try {
-                await m.run(
-                  {
-                    params: { workspaceId: workspace.id, contactId: contact.id },
-                    body: {
-                      alias: alias.trim(),
-                      managerMembershipId: manager,
-                      businessNotes: notes.trim() ? notes : null,
-                      nextFollowUpAt: follow ? fromLocalInput(follow, user.timezone) : null,
-                      restricted: contact.permissions.restrict ? restricted : undefined,
-                    },
-                  },
-                  { ifMatch: contact.rowVersion },
-                );
+                const s = edit.start ?? contact;
+                const bodyOf = (v: { alias: string; manager: string | null; notes: string; follow: string; restricted: boolean }) => ({
+                  alias: v.alias.trim(),
+                  managerMembershipId: v.manager,
+                  businessNotes: v.notes.trim() ? v.notes : null,
+                  nextFollowUpAt: v.follow ? fromLocalInput(v.follow, user.timezone) : null,
+                  restricted: contact.permissions.restrict ? v.restricted : undefined,
+                });
+                const body = bodyOf({ alias, manager, notes, follow, restricted });
+                const before = bodyOf({ alias: s.alias, manager: s.manager?.membershipId ?? null, notes: s.businessNotes ?? '', follow: toLocalInput(s.nextFollowUpAt, user.timezone), restricted: s.restricted });
+                await m.run({ params: { workspaceId: workspace.id, contactId: contact.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
                 onClose();
               } catch (e) {
-                if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-                else setError(errorMessage(e));
+                if (!edit.catchConflict(e)) setError(errorMessage(e));
               }
             }}
           >
@@ -416,7 +428,7 @@ const EditContactDialog = ({ contact, onClose }: { contact: OfmContactDetail; on
         </Field>
         {contact.permissions.restrict ? <Switch label="Restricted" description="Only members with contact management rights see this contact." checked={restricted} onCheckedChange={setRestricted} /> : null}
       </div>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Dialog>
   );
 };
@@ -427,46 +439,51 @@ const StageDialog = ({ contact, onClose }: { contact: OfmContactDetail; onClose:
   const [stage, setStage] = useState<(typeof options)[number] | null>(options[0] ?? null);
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(contact);
   const m = useOfmMutation(E.changeContactStage, { successMessage: 'Stage changed' });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="Change stage"
-      description="Stages describe the working relationship. Nothing is scored or inferred."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!stage}
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run({ params: { workspaceId: workspace.id, contactId: contact.id }, body: { stage: stage!, reason: reason.trim() || undefined } }, { ifMatch: contact.rowVersion });
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Change Stage
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Stage" required>
-          <Select value={stage} onChange={setStage} options={options.map((s) => ({ value: s, label: label('contactStage', s) }))} />
-        </Field>
-        <Field label="Reason">
-          <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="Change stage"
+        description="Stages describe the working relationship. Nothing is scored or inferred."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={!stage}
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await m.run({ params: { workspaceId: workspace.id, contactId: contact.id }, body: { stage: stage!, reason: reason.trim() || undefined } }, { ifMatch: edit.version });
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Change Stage
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Stage" required>
+            <Select value={stage} onChange={setStage} options={options.map((s) => ({ value: s, label: label('contactStage', s) }))} />
+          </Field>
+          <Field label="Reason">
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

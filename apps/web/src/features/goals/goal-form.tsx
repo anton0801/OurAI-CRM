@@ -8,6 +8,7 @@ import { isApiError } from '@castlane/api-client';
 import { GOAL_TARGET_TYPES, isDecimalString } from '@castlane/domain';
 import { Banner, Button, DateInput, Drawer, Field, Input, RadioGroup, Select, Textarea } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect, MultiEntitySelect } from '@/components/common/entity-select';
 import { DirectionSelect, MemberSelect } from '@/components/common/pickers';
 import { applyFieldErrors, useApiMutation, useApiQuery } from '@/lib/hooks';
@@ -71,9 +72,8 @@ export const GoalFormDrawer = ({
   const { workspace, membershipId } = useWorkspace();
   const params = { workspaceId: workspace.id };
   const metrics = useApiQuery(goalEndpoints.metricOptions, { params }, { enabled: open, staleTime: 60_000 });
-  const [conflict, setConflict] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const initial = (): FormValues =>
+  const initial = (goal?: GoalDetail): FormValues =>
     goal
       ? {
           name: goal.name,
@@ -91,14 +91,18 @@ export const GoalFormDrawer = ({
           reason: '',
         }
       : { name: '', ownerMembershipId: membershipId, scopeType: 'workspace', scopeId: null, metricId: '', targetType: 'absolute', targetValue: '', baselineValue: '', ...monthBounds(), direction: 'increase', linkedCampaignIds: [], reason: '', ...defaults };
-  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: initial() });
+  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: initial(goal) });
+  // The edit works against the goal as it was opened: live updates neither reset the typing nor
+  // move If-Match (T162); only the member's own changes are sent.
+  const edit = useEditBase(goal, { open: open && !!goal, onReload: (latest) => form.reset(initial(latest)) });
+  const start = edit.start ?? goal;
   useEffect(() => {
     if (open) {
-      form.reset(initial());
+      form.reset(initial(goal));
       setError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, goal?.id, goal?.rowVersion]);
+  }, [open, goal?.id]);
   const create = useApiMutation(goalEndpoints.create, { invalidate: ['goals.'], successMessage: 'Goal created', silentErrors: true });
   const update = useApiMutation(goalEndpoints.update, { invalidate: ['goals.'], successMessage: 'Goal saved', silentErrors: true });
   const v = form.watch();
@@ -109,7 +113,7 @@ export const GoalFormDrawer = ({
     if (changeMetric && form.getValues('targetType') !== 'absolute') form.setValue('targetType', 'absolute', { shouldDirty: true });
   }, [changeMetric, form]);
   const targetChanged =
-    !!goal && (v.targetType !== goal.targetType || !numEq(v.targetValue, goal.targetValue) || !numEq(v.baselineValue, goal.baselineValue) || v.periodStart !== goal.periodStart || v.periodEnd !== goal.periodEnd);
+    !!start && (v.targetType !== start.targetType || !numEq(v.targetValue, start.targetValue) || !numEq(v.baselineValue, start.baselineValue) || v.periodStart !== start.periodStart || v.periodEnd !== start.periodEnd);
   const needsReason = !!goal?.periodStarted && targetChanged;
 
   const submit = form.handleSubmit(async (f) => {
@@ -133,14 +137,22 @@ export const GoalFormDrawer = ({
       linkedCampaignIds: f.linkedCampaignIds,
     };
     try {
+      let patch: Partial<typeof body> = body;
+      if (goal) {
+        // Fields that belong together travel together (scope, target, period).
+        const changed = changedFields(initial(start), f);
+        const groups: (keyof FormValues)[][] = [['scopeType', 'scopeId'], ['targetType', 'targetValue', 'baselineValue', 'direction'], ['periodStart', 'periodEnd']];
+        for (const g of groups) if (g.some((k) => changed.includes(k))) changed.push(...g);
+        patch = pickChanged(body, changed);
+      }
       const saved = goal
-        ? await update.run({ params: { ...params, goalId: goal.id }, body: { ...body, reason: needsReason ? f.reason : undefined } }, { ifMatch: goal.rowVersion })
+        ? await update.run({ params: { ...params, goalId: goal.id }, body: { ...patch, reason: needsReason ? f.reason : undefined } }, { ifMatch: edit.version })
         : await create.run({ params, body });
       onSaved?.(saved);
       onClose();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The goal could not be saved.');
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The goal could not be saved.');
     }
   });
   const pending = create.isPending || update.isPending;
@@ -292,7 +304,7 @@ export const GoalFormDrawer = ({
           ) : null}
         </form>
       </Drawer>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };

@@ -13,6 +13,7 @@ import { EntitySelect } from '@/components/common/entity-select';
 import { MemberSelect } from '@/components/common/pickers';
 import { useDebounced } from '@/components/common/use-debounced';
 import { applyFieldErrors, useApiMutation, useApiQuery } from '@/lib/hooks';
+import { useEditBase } from '@/lib/edit-base';
 import { useUnsavedChangesGuard } from '@/lib/unsaved';
 import { useWorkspace, useWsPath } from '@/lib/workspace-context';
 import { fromLocalInput, toLocalInput } from '@/features/tasks/format';
@@ -418,9 +419,8 @@ type EditValues = z.infer<typeof editSchema>;
 export const PublicationEditDrawer = ({ publication: p, open, onOpenChange }: { publication: PublicationDetail; open: boolean; onOpenChange: (o: boolean) => void }) => {
   const { workspace, user } = useWorkspace();
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
   const draft = p.status === 'draft';
-  const defaults = (): EditValues => ({
+  const defaults = (p: PublicationDetail): EditValues => ({
     accountId: p.account.id,
     contentItemId: p.contentItemId,
     contentVersionId: p.contentVersion?.id ?? null,
@@ -433,13 +433,15 @@ export const PublicationEditDrawer = ({ publication: p, open, onOpenChange }: { 
     scheduledAt: toLocalInput(p.scheduledAt, p.scheduleTimezone ?? user.timezone),
     timezone: p.scheduleTimezone ?? user.timezone,
   });
-  const form = useForm<EditValues>({ resolver: zodResolver(editSchema), defaultValues: defaults() });
+  const form = useForm<EditValues>({ resolver: zodResolver(editSchema), defaultValues: defaults(p) });
+  // Opened values and If-Match stay put while live updates refresh `p` (T162); only dirty fields are sent.
+  const edit = useEditBase(p, { open, onReload: (latest) => form.reset(defaults(latest)) });
   useEffect(() => {
     if (open) {
-      form.reset(defaults());
+      form.reset(defaults(p));
       setError(null);
     }
-  }, [open, p.rowVersion]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, p.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const update = useApiMutation(P.update, { invalidate: PUBLICATION_INVALIDATE, silentErrors: true, successMessage: 'Publication saved' });
   const errors = form.formState.errors;
   const tz = form.watch('timezone');
@@ -461,11 +463,11 @@ export const PublicationEditDrawer = ({ publication: p, open, onOpenChange }: { 
       body.timezone = v.timezone;
     }
     try {
-      await update.run({ params: { workspaceId: workspace.id, publicationId: p.id }, body: body as never }, { ifMatch: p.rowVersion });
+      await update.run({ params: { workspaceId: workspace.id, publicationId: p.id }, body: body as never }, { ifMatch: edit.version });
       onOpenChange(false);
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(errorText(e, 'The publication could not be saved.'));
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(errorText(e, 'The publication could not be saved.'));
     }
   });
   return (
@@ -542,7 +544,7 @@ export const PublicationEditDrawer = ({ publication: p, open, onOpenChange }: { 
           </div>
         </form>
       </Drawer>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };

@@ -24,6 +24,7 @@ import {
   toast,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { MemberSelect } from '@/components/common/pickers';
 import { useDebounced } from '@/components/common/use-debounced';
 import { applyFieldErrors, useApiQuery } from '@/lib/hooks';
@@ -106,7 +107,8 @@ export const ScheduleShiftDrawer = ({
         },
   });
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // Edits apply to the shift as the drawer opened; only changed parts are sent (T162).
+  const edit = useEditBase(shift);
   const create = useOfmMutation(E.createShift, { successMessage: 'Shift scheduled', also: ['myWork.', 'calendar.'] });
   const update = useOfmMutation(E.updateShift, { successMessage: 'Shift updated', also: ['myWork.', 'calendar.'] });
   const v = form.watch();
@@ -141,15 +143,31 @@ export const ScheduleShiftDrawer = ({
     if (!body) return;
     try {
       if (shift) {
-        await update.run({ params: { workspaceId: workspace.id, shiftId: shift.id }, body }, { ifMatch: shift.rowVersion });
+        const s = edit.start ?? shift;
+        const sz = s.timezone ?? workspace.timezone;
+        const before = {
+          membershipId: s.member.membershipId,
+          primaryAccountId: s.primaryAccount.id,
+          additionalAccountIds: s.accounts.filter((a) => !a.isPrimary).map((a) => a.account.id),
+          scheduledStart: fromLocalInput(toLocalInput(s.scheduledStart, sz), sz),
+          scheduledEnd: fromLocalInput(toLocalInput(s.scheduledEnd, sz), sz),
+          timezone: sz,
+          supervisorMembershipId: s.supervisor?.membershipId ?? null,
+          parallelCoverage: s.parallelCoverage,
+        };
+        const changed = changedFields(before, body);
+        // The schedule and the accounts are validated as a whole: send their fields together.
+        for (const group of [['scheduledStart', 'scheduledEnd', 'timezone'], ['primaryAccountId', 'additionalAccountIds']] as const)
+          if (group.some((k) => changed.includes(k))) changed.push(...group);
+        await update.run({ params: { workspaceId: workspace.id, shiftId: shift.id }, body: pickChanged(body, changed) }, { ifMatch: edit.version });
         onClose();
       } else {
         const created = await create.run({ params: { workspaceId: workspace.id }, body });
         onClose(created.id);
       }
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(errorMessage(e, 'The shift could not be saved.'));
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(errorMessage(e, 'The shift could not be saved.'));
     }
   });
   const errs = form.formState.errors;
@@ -264,7 +282,7 @@ export const ScheduleShiftDrawer = ({
           ) : null}
         </section>
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Drawer>
   );
 };
@@ -627,7 +645,8 @@ export const SwapList = ({ swaps, title = 'Swap Requests', emptyText }: { swaps:
         body="The shift stays with the current member."
         confirmLabel="Decline Swap"
         destructive
-        onConfirm={(reason) => decline.run({ params: { workspaceId: workspace.id, swapId: declining!.id }, body: { reason } }, { ifMatch: declining!.rowVersion })}
+        record={declining}
+        onConfirm={(reason, ifMatch) => decline.run({ params: { workspaceId: workspace.id, swapId: declining!.id }, body: { reason } }, { ifMatch })}
       />
     </Panel>
   );
@@ -645,7 +664,8 @@ export const CancelShiftDialog = ({ shift, open, onOpenChange }: { shift: OfmShi
       body={`${shift.member.displayName}, ${fmtRange(shift.scheduledStart, shift.scheduledEnd, user.timezone)}. The member is notified and reminders stop.`}
       confirmLabel="Cancel Shift"
       destructive
-      onConfirm={(reason) => m.run({ params: { workspaceId: workspace.id, shiftId: shift.id }, body: { reason } }, { ifMatch: shift.rowVersion })}
+      record={shift}
+      onConfirm={(reason, ifMatch) => m.run({ params: { workspaceId: workspace.id, shiftId: shift.id }, body: { reason } }, { ifMatch })}
     />
   );
 };

@@ -31,6 +31,7 @@ import {
   type MenuItem,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { AssetThumb, FileUploader } from '@/components/media/file-uploader';
@@ -287,17 +288,19 @@ const OpenVersion = ({ character: c, version: v }: { character: CharacterDetail;
   const form = useForm<ProfileValues>({ resolver: zodResolver(schema), defaultValues: toValues(v) });
   const prompts = useFieldArray({ control: form.control, name: 'prompts' });
   const refs = useFieldArray({ control: form.control, name: 'references' });
-  const [conflict, setConflict] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [reviewer, setReviewer] = useState<string | null>(null);
   const [changesOpen, setChangesOpen] = useState(false);
   const [summary, setSummary] = useState('');
+  const dirty = form.formState.isDirty;
+  // The draft is edited against the version it was loaded at: a background refresh neither resets the
+  // typing nor moves If-Match (T162); an untouched draft simply follows the latest saved version.
+  const edit = useEditBase(v, { clean: !dirty, onReload: (latest) => form.reset(toValues(latest)) });
   useEffect(() => {
     form.reset(toValues(v));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [v.id, v.rowVersion]);
-  const dirty = form.formState.isDirty;
+  }, [v.id]);
   useUnsavedChangesGuard(dirty);
   const save = useApiMutation(characterEndpoints.updateVersion, { invalidate: ['characters.'], silentErrors: true, successMessage: 'Draft saved' });
   const submit = useApiMutation(characterEndpoints.submitVersion, { invalidate: ['characters.'], silentErrors: true, successMessage: 'Submitted for approval' });
@@ -323,14 +326,16 @@ const OpenVersion = ({ character: c, version: v }: { character: CharacterDetail;
     changeNote: x.changeNote?.trim() || null,
   });
   const handleError = (e: unknown) => {
-    if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-    else if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The profile could not be saved.');
+    if (edit.catchConflict(e)) return;
+    if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The profile could not be saved.');
     else setError(isApiError(e) ? e.message : null);
   };
   const onSave = form.handleSubmit(async (x) => {
     setError(null);
     try {
-      await save.run({ params: { workspaceId: workspace.id, versionId: v.id }, body: bodyOf(x) }, { ifMatch: v.rowVersion });
+      const saved = await save.run({ params: { workspaceId: workspace.id, versionId: v.id }, body: bodyOf(x) }, { ifMatch: edit.version });
+      if (saved.open?.id === v.id) edit.rebase(saved.open);
+      form.reset(x);
     } catch (e) {
       handleError(e);
     }
@@ -474,7 +479,7 @@ const OpenVersion = ({ character: c, version: v }: { character: CharacterDetail;
           <ProfileView version={v} />
         )}
       </div>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
       <Dialog
         open={submitOpen}
         onOpenChange={setSubmitOpen}
@@ -490,7 +495,7 @@ const OpenVersion = ({ character: c, version: v }: { character: CharacterDetail;
               onClick={async () => {
                 setError(null);
                 try {
-                  await submit.run({ params: { workspaceId: workspace.id, versionId: v.id }, body: { reviewerMembershipId: reviewer } }, { ifMatch: v.rowVersion });
+                  await submit.run({ params: { workspaceId: workspace.id, versionId: v.id }, body: { reviewerMembershipId: reviewer } }, { ifMatch: edit.version });
                   setSubmitOpen(false);
                 } catch (e) {
                   setSubmitOpen(false);
@@ -599,18 +604,26 @@ const RenameDialog = ({ character: c, open, onOpenChange }: { character: Charact
   const [role, setRole] = useState(c.role ?? '');
   const update = useApiMutation(characterEndpoints.update, { invalidate: ['characters.'], successMessage: 'Character updated', silentErrors: true });
   const [error, setError] = useState<string | null>(null);
+  const load = (x: CharacterDetail) => {
+    setName(x.name);
+    setRole(x.role ?? '');
+  };
+  // Opened values stay while live updates refresh `c`; only changed fields are sent (T162).
+  const edit = useEditBase(c, { open, onReload: load });
+  const start = edit.start ?? c;
   useEffect(() => {
     if (open) {
-      setName(c.name);
-      setRole(c.role ?? '');
+      load(c);
       setError(null);
     }
-  }, [open, c.name, c.role]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, c.id]);
   return (
+    <>
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      dirty={name !== c.name || role !== (c.role ?? '')}
+      dirty={name !== start.name || role !== (start.role ?? '')}
       title="Rename character"
       size="small"
       footer={
@@ -622,10 +635,14 @@ const RenameDialog = ({ character: c, open, onOpenChange }: { character: Charact
             loading={update.isPending}
             onClick={async () => {
               try {
-                await update.run({ params: { workspaceId: workspace.id, characterId: c.id }, body: { name: name.trim(), role: role.trim() || null } }, { ifMatch: c.rowVersion });
+                const body = {
+                  ...(name.trim() !== start.name ? { name: name.trim() } : {}),
+                  ...((role.trim() || null) !== (start.role ?? null) ? { role: role.trim() || null } : {}),
+                };
+                if (Object.keys(body).length) await update.run({ params: { workspaceId: workspace.id, characterId: c.id }, body }, { ifMatch: edit.version });
                 onOpenChange(false);
               } catch (e) {
-                setError(isApiError(e) && e.code === 'VERSION_CONFLICT' ? 'This record changed while you were editing it. Compare changes before saving.' : isApiError(e) ? e.message : 'Could not save.');
+                if (!edit.catchConflict(e)) setError(isApiError(e) ? e.message : 'Could not save.');
               }
             }}
           >
@@ -644,6 +661,8 @@ const RenameDialog = ({ character: c, open, onOpenChange }: { character: Charact
         </Field>
       </div>
     </Dialog>
+    <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

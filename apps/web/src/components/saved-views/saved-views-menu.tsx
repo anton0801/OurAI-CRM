@@ -4,6 +4,8 @@ import { useMemo, useState } from 'react';
 import { savedViewEndpoints, type FilterGroupInput, type SavedView } from '@castlane/api-contracts';
 import { isApiError } from '@castlane/api-client';
 import { Banner, Button, ConfirmDialog, Dialog, Field, Input, Menu, Switch, type MenuItem } from '@castlane/ui';
+import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { useUrlState } from '@/lib/url-state';
 import { useWorkspace } from '@/lib/workspace-context';
@@ -182,30 +184,52 @@ const SaveViewDialog = ({ module, ast, sort, onClose }: { module: string; ast: F
   );
 };
 
+/** One saved view: the name is renamed against the version it had when typing started (T162). */
+const ManagedView = ({ v, onDelete }: { v: SavedView; onDelete: () => void }) => {
+  const { workspace } = useWorkspace();
+  const update = useApiMutation(savedViewEndpoints.update, { invalidate: ['savedViews.list'] });
+  const [name, setName] = useState<string | null>(null);
+  const typing = name !== null;
+  const edit = useEditBase(v, { open: typing, onReload: (latest) => setName(latest.name) });
+  const params = { workspaceId: workspace.id, viewId: v.id };
+  const shown = name ?? v.name;
+  return (
+    <li className="flex flex-wrap items-center gap-2 rounded-[10px] border border-line p-2">
+      <Input className="min-w-[160px] flex-1" aria-label={`Name of ${v.name}`} value={shown} maxLength={120} onChange={(e) => setName(e.target.value)} />
+      {typing && shown.trim() !== (edit.start ?? v).name ? (
+        <Button
+          size="sm"
+          disabled={shown.trim().length < 2}
+          onClick={() =>
+            void update.run({ params, body: { name: shown.trim() } }, { ifMatch: edit.version }).then(
+              () => setName(null),
+              (e: unknown) => edit.catchConflict(e),
+            )
+          }
+        >
+          Rename
+        </Button>
+      ) : null}
+      <Switch label="Shared" checked={v.shared} onCheckedChange={(s) => void update.run({ params, body: { shared: s } }, { ifMatch: v.rowVersion })} />
+      <Button size="sm" variant="ghost" onClick={onDelete}>
+        Delete
+      </Button>
+      <ConflictDialog {...edit.conflictDialog} />
+    </li>
+  );
+};
+
 const ManageViewsDialog = ({ views, onClose }: { views: SavedView[]; onClose: () => void }) => {
   const { workspace } = useWorkspace();
   const invalidate = ['savedViews.list'];
-  const update = useApiMutation(savedViewEndpoints.update, { invalidate });
   const remove = useApiMutation(savedViewEndpoints.remove, { invalidate, successMessage: 'View deleted' });
-  const [names, setNames] = useState<Record<string, string>>(Object.fromEntries(views.map((v) => [v.id, v.name])));
   const [deleting, setDeleting] = useState<SavedView | null>(null);
   const params = (v: SavedView) => ({ workspaceId: workspace.id, viewId: v.id });
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()} title="Manage saved views" footer={<Button onClick={onClose}>Done</Button>}>
       <ul className="flex flex-col gap-3">
         {views.map((v) => (
-          <li key={v.id} className="flex flex-wrap items-center gap-2 rounded-[10px] border border-line p-2">
-            <Input className="min-w-[160px] flex-1" aria-label={`Name of ${v.name}`} value={names[v.id] ?? v.name} maxLength={120} onChange={(e) => setNames((c) => ({ ...c, [v.id]: e.target.value }))} />
-            {(names[v.id] ?? v.name).trim() !== v.name ? (
-              <Button size="sm" disabled={(names[v.id] ?? '').trim().length < 2} onClick={() => void update.run({ params: params(v), body: { name: names[v.id]!.trim() } }, { ifMatch: v.rowVersion })}>
-                Rename
-              </Button>
-            ) : null}
-            <Switch label="Shared" checked={v.shared} onCheckedChange={(s) => void update.run({ params: params(v), body: { shared: s } }, { ifMatch: v.rowVersion })} />
-            <Button size="sm" variant="ghost" onClick={() => setDeleting(v)}>
-              Delete
-            </Button>
-          </li>
+          <ManagedView key={v.id} v={v} onDelete={() => setDeleting(v)} />
         ))}
       </ul>
       <ConfirmDialog
