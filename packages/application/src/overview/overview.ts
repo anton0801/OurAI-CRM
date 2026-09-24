@@ -22,7 +22,7 @@ import type { NeedsAttentionItem, OverviewKpi, OverviewResponse } from '@castlan
 import { requireAnyPermission, scopePredicate, whereAll } from '../core/access';
 import { all, dbOf, type QueryContext } from '../core/context';
 import { loadMemberRefs, refOrUnknown } from '../core/members';
-import { METRIC_DEFINITIONS, evaluateMetric, type MetricFilters } from '../core/metric-registry';
+import { METRIC_DEFINITIONS, canUseMetricDefinition, evaluateMetric, type MetricFilters } from '../core/metric-registry';
 import { listBudgets } from '../finance/budgets';
 import { financeOverview } from '../finance/overview';
 import { accountLabelOf } from '../automation/records';
@@ -88,7 +88,7 @@ const grainFor = (p: Period): 'day' | 'week' | 'month' => {
 const permittedMetric = (ctx: QueryContext, id: string) => {
   const d = METRIC_DEFINITIONS.get(id);
   if (!d) return { def: null, permitted: true };
-  return { def: d, permitted: hasAnywhere(ctx.actor.access, d.permission) };
+  return { def: d, permitted: canUseMetricDefinition(ctx, d) };
 };
 
 const safeEvaluate = async (ctx: QueryContext, id: string, q: Parameters<typeof evaluateMetric>[2]) => {

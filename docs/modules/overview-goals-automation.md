@@ -25,6 +25,8 @@ workspace week start.
 
 ## Goals (S53)
 
+- Metric options, create and edit accept only metrics the member can use (`canUseMetricDefinition`: permission plus `requires`, e.g.
+  `finance.read` for revenue metrics); for a viewer lacking them an existing goal shows `metric.available: false`, Not Measured.
 - A goal targets one canonical metric (`metricKey` = M/X id, unit copied from the definition) for a scope: workspace, direction,
   project, account or campaign. A campaign goal is authorised through any of the campaign's projects. Visibility is applied in SQL
   (`goalVisibilitySql`). A goal's owner sees it whenever they hold `goals.read` anywhere.
@@ -90,7 +92,6 @@ workspace week start.
 Known limits:
 - Overview per-project open/overdue task counts and the export's counts are not narrowed by `tasks.read`. The export also counts
   archived tasks.
-- Goals list and accept metrics by `permission` only; a metric whose `requires` the member lacks stays Not Measured.
 - Automations cannot approve, post finance, change roles, delete or send external messages. There are no user-defined triggers or
   fields.
 - Dry run needs only `automations.read` and accepts an unsaved config.

@@ -51,7 +51,9 @@ Checkpoints (Metrics Inbox, S49):
 Semantic layer (`semantic/`, M01–M42 + X01–X10):
 - `defineInsightMetric` stores the definition in `INSIGHT_METRICS` and also calls core `defineMetric`, so goals and overview use
   the same formula. A definition has unit, rate, `measuresChange`, family, permission, optional `requires`, dimensions, grains,
-  `additive`, `zeroWhenEmpty`, `load` (scope applied in SQL before aggregation) and `reduce`.
+  `additive`, `zeroWhenEmpty`, `load` (scope applied in SQL before aggregation) and `reduce`. `requires` is copied into the core
+  definition; core `canUseMetricDefinition` (permission + every `requires`) guards `availableMetrics`, `evaluateMetric`, goals and
+  the overview.
 - Families and permissions: production `analytics.production.read` (M01–M10, X10); accounts `analytics.accounts.read` (X01,
   M11–M13, M22, X05); content `analytics.content.read` (M14–M21, M23); OFM `analytics.ofm.read` (M24–M31, X06, X07; M27/M29
   also need `finance.read`); team `analytics.team.read` (X02–X04, X09, M32); finance `analytics.finance.read` + `finance.read`
@@ -92,6 +94,4 @@ M01–M42, X01–X10. Slots: `ACCOUNT_TABS` Metrics, `MY_WORK_SECTIONS` Metric C
 Known limits:
 - `report_snapshots.source_revised` is never written. "Stale" comes only from `reportSourceChangedSince` (a source row's
   `updated_at` is later than the as-of time).
-- The core registry does not carry `requires`, so callers that check only `permission` (`availableMetrics`, goals) can offer a
-  metric that `computeInsight` then refuses.
 - Schedule recipients need `reports.read`; they do not have to be on the report's share list.

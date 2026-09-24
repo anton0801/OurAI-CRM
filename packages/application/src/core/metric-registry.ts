@@ -74,6 +74,8 @@ export interface MetricDefinition {
   higherIsBetter?: boolean;
   /** Member needs this permission somewhere; scope is applied inside compute. */
   permission: string;
+  /** Extra sensitive permissions the member also needs somewhere (e.g. finance.read for revenue metrics, T016). */
+  requires?: string[];
   dimensions: MetricDimension[];
   grains: TimeGrain[];
   definitionVersion: number;
@@ -86,13 +88,17 @@ export const defineMetric = (d: MetricDefinition) => {
   METRIC_DEFINITIONS.set(d.id, d);
 };
 
+/** May the member use the metric at all: its module permission plus every sensitive requirement. */
+export const canUseMetricDefinition = (ctx: QueryContext, d: Pick<MetricDefinition, 'permission' | 'requires'>) =>
+  hasAnywhere(ctx.actor.access, d.permission) && (d.requires ?? []).every((p) => hasAnywhere(ctx.actor.access, p));
+
 /** Metrics the member may see at all (catalogue lists, report builder). */
-export const availableMetrics = (ctx: QueryContext) => [...METRIC_DEFINITIONS.values()].filter((d) => hasAnywhere(ctx.actor.access, d.permission));
+export const availableMetrics = (ctx: QueryContext) => [...METRIC_DEFINITIONS.values()].filter((d) => canUseMetricDefinition(ctx, d));
 
 export const evaluateMetric = async (ctx: QueryContext, id: string, q: MetricQuery): Promise<MetricResult> => {
   const d = METRIC_DEFINITIONS.get(id);
   if (!d) throw new AppError('NOT_FOUND', `Unknown metric ${id}.`);
-  if (!hasAnywhere(ctx.actor.access, d.permission)) throw new AppError('FORBIDDEN', 'You do not have access to this metric.');
+  if (!canUseMetricDefinition(ctx, d)) throw new AppError('FORBIDDEN', 'You do not have access to this metric.');
   if (q.groupBy && !d.dimensions.includes(q.groupBy)) throw new AppError('VALIDATION_FAILED', `${d.label} cannot be broken down by ${q.groupBy}.`);
   if (q.grain && !d.grains.includes(q.grain)) throw new AppError('VALIDATION_FAILED', `${d.label} has no ${q.grain} series.`);
   return d.compute(ctx, q);
