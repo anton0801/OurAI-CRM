@@ -201,7 +201,6 @@ const breakdownTable = async (ctx: Ctx, key: string, title: string, description:
 
 const stageAgingTable = async (ctx: Ctx, q: InsightQuery): Promise<AnalyticsTable | null> => {
   if (!metricOk(ctx, 'M03')) return null;
-  const c = contentItems;
   const rows = await dbOf(ctx).execute<{ stage: string; n: string; median_days: string | null; oldest_days: string | null; blocked: string }>(sql`
     SELECT c.stage, count(*)::text AS n,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (${ctx.app.clock.now()}::timestamptz - coalesce(ev.entered, c.updated_at))) / 86400)::numeric(10,1)::text AS median_days,
@@ -211,7 +210,8 @@ const stageAgingTable = async (ctx: Ctx, q: InsightQuery): Promise<AnalyticsTabl
     LEFT JOIN LATERAL (SELECT max(e.occurred_at) AS entered FROM content_stage_events e WHERE e.workspace_id = c.workspace_id AND e.content_item_id = c.id AND e.to_stage = c.stage) ev ON true
     WHERE c.workspace_id = ${ctx.actor.workspaceId} AND c.deleted_at IS NULL AND c.archived_at IS NULL AND c.stage IN ('ready', 'production', 'review', 'changes_requested')
       ${(() => {
-        const s = scopePredicate(ctx, 'analytics.production.read', { projectId: c.projectId });
+        // The query aliases content_items as c: scope on the aliased column (a table-qualified column breaks scoped members).
+        const s = scopePredicate(ctx, 'analytics.production.read', { projectId: sql`c.project_id` as never });
         return s ? sql`AND ${s}` : sql``;
       })()}
       ${q.filters.projectIds?.length ? sql`AND c.project_id IN (${sql.join(q.filters.projectIds.map((x) => sql`${x}::uuid`), sql`, `)})` : sql``}
