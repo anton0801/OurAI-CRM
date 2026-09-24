@@ -706,6 +706,9 @@ const skipped: Record<string, number> = {};
 let inFlight = 0;
 let maxInFlightSeen = 0;
 
+/** Dashboards answered during the recorded phases: from the read model or computed live, and the age of the figures. */
+const readModelServed = { snapshot: 0, live: 0, refreshPending: 0, ages: [] as number[] };
+
 const fire = async (op: Op, s: Session, phase: Phase, scheduledAt: number) => {
   const spec = op.build(s);
   if (!spec) {
@@ -718,6 +721,15 @@ const fire = async (op: Op, s: Session, phase: Phase, scheduledAt: number) => {
   try {
     const o = await send(s, spec);
     op.after?.(s, o, spec);
+    if (phase.record && op.name === 'analytics.dashboard' && o.status === 200) {
+      const snap = dataOf<{ snapshot?: { live?: boolean; ageSeconds?: number; refreshPending?: boolean } | null }>(o)?.snapshot;
+      if (snap?.live) readModelServed.live++;
+      else if (snap) {
+        readModelServed.snapshot++;
+        readModelServed.ages.push(snap.ageSeconds ?? 0);
+        if (snap.refreshPending) readModelServed.refreshPending++;
+      }
+    }
     if (phase.record)
       records.push({
         op: op.name,
@@ -1192,6 +1204,13 @@ const main = async () => {
     excluded: cfg.exclude,
     serviceTimes,
     readModelWarmup,
+    readModelServed: {
+      snapshot: readModelServed.snapshot,
+      live: readModelServed.live,
+      refreshPending: readModelServed.refreshPending,
+      ageP50S: readModelServed.ages.length ? [...readModelServed.ages].sort((a, b) => a - b)[Math.floor(readModelServed.ages.length / 2)]! : null,
+      ageMaxS: readModelServed.ages.length ? Math.max(...readModelServed.ages) : null,
+    },
   });
   const files = writeReport(results, cfg.out, cfg.label);
   console.log(

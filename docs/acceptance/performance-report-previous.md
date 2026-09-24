@@ -1,9 +1,11 @@
 # Performance report: staging load profile (T170)
 
-Generated 2026-09-24T15:59:17.615Z from commit `480b6b6` by `pnpm perf:run` (tests/performance). Raw numbers: [`performance-results-two-web.json`](performance-results-two-web.json).
+Generated 2026-09-24T15:51:57.613Z from commit `aa61a4d` by `pnpm perf:run` (tests/performance). Raw numbers: [`performance-results-previous.json`](performance-results-previous.json).
+
+> **Other run (`previous`), kept for comparison.** The acceptance verdict comes from `performance-report.md`.
 
 > **Where this was measured.** This run used the development container described under Environment, not the fixed staging
-> hardware that spec §28.3 names. PostgreSQL, the web server, the worker and the load generator shared the same
+> hardware that spec §28.3 names. PostgreSQL, the web server process(es), the worker and the load generator shared the same
 > 4 CPUs. The numbers show how this build behaves under the §28.3 profile with §28.3 data volumes on this
 > machine. They do not certify staging, so repeat the run on staging before sign-off (see “Re-running on staging”).
 
@@ -11,12 +13,12 @@ Generated 2026-09-24T15:59:17.615Z from commit `480b6b6` by `pnpm perf:run` (tes
 
 | Class | Threshold (p95) | p50 | p95 | p99 | max | Requests | Errors | Verdict |
 |---|---|---|---|---|---|---|---|---|
-| API list | ≤ 500 ms | 4756 ms | **23591 ms** | 27867 ms | 29840 ms | 1,978 | 23 (1.16 %) | ❌ FAIL |
-| API detail | ≤ 500 ms | 5554 ms | **23476 ms** | 27772 ms | 29919 ms | 2,189 | 98 (4.48 %) | ❌ FAIL |
-| Search | ≤ 700 ms | 3847 ms | **20417 ms** | 24876 ms | 29357 ms | 1,097 | 0 (0.00 %) | ❌ FAIL |
-| Standard 90-day analytics | ≤ 2,000 ms | 7212 ms | **20638 ms** | 20638 ms | 20638 ms | 22 | 4 (18.18 %) | ❌ FAIL |
-| Critical writes | ≤ 800 ms | 4869 ms | **21505 ms** | 24685 ms | 27457 ms | 809 | 3 (0.37 %) | ❌ FAIL |
-| Heavy request returns a job | ≤ 1,000 ms | 6138 ms | **18566 ms** | 22449 ms | 22449 ms | 43 | 0 (0.00 %) | ❌ FAIL |
+| API list | ≤ 500 ms | 15537 ms | **22312 ms** | 25684 ms | 26398 ms | 1,647 | 0 (0.00 %) | ❌ FAIL |
+| API detail | ≤ 500 ms | 20904 ms | **28434 ms** | 29762 ms | 29982 ms | 1,873 | 122 (6.51 %) | ❌ FAIL |
+| Search | ≤ 700 ms | 12844 ms | **18653 ms** | 20341 ms | 20882 ms | 841 | 0 (0.00 %) | ❌ FAIL |
+| Standard 90-day analytics | ≤ 2,000 ms | 21504 ms | **27589 ms** | 27589 ms | 27589 ms | 16 | 2 (12.50 %) | ❌ FAIL |
+| Critical writes | ≤ 800 ms | 13309 ms | **19835 ms** | 21039 ms | 21214 ms | 681 | 4 (0.59 %) | ❌ FAIL |
+| Heavy request returns a job | ≤ 1,000 ms | 12734 ms | **17328 ms** | 18333 ms | 18333 ms | 37 | 0 (0.00 %) | ❌ FAIL |
 
 Class membership: *API list* = task, project, account, content and publication lists (filters, sorting, 20 % next-page cursors);
 *API detail* = the same records opened from those lists; *Search* = the global search palette; *Standard 90-day analytics* =
@@ -27,12 +29,12 @@ status transition with If-Match, comment, time entry; *Heavy request* = export r
 
 | Class | steady (×1) | burst (×3) | cooldown (×1) |
 |---|---|---|---|
-| API list | 8378 ms | 24294 ms | 28271 ms |
-| API detail | 11414 ms | 25625 ms | 28142 ms |
-| Search | 7037 ms | 16708 ms | 26029 ms |
-| Standard 90-day analytics | 10863 ms | 20638 ms | 15733 ms |
-| Critical writes | 7395 ms | 20152 ms | 25530 ms |
-| Heavy request returns a job | 6691 ms | 18566 ms | 22449 ms |
+| API list | 22342 ms | 21170 ms | 22381 ms |
+| API detail | 28222 ms | 28890 ms | 28938 ms |
+| Search | 19737 ms | 14914 ms | 18248 ms |
+| Standard 90-day analytics | 27589 ms | 22332 ms | 15059 ms |
+| Critical writes | 20216 ms | 15290 ms | 18474 ms |
+| Heavy request returns a job | 14936 ms | 14934 ms | 18333 ms |
 
 ## Unloaded service time
 
@@ -41,23 +43,23 @@ latency floor of each endpoint on this data volume without any queueing.
 
 | Endpoint | Class | Samples | p50 | max | Errors |
 |---|---|---|---|---|---|
-| `tasks.list` | list | 5 | 34 ms | 53 ms | 0 |
-| `projects.list` | list | 5 | 58 ms | 90 ms | 0 |
-| `accounts.list` | list | 5 | 33 ms | 47 ms | 0 |
-| `content.list` | list | 5 | 34 ms | 319 ms | 0 |
-| `publications.list` | list | 5 | 29 ms | 59 ms | 0 |
-| `tasks.get` | detail | 5 | 39 ms | 46 ms | 0 |
-| `projects.get` | detail | 5 | 28 ms | 32 ms | 0 |
-| `accounts.get` | detail | 5 | 36 ms | 37 ms | 0 |
-| `content.get` | detail | 5 | 42 ms | 70 ms | 0 |
-| `publications.get` | detail | 5 | 108 ms | 113 ms | 0 |
-| `search.global` | search | 5 | 42 ms | 143 ms | 0 |
-| `analytics.dashboard` | analytics | 5 | 493 ms | 3714 ms | 0 |
-| `tasks.create` | write | 5 | 106 ms | 108 ms | 0 |
-| `tasks.transition` | write | 5 | 62 ms | 97 ms | 0 |
-| `comments.create` | write | 5 | 61 ms | 79 ms | 0 |
-| `time.create` | write | 5 | 52 ms | 69 ms | 0 |
-| `exports.create` | heavy | 5 | 42 ms | 63 ms | 0 |
+| `tasks.list` | list | 5 | 24 ms | 31 ms | 0 |
+| `projects.list` | list | 5 | 49 ms | 57 ms | 0 |
+| `accounts.list` | list | 5 | 30 ms | 33 ms | 0 |
+| `content.list` | list | 5 | 28 ms | 253 ms | 0 |
+| `publications.list` | list | 5 | 26 ms | 51 ms | 0 |
+| `tasks.get` | detail | 5 | 32 ms | 40 ms | 0 |
+| `projects.get` | detail | 5 | 25 ms | 32 ms | 0 |
+| `accounts.get` | detail | 5 | 22 ms | 23 ms | 0 |
+| `content.get` | detail | 5 | 26 ms | 28 ms | 0 |
+| `publications.get` | detail | 5 | 96 ms | 101 ms | 0 |
+| `search.global` | search | 5 | 38 ms | 143 ms | 0 |
+| `analytics.dashboard` | analytics | 5 | 440 ms | 2900 ms | 0 |
+| `tasks.create` | write | 5 | 71 ms | 90 ms | 0 |
+| `tasks.transition` | write | 5 | 59 ms | 68 ms | 0 |
+| `comments.create` | write | 5 | 46 ms | 64 ms | 0 |
+| `time.create` | write | 5 | 34 ms | 39 ms | 0 |
+| `exports.create` | heavy | 5 | 35 ms | 40 ms | 0 |
 
 ## Queue lag
 
@@ -67,50 +69,55 @@ are read from the database (`finished_at − max(created_at, run_at)` for jobs, 
 
 | Phase | Oldest job max | Oldest job p95 | Queued jobs max | Oldest outbox max | Oldest outbox p95 | Pending outbox max | Host CPU avg / max |
 |---|---|---|---|---|---|---|---|
-| warmup | 2.0 s | 2.0 s | 1 | 1.1 s | 1.1 s | 3 | 85.4 % / 97.2 % |
-| steady | 1.5 s | 0.2 s | 2 | 4.9 s | 0.9 s | 6 | 91.7 % / 98.6 % |
-| burst | 0.9 s | 0.9 s | 1 | 1.0 s | 1.0 s | 4 | 96.3 % / 98.7 % |
-| cooldown | 2.2 s | 0.7 s | 1 | 2.1 s | 1.1 s | 5 | 91 % / 99.1 % |
+| warmup | 2.0 s | 2.0 s | 1 | 2.6 s | 2.6 s | 3 | 74.5 % / 86.9 % |
+| steady | 1.1 s | 0.6 s | 1 | 1.9 s | 0.8 s | 5 | 79.8 % / 97 % |
+| burst | 0.9 s | 0.9 s | 1 | 0.8 s | 0.8 s | 2 | 75.4 % / 84.5 % |
+| cooldown | 0.0 s | 0.0 s | 0 | 1.1 s | 0.9 s | 3 | 83.6 % / 95 % |
 
 CPU by process during the run (100 % = one core; sampled every 2 s from /proc):
 
-| Phase | Web server(s) avg / max | Worker avg | PostgreSQL (load DB backends) avg | Load generator avg | Whole host avg |
-|---|---|---|---|---|---|
-| warmup | 109.3 % / 165 % | 4.1 % | 120.4 % | 7.3 % | 85.4 % of 4 cores |
-| steady | 102.4 % / 168.3 % | 2.5 % | 121 % | 7 % | 91.7 % of 4 cores |
-| burst | 110 % / 138.7 % | 3.1 % | 118.3 % | 7 % | 96.3 % of 4 cores |
-| cooldown | 119.8 % / 201.6 % | 1.5 % | 110.2 % | 5.2 % | 91 % of 4 cores |
+| Phase | Web server(s) avg / max | Load balancer avg | Worker avg | PostgreSQL (load DB backends) avg | Load generator avg | Whole host avg |
+|---|---|---|---|---|---|---|
+| warmup | 93.9 % / 145.4 % | — % | 3.5 % | 111.4 % | 8.8 % | 74.5 % of 4 cores |
+| steady | 92.3 % / 140.3 % | — % | 3.2 % | 97.8 % | 7.6 % | 79.8 % of 4 cores |
+| burst | 99.4 % / 148.9 % | — % | 1.7 % | 107.1 % | 6.9 % | 75.4 % of 4 cores |
+| cooldown | 89.4 % / 139.4 % | — % | 1.8 % | 94.6 % | 5.7 % | 83.6 % of 4 cores |
 
-Outbox events created in the measured window: 865; dispatch latency p50 0.6 s, p95 1.1 s, max 6.8 s; still pending after the drain: 0.
-Export jobs requested in the window: 46 (46 completed, 0 failed); request → file ready p50 0.9 s, p95 1.4 s, max 2.2 s.
-Queues drained 2 s after the load ended.
+Outbox events created in the measured window: 740; dispatch latency p50 0.5 s, p95 0.8 s, max 2.4 s; still pending after the drain: 0.
+Export jobs requested in the window: 40 (40 completed, 0 failed); request → file ready p50 0.7 s, p95 1.2 s, max 1.2 s.
+Queues drained 0 s after the load ended.
 
 | Job type | Pool | Jobs | Not succeeded | Completion p50 | p95 | max |
 |---|---|---|---|---|---|---|
-| `exports.generate` | data | 46 | 0 | 1.0 s | 1.7 s | 2.3 s |
-| `automation.tick` | light | 4 | 0 | 0.5 s | 0.9 s | 1.0 s |
+| `exports.generate` | data | 40 | 0 | 0.8 s | 1.3 s | 1.3 s |
+| `automation.tick` | light | 3 | 0 | 0.4 s | 1.8 s | 2.0 s |
+| `platform.healthMonitor` | light | 1 | 0 | 1.0 s | 1.0 s | 1.0 s |
+| `publishing.reminders` | light | 1 | 0 | 1.2 s | 1.2 s | 1.2 s |
+| `work.reminders` | light | 1 | 0 | 2.7 s | 2.7 s | 2.7 s |
+| `ofm.shift_monitor` | light | 1 | 0 | 1.0 s | 1.0 s | 1.0 s |
+| `insights.reportSchedules` | data | 1 | 0 | 0.3 s | 0.3 s | 0.3 s |
 
 ## Endpoints
 
 | Endpoint | Class | Requests | Errors | p50 | p95 | p99 | max | Error codes |
 |---|---|---|---|---|---|---|---|---|
-| `analytics.dashboard` | analytics | 22 | 4 | 7212 ms | 20638 ms | 20638 ms | 20638 ms | CLIENT_TIMEOUT × 4 |
-| `accounts.get` | detail | 282 | 13 | 5216 ms | 20480 ms | 25812 ms | 29919 ms | CLIENT_TIMEOUT × 13 |
-| `content.get` | detail | 460 | 19 | 7154 ms | 22187 ms | 28623 ms | 29490 ms | CLIENT_TIMEOUT × 19 |
-| `projects.get` | detail | 275 | 14 | 5783 ms | 21953 ms | 26311 ms | 29678 ms | CLIENT_TIMEOUT × 14 |
-| `publications.get` | detail | 440 | 4 | 4819 ms | 19042 ms | 25106 ms | 27980 ms | CLIENT_TIMEOUT × 4 |
-| `tasks.get` | detail | 732 | 48 | 5505 ms | 24226 ms | 27664 ms | 29911 ms | CLIENT_TIMEOUT × 48 |
-| `exports.create` | heavy | 43 | 0 | 6138 ms | 18566 ms | 22449 ms | 22449 ms | — |
-| `accounts.list` | list | 277 | 1 | 5238 ms | 24168 ms | 27682 ms | 29483 ms | CLIENT_TIMEOUT × 1 |
-| `content.list` | list | 407 | 1 | 4756 ms | 23085 ms | 26106 ms | 27738 ms | CLIENT_TIMEOUT × 1 |
-| `projects.list` | list | 274 | 1 | 4371 ms | 18031 ms | 27557 ms | 28007 ms | CLIENT_TIMEOUT × 1 |
-| `publications.list` | list | 450 | 3 | 3759 ms | 23067 ms | 27760 ms | 29751 ms | CLIENT_TIMEOUT × 3 |
-| `tasks.list` | list | 570 | 17 | 6005 ms | 24694 ms | 29469 ms | 29840 ms | CLIENT_TIMEOUT × 17 |
-| `search.global` | search | 1,097 | 0 | 3847 ms | 20417 ms | 24876 ms | 29357 ms | — |
-| `comments.create` | write | 228 | 0 | 4130 ms | 19662 ms | 23412 ms | 27262 ms | — |
-| `tasks.create` | write | 248 | 0 | 4851 ms | 22877 ms | 26292 ms | 27457 ms | — |
-| `tasks.transition` | write | 245 | 3 | 5611 ms | 22593 ms | 24685 ms | 25156 ms | VERSION_CONFLICT × 3 |
-| `time.create` | write | 88 | 0 | 5541 ms | 20849 ms | 24656 ms | 24656 ms | — |
+| `analytics.dashboard` | analytics | 16 | 2 | 21504 ms | 27589 ms | 27589 ms | 27589 ms | CLIENT_TIMEOUT × 2 |
+| `accounts.get` | detail | 256 | 0 | 20866 ms | 26899 ms | 27662 ms | 28196 ms | — |
+| `content.get` | detail | 395 | 1 | 19324 ms | 26449 ms | 28210 ms | 29577 ms | CLIENT_TIMEOUT × 1 |
+| `projects.get` | detail | 243 | 1 | 22647 ms | 29184 ms | 29760 ms | 29921 ms | CLIENT_TIMEOUT × 1 |
+| `publications.get` | detail | 361 | 0 | 15382 ms | 21878 ms | 23595 ms | 23939 ms | — |
+| `tasks.get` | detail | 618 | 120 | 24689 ms | 29612 ms | 29938 ms | 29982 ms | CLIENT_TIMEOUT × 120 |
+| `exports.create` | heavy | 37 | 0 | 12734 ms | 17328 ms | 18333 ms | 18333 ms | — |
+| `accounts.list` | list | 244 | 0 | 15145 ms | 20771 ms | 21970 ms | 22342 ms | — |
+| `content.list` | list | 341 | 0 | 14507 ms | 21112 ms | 22009 ms | 22301 ms | — |
+| `projects.list` | list | 234 | 0 | 14724 ms | 21219 ms | 22020 ms | 22372 ms | — |
+| `publications.list` | list | 340 | 0 | 14628 ms | 20889 ms | 21973 ms | 22030 ms | — |
+| `tasks.list` | list | 488 | 0 | 17835 ms | 25396 ms | 26023 ms | 26398 ms | — |
+| `search.global` | search | 841 | 0 | 12844 ms | 18653 ms | 20341 ms | 20882 ms | — |
+| `comments.create` | write | 183 | 0 | 13250 ms | 19283 ms | 20613 ms | 21039 ms | — |
+| `tasks.create` | write | 217 | 0 | 13131 ms | 20050 ms | 21104 ms | 21214 ms | — |
+| `tasks.transition` | write | 205 | 4 | 13320 ms | 18744 ms | 21036 ms | 21109 ms | VERSION_CONFLICT × 4 |
+| `time.create` | write | 76 | 0 | 13503 ms | 20216 ms | 20977 ms | 20977 ms | — |
 
 ## Load profile
 
@@ -120,11 +127,11 @@ sessions of 10 roles; request sequence seeded with 170). Warm-up traffic is not 
 | Phase | Duration | Offered reads/s | Achieved reads/s | Offered writes/s | Achieved writes/s | Recorded |
 |---|---|---|---|---|---|---|
 | warmup | 30 s | 30 | 30.23 | 5 | 4.7 | no |
-| steady | 120 s | 30 | 29.34 | 5 | 4.63 | 4,077 |
-| burst | 30 s | 90 | 38.27 | 15 | 6.53 | 1,344 |
-| cooldown | 30 s | 30 | 20.57 | 5 | 3.33 | 717 |
+| steady | 120 s | 30 | 24.97 | 5 | 3.98 | 3,474 |
+| burst | 30 s | 90 | 24.5 | 15 | 4.27 | 863 |
+| cooldown | 30 s | 30 | 21.53 | 5 | 3.73 | 758 |
 
-Dispatch lag p95 (scheduled → sent): 5 ms; highest number of requests in flight: 500; dropped at the in-flight cap: {"accounts.get":98,"time.create":31,"search.global":372,"publications.list":153,"publications.get":147,"projects.get":99,"tasks.list":233,"accounts.list":101,"content.list":151,"tasks.get":260,"comments.create":76,"tasks.create":106,"projects.list":90,"exports.create":15,"content.get":166,"tasks.transition":91,"analytics.dashboard":13}.
+Dispatch lag p95 (scheduled → sent): 4 ms; highest number of requests in flight: 500; dropped at the in-flight cap: {"search.global":559,"content.get":217,"tasks.list":310,"content.list":237,"comments.create":105,"tasks.get":370,"accounts.get":150,"publications.list":232,"accounts.list":156,"projects.get":151,"projects.list":128,"tasks.transition":144,"time.create":40,"publications.get":271,"exports.create":29,"tasks.create":135,"analytics.dashboard":11}.
 
 | Role | Sessions | Operations offered |
 |---|---|---|
@@ -162,11 +169,11 @@ Also seeded: directions 10, project_memberships 4,000, account_assignments 5,000
 ## Environment
 
 - Host: Intel(R) Xeon(R) Processor @ 2.10GHz, 4 CPUs, 15.7 GiB RAM, Linux 6.18.44-fc-v37 (x64)
-- Host load average (1 / 5 / 15 min): 3.37 / 3.54 / 4.51 when the load started, 7.33 / 6.19 / 5.41 when the run ended (the run itself contributes to it)
+- Host load average (1 / 5 / 15 min): 2.1 / 2.51 / 4.7 when the load started, 6.6 / 4.6 / 5.06 when the run ended (the run itself contributes to it)
 - Node.js v22.22.2; PostgreSQL 16.13 (Ubuntu 16.13-0ubuntu0.24.04.1); settings shared_buffers=512MB, work_mem=4MB, effective_cache_size=4GB, max_connections=400, random_page_cost=4, max_parallel_workers_per_gather=2, jit=on
-- Database size after the run: 3.21 GiB
-- Server under test: supplementary: two web processes of the same production build (commit 480b6b6), sessions spread over them, DATABASE_POOL_MAX=10 each; worker JOB_CONCURRENCY=4; NODE_ENV=production
-- Target http://127.0.0.1:3200, http://127.0.0.1:3201 (2 web server process(es), sessions spread over them); the load generator ran on the same host
+- Database size after the run: 3.20 GiB
+- Server under test: local production build of commit aa61a4d: Next.js standalone server (one process, DATABASE_POOL_MAX=10) and worker (JOB_CONCURRENCY=4), NODE_ENV=production
+- Target http://127.0.0.1:3200 (1 web server process(es), sessions spread over them); the load generator ran on the same host
 
 ## Re-running on staging
 

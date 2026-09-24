@@ -52,6 +52,23 @@ export const FIXES: Fix[] = [
       '`media.purgeDeletedVersions` was scheduled into a pool that has no runner for it, so it stayed queued forever. This showed up as growing queue lag.',
     fix: "The schedule names the media pool, and `enqueueJob` defaults to the pool the job is defined for. A test ticks the scheduler and checks every scheduled job's pool.",
   },
+  {
+    commit: '89d3689',
+    problem:
+      "Every API request rebuilt the member's access snapshot: 8 queries, including every project and account of the workspace (about 6,000 rows per request at §28.3 volumes). In a CPU profile, about 30 % of the web process's busy time went to parsing PostgreSQL results and to garbage collection.",
+    fix: 'Per-process cache keyed by the membership\'s access revision and a workspace access revision. Database triggers bump the revision in the same transaction as any change to grants, denies, teams, assignments, roles or the project → direction and account → project structure (migration `0003_access_revision`, `sql/post/011_access_revision.sql`). A warm request reads one row. Tests in `access-cache.test.ts`: revoking a role, moving a project to another direction, adding a project and reassigning an account apply on the next request; a time-bounded grant expires without a write.',
+  },
+  {
+    commit: '0944782',
+    problem:
+      'Dashboards were computed from raw facts on every request: 3–7 s of web CPU and 10–38 s of summed query time for one 90-day dashboard. §28.3 measures analytics "after warmed read models", and there were none.',
+    fix: 'Read model `analytics_dashboard_snapshots` (migration `0004_dashboard_snapshots`), one row per tab, filters, access scope and time zone. An outbox consumer marks snapshots stale; the worker job `analytics.refreshSnapshots` recomputes them. Responses carry the age of the figures, shown in the UI with "Recalculate now". Tests in `dashboard-snapshots.test.ts` compare served and live results on the same data.',
+  },
+  {
+    commit: '0fa31be',
+    problem: 'The reference deployment ran one web process, which uses one core.',
+    fix: 'Three web processes behind Caddy with a sticky cookie and active health checks (`infra/docker-compose.yml`, `infra/caddy/Caddyfile`, "Scaling the web tier" in `docs/runbooks/deploy.md`, including per-process rate limits).',
+  },
 ];
 
 export const RECOMMENDATIONS: string[] = [

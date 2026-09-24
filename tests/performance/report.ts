@@ -130,6 +130,14 @@ export interface RunResults {
     seconds: number;
     maxMs: number;
   };
+  /** Dashboards answered during the recorded phases. */
+  readModelServed?: {
+    snapshot: number;
+    live: number;
+    refreshPending: number;
+    ageP50S: number | null;
+    ageMaxS: number | null;
+  };
   classes: (Stats & {
     cls: string;
     label: string;
@@ -238,6 +246,7 @@ export const summarize = (input: {
   excluded: string[];
   serviceTimes: ServiceTime[];
   readModelWarmup?: RunResults['readModelWarmup'];
+  readModelServed?: RunResults['readModelServed'];
 }): RunResults => {
   const { records, phases } = input;
   const measured = phases.filter((p) => p.record);
@@ -323,6 +332,7 @@ export const summarize = (input: {
     },
     serviceTimes: input.serviceTimes,
     readModelWarmup: input.readModelWarmup,
+    readModelServed: input.readModelServed,
     classes,
     ops: ops.sort((a, b) => a.cls.localeCompare(b.cls) || a.op.localeCompare(b.op)),
     queue: { samples: input.samples.length, byPhase, ...input.queue },
@@ -406,9 +416,14 @@ export const renderReport = (
           '> verdict comes from the full profile in `performance-report.md`.',
           '',
         ]
-      : []),
+      : label
+        ? [
+            `> **Other run (\`${label}\`), kept for comparison.** The acceptance verdict comes from \`performance-report.md\`.`,
+            '',
+          ]
+        : []),
     '> **Where this was measured.** This run used the development container described under Environment, not the fixed staging',
-    '> hardware that spec §28.3 names. PostgreSQL, the web server, the worker and the load generator shared the same',
+    '> hardware that spec §28.3 names. PostgreSQL, the web server process(es), the worker and the load generator shared the same',
     `> ${e.host.cpus} CPUs. The numbers show how this build behaves under the §28.3 profile with §28.3 data volumes on this`,
     '> machine. They do not certify staging, so repeat the run on staging before sign-off (see “Re-running on staging”).',
     '',
@@ -443,9 +458,15 @@ export const renderReport = (
     push(
       '## Analytics read model warm-up',
       '',
-      `Before the measured load every session opened each of its dashboard tabs once (spec §28.3: analytics are measured "after warmed read models"): ${w.requests} dashboard views in ${w.seconds} s, ${w.computedLive} of them computed live because no snapshot existed for that access scope yet (slowest ${ms(w.maxMs)}), ${w.errors} errors. Members with the same effective access share one snapshot per tab. During the load the dashboards were served from the read model, while the worker refreshed stale snapshots in the background.`,
+      `Before the measured load every session opened each of its dashboard tabs once (spec §28.3: analytics are measured "after warmed read models"): ${w.requests} dashboard views in ${w.seconds} s, ${w.computedLive} of them computed live because no snapshot existed for that access scope yet (slowest ${ms(w.maxMs)}), ${w.errors} errors. Members with the same effective access share one snapshot per tab. The worker refreshes stale snapshots in the background (\`analytics.refreshSnapshots\` in the job table below).`,
       '',
     );
+    const sv = r.readModelServed;
+    if (sv && sv.snapshot + sv.live > 0)
+      push(
+        `During the measured load, ${sv.snapshot} of ${sv.snapshot + sv.live} dashboard requests were answered from the read model and ${sv.live} were computed live. The figures served were ${sv.ageP50S ?? '—'} s old at the median and ${sv.ageMaxS ?? '—'} s at most; ${sv.refreshPending} were marked "refresh pending" because newer records existed. The analytics p95 above therefore measures dashboards served from the read model, as §28.3 specifies, not the cost of computing one.`,
+        '',
+      );
   }
 
   if (r.serviceTimes?.length) {
@@ -675,10 +696,10 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
   }
   if (supplementary.length) {
     out.push(
-      '**Supplementary runs** (same build and data, each with its own report next to this one):',
+      '**Other runs** on the same data and host, each with its own report next to this one:',
       '',
-      '| Run | Steady-state p95: list / detail / search / writes / heavy / analytics | Worst p95 in burst and cool-down | CPU in steady state (100 % = one core) |',
-      '|---|---|---|---|',
+      '| Run | Commit | Steady-state p95: list / detail / search / writes / heavy / analytics | Worst p95 in burst and cool-down | CPU in steady state (100 % = one core) |',
+      '|---|---|---|---|---|',
     );
     for (const x of supplementary) {
       const worst = Math.max(
@@ -692,7 +713,7 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
         x.r.profile.excluded?.length ? `without ${x.r.profile.excluded.join(', ')}` : 'full mix',
       ].join(', ');
       out.push(
-        `| [${x.label}](${fileBase('performance-report', x.label)}.md): ${ph ? `${ph.offeredReadPerS} reads/s + ${ph.offeredWritePerS} writes/s, ` : ''}${note} | ${['list', 'detail', 'search', 'write', 'heavy', 'analytics'].map((c) => sec(steadyP95(x.r, c))).join(' / ')} | ${sec(worst || null)} | web ${cpu?.webCpuAvgPct ?? '—'} %, PostgreSQL ${cpu?.pgCpuAvgPct ?? '—'} %, host ${cpu?.cpuAvgPct ?? '—'} % of ${x.r.environment.host.cpus} cores |`,
+        `| [${x.label}](${fileBase('performance-report', x.label)}.md): ${ph ? `${ph.offeredReadPerS} reads/s + ${ph.offeredWritePerS} writes/s, ` : ''}${note} | \`${x.r.environment.commit}\` | ${['list', 'detail', 'search', 'write', 'heavy', 'analytics'].map((c) => sec(steadyP95(x.r, c))).join(' / ')} | ${sec(worst || null)} | web ${cpu?.webCpuAvgPct ?? '—'} %, PostgreSQL ${cpu?.pgCpuAvgPct ?? '—'} %, host ${cpu?.cpuAvgPct ?? '—'} % of ${x.r.environment.host.cpus} cores |`,
       );
     }
     out.push('');
@@ -707,7 +728,7 @@ const renderAnalysis = (r: RunResults, supplementary: { label: string; r: RunRes
       out.push(
         `**Capacity arithmetic.** In the "${clean.label}" run, ${rate.toFixed(1)} requests/s used ${cpu.webCpuAvgPct} % of one core in the web process, which is about ${webMs.toFixed(0)} ms of web CPU per request. The same load used ${cpu.pgCpuAvgPct} % of a core across the PostgreSQL backends, about ${pgMs.toFixed(0)} ms of database CPU per request.`,
         '',
-        `- **Web:** the web server is one Node.js process and uses one core. It tops out at about ${Math.floor(1000 / webMs)} requests/s of this mix.`,
+        `- **Web:** a web server process uses one core. One process tops out at about ${Math.floor(1000 / webMs)} requests/s of this mix.`,
         `- **Burst:** the §28.3 burst of ${burst} requests/s needs at least ${Math.ceil((burst * webMs) / 1000)} web processes and about ${((burst * pgMs) / 1000).toFixed(1)} PostgreSQL cores, before dashboards are added.`,
         `- **This host:** ${host.cpus} cores in total, shared with other workloads during the measurement (1-minute load average ${host.loadAverageBefore?.[0] ?? '—'} when the load started).`,
         '',
