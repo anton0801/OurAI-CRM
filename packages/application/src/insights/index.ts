@@ -7,6 +7,7 @@
 import './semantic';
 import './registries';
 import './reports/schedules';
+import './dashboard-snapshots';
 
 export {
   createObservation as createMetricObservation,
@@ -45,6 +46,7 @@ export {
 } from './semantic/registry';
 export { metricCatalog, metricFieldDefinition } from './catalog-view';
 export { analyticsDashboard, analyticsQuery, analyticsDrillDown, availableTabs as availableAnalyticsTabs } from './dashboards';
+export { servedAnalyticsDashboard, refreshDashboardSnapshots, dashboardScopeSignature, markDashboardSnapshotsStale } from './dashboard-snapshots';
 export { listReportDatasets, runReport as runReportConfig, validateReportConfig, REPORT_DATASET_SPECS } from './reports/engine';
 export {
   listReports as listSavedReports,
