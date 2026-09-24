@@ -35,6 +35,7 @@ CREATE TABLE "email_change_requests" (
 	"token_hash" text NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,
 	"confirmed_at" timestamp with time zone,
+	"cancelled_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "email_change_token_uq" UNIQUE("token_hash")
 );
@@ -564,6 +565,7 @@ CREATE TABLE "reference_links" (
 	"reference_id" uuid NOT NULL,
 	"target_type" text NOT NULL,
 	"target_id" uuid NOT NULL,
+	"kind" text DEFAULT 'link' NOT NULL,
 	CONSTRAINT "reference_links_ws_id_uq" UNIQUE("workspace_id","id")
 );
 --> statement-breakpoint
@@ -587,7 +589,8 @@ CREATE TABLE "references" (
 	"tags" text[] DEFAULT '{}'::text[] NOT NULL,
 	"owner_membership_id" uuid NOT NULL,
 	"project_id" uuid,
-	CONSTRAINT "references_ws_id_uq" UNIQUE("workspace_id","id")
+	CONSTRAINT "references_ws_id_uq" UNIQUE("workspace_id","id"),
+	CONSTRAINT "references_source_ck" CHECK ("source_url" IS NOT NULL OR "source_asset_id" IS NOT NULL)
 );
 --> statement-breakpoint
 CREATE TABLE "scene_characters" (
@@ -707,6 +710,8 @@ CREATE TABLE "article_categories" (
 	"archived_by" uuid,
 	"archive_reason" text,
 	"name" text NOT NULL,
+	"name_key" text NOT NULL,
+	"description" text,
 	"sort_order" integer DEFAULT 0 NOT NULL,
 	CONSTRAINT "article_categories_ws_id_uq" UNIQUE("workspace_id","id")
 );
@@ -824,6 +829,10 @@ CREATE TABLE "asset_versions" (
 	"processed_at" timestamp with time zone,
 	"note" text,
 	"reused_from_version_id" uuid,
+	"deleted_at" timestamp with time zone,
+	"deleted_by" uuid,
+	"delete_reason" text,
+	"purged_at" timestamp with time zone,
 	CONSTRAINT "asset_versions_ws_id_uq" UNIQUE("workspace_id","id"),
 	CONSTRAINT "asset_versions_status_ck" CHECK ("status" IN ('uploading', 'uploaded', 'checking', 'processing', 'available', 'rejected', 'failed'))
 );
@@ -870,6 +879,7 @@ CREATE TABLE "folders" (
 	"archive_reason" text,
 	"parent_id" uuid,
 	"name" text NOT NULL,
+	"name_key" text NOT NULL,
 	"project_id" uuid,
 	"depth" integer DEFAULT 0 NOT NULL,
 	CONSTRAINT "folders_ws_id_uq" UNIQUE("workspace_id","id"),
@@ -890,6 +900,10 @@ CREATE TABLE "reading_assignments" (
 	"due_at" timestamp with time zone,
 	"status" text DEFAULT 'open' NOT NULL,
 	"acknowledged_at" timestamp with time zone,
+	"source" text DEFAULT 'member' NOT NULL,
+	"assigned_by_membership_id" uuid,
+	"closed_at" timestamp with time zone,
+	"close_reason" text,
 	CONSTRAINT "reading_assignments_ws_id_uq" UNIQUE("workspace_id","id")
 );
 --> statement-breakpoint
@@ -908,6 +922,7 @@ CREATE TABLE "upload_sessions" (
 	"project_id" uuid,
 	"sensitivity" text DEFAULT 'normal' NOT NULL,
 	"filename" text NOT NULL,
+	"purpose" text DEFAULT 'general' NOT NULL,
 	"declared_mime" text NOT NULL,
 	"declared_size" bigint NOT NULL,
 	"expected_checksum" text,
@@ -969,7 +984,7 @@ CREATE TABLE "comments" (
 	CONSTRAINT "comments_ws_id_uq" UNIQUE("workspace_id","id"),
 	CONSTRAINT "comments_depth_ck" CHECK ("depth" BETWEEN 0 AND 2),
 	CONSTRAINT "comments_point_ck" CHECK (("point_x" IS NULL OR ("point_x" >= 0 AND "point_x" <= 1)) AND ("point_y" IS NULL OR ("point_y" >= 0 AND "point_y" <= 1))),
-	CONSTRAINT "comments_severity_ck" CHECK ("severity" IN ('note', 'blocking'))
+	CONSTRAINT "comments_severity_ck" CHECK ("severity" IN ('note', 'issue', 'blocking'))
 );
 --> statement-breakpoint
 CREATE TABLE "content_characters" (
@@ -1040,6 +1055,7 @@ CREATE TABLE "content_items" (
 	"template_version_id" uuid,
 	"episode_id" uuid,
 	"campaign_id" uuid,
+	"account_id" uuid,
 	CONSTRAINT "content_items_ws_id_uq" UNIQUE("workspace_id","id"),
 	CONSTRAINT "content_items_format_ck" CHECK ("format" IN ('short_video', 'episode', 'trailer', 'image', 'carousel', 'photo_set', 'story', 'audio', 'text_post', 'other')),
 	CONSTRAINT "content_items_stage_ck" CHECK ("stage" IN ('idea', 'brief', 'ready', 'production', 'review', 'changes_requested', 'approved', 'archived'))
@@ -1195,6 +1211,11 @@ CREATE TABLE "personal_reminders" (
 	"snoozed_until" timestamp with time zone,
 	"dismissed_at" timestamp with time zone,
 	"note" text,
+	"source" text DEFAULT 'manual' NOT NULL,
+	"threshold" text,
+	"deadline_revision" integer,
+	"fired_at" timestamp with time zone,
+	"dismissed_reason" text,
 	CONSTRAINT "personal_reminders_ws_id_uq" UNIQUE("workspace_id","id")
 );
 --> statement-breakpoint
@@ -1448,6 +1469,7 @@ CREATE TABLE "time_sheet_submissions" (
 	"decided_at" timestamp with time zone,
 	"decided_by" uuid,
 	"reason" text,
+	"approver_membership_id" uuid,
 	CONSTRAINT "time_sheet_submissions_ws_id_uq" UNIQUE("workspace_id","id")
 );
 --> statement-breakpoint
@@ -2470,6 +2492,7 @@ CREATE TABLE "metric_observations" (
 	"root_observation_id" uuid NOT NULL,
 	"supersedes_id" uuid,
 	"correction_reason" text,
+	"decision_note" text,
 	"reviewed_by" uuid,
 	"reviewed_at" timestamp with time zone,
 	"checkpoint_id" uuid,
@@ -2522,6 +2545,7 @@ CREATE TABLE "report_schedules" (
 	"active" boolean DEFAULT true NOT NULL,
 	"paused_reason" text,
 	"email_notify" boolean DEFAULT false NOT NULL,
+	"last_run_result" jsonb,
 	CONSTRAINT "report_schedules_ws_id_uq" UNIQUE("workspace_id","id")
 );
 --> statement-breakpoint
@@ -2542,6 +2566,22 @@ CREATE TABLE "report_snapshots" (
 	"result" jsonb NOT NULL,
 	"source_revised" boolean DEFAULT false NOT NULL,
 	CONSTRAINT "report_snapshots_ws_id_uq" UNIQUE("workspace_id","id")
+);
+--> statement-breakpoint
+CREATE TABLE "saved_report_versions" (
+	"id" uuid PRIMARY KEY NOT NULL,
+	"workspace_id" uuid NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"created_by" uuid,
+	"updated_by" uuid,
+	"row_version" bigint DEFAULT 1 NOT NULL,
+	"report_id" uuid NOT NULL,
+	"version_no" integer NOT NULL,
+	"name" text NOT NULL,
+	"config" jsonb NOT NULL,
+	"change_note" text,
+	CONSTRAINT "saved_report_versions_ws_id_uq" UNIQUE("workspace_id","id")
 );
 --> statement-breakpoint
 CREATE TABLE "saved_reports" (
@@ -2811,6 +2851,7 @@ CREATE TABLE "compensation_runs" (
 	"source_digest" text,
 	"calculated_at" timestamp with time zone,
 	"submitted_at" timestamp with time zone,
+	"submitted_by" uuid,
 	"approved_at" timestamp with time zone,
 	"approved_by" uuid,
 	"expense_entry_id" uuid,
@@ -2903,6 +2944,7 @@ CREATE TABLE "financial_entries" (
 	"reversed_by_entry_id" uuid,
 	"replacement_of_entry_id" uuid,
 	"reversal_reason" text,
+	"refund_of_entry_id" uuid,
 	CONSTRAINT "financial_entries_ws_id_uq" UNIQUE("workspace_id","id"),
 	CONSTRAINT "financial_entries_type_ck" CHECK ("type" IN ('revenue', 'expense', 'adjustment', 'platform_statement')),
 	CONSTRAINT "financial_entries_state_ck" CHECK ("state" IN ('draft', 'submitted', 'posted', 'rejected'))
@@ -2932,8 +2974,11 @@ CREATE TABLE "financial_entry_lines" (
 	"components_unknown" boolean DEFAULT false NOT NULL,
 	"reverses_line_id" uuid,
 	"is_reversal" boolean DEFAULT false NOT NULL,
+	"fx_effect" text,
+	"commitment_id" uuid,
 	CONSTRAINT "financial_entry_lines_ws_id_uq" UNIQUE("workspace_id","id"),
-	CONSTRAINT "fel_amount_ck" CHECK ("amount_minor" >= 0)
+	CONSTRAINT "fel_amount_ck" CHECK ("amount_minor" >= 0),
+	CONSTRAINT "fel_fx_effect_ck" CHECK ("fx_effect" IS NULL OR "fx_effect" IN ('gain', 'loss'))
 );
 --> statement-breakpoint
 CREATE TABLE "fx_rates" (
@@ -3146,6 +3191,11 @@ CREATE TABLE "automation_runs" (
 	"error_code" text,
 	"error_message" text,
 	"attempts" integer DEFAULT 0 NOT NULL,
+	"trigger_event" text,
+	"entity_type" text,
+	"entity_id" uuid,
+	"not_before" timestamp with time zone,
+	"event_payload" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	CONSTRAINT "automation_runs_ws_id_uq" UNIQUE("workspace_id","id")
 );
 --> statement-breakpoint
@@ -3689,6 +3739,7 @@ ALTER TABLE "content_flag_intervals" ADD CONSTRAINT "content_flag_intervals_work
 ALTER TABLE "content_flag_intervals" ADD CONSTRAINT "cfi_content_fk" FOREIGN KEY ("workspace_id","content_item_id") REFERENCES "public"."content_items"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "content_items" ADD CONSTRAINT "content_items_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "content_items" ADD CONSTRAINT "content_items_project_fk" FOREIGN KEY ("workspace_id","project_id") REFERENCES "public"."projects"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "content_items" ADD CONSTRAINT "content_items_account_fk" FOREIGN KEY ("workspace_id","account_id") REFERENCES "public"."social_accounts"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "content_items" ADD CONSTRAINT "content_items_owner_fk" FOREIGN KEY ("workspace_id","owner_membership_id") REFERENCES "public"."memberships"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "content_items" ADD CONSTRAINT "content_items_reviewer_fk" FOREIGN KEY ("workspace_id","reviewer_membership_id") REFERENCES "public"."memberships"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "content_stage_events" ADD CONSTRAINT "content_stage_events_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -3737,6 +3788,7 @@ ALTER TABLE "time_entries" ADD CONSTRAINT "time_entries_task_fk" FOREIGN KEY ("w
 ALTER TABLE "time_entries" ADD CONSTRAINT "time_entries_project_fk" FOREIGN KEY ("workspace_id","project_id") REFERENCES "public"."projects"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "time_sheet_submissions" ADD CONSTRAINT "time_sheet_submissions_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "time_sheet_submissions" ADD CONSTRAINT "tss_member_fk" FOREIGN KEY ("workspace_id","membership_id") REFERENCES "public"."memberships"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "time_sheet_submissions" ADD CONSTRAINT "tss_approver_fk" FOREIGN KEY ("workspace_id","approver_membership_id") REFERENCES "public"."memberships"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workload_allocations" ADD CONSTRAINT "workload_allocations_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workload_allocations" ADD CONSTRAINT "workload_allocations_task_fk" FOREIGN KEY ("workspace_id","task_id") REFERENCES "public"."tasks"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "campaign_projects" ADD CONSTRAINT "campaign_projects_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -3756,6 +3808,9 @@ ALTER TABLE "deals" ADD CONSTRAINT "deals_partner_fk" FOREIGN KEY ("workspace_id
 ALTER TABLE "deals" ADD CONSTRAINT "deals_owner_fk" FOREIGN KEY ("workspace_id","owner_membership_id") REFERENCES "public"."memberships"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deliverables" ADD CONSTRAINT "deliverables_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "deliverables" ADD CONSTRAINT "deliverables_deal_fk" FOREIGN KEY ("workspace_id","deal_id") REFERENCES "public"."deals"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deliverables" ADD CONSTRAINT "deliverables_project_fk" FOREIGN KEY ("workspace_id","project_id") REFERENCES "public"."projects"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deliverables" ADD CONSTRAINT "deliverables_account_fk" FOREIGN KEY ("workspace_id","account_id") REFERENCES "public"."social_accounts"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "deliverables" ADD CONSTRAINT "deliverables_content_fk" FOREIGN KEY ("workspace_id","content_item_id") REFERENCES "public"."content_items"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "experiment_publications" ADD CONSTRAINT "experiment_publications_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "experiment_publications" ADD CONSTRAINT "ep_experiment_fk" FOREIGN KEY ("workspace_id","experiment_id") REFERENCES "public"."experiments"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "experiment_publications" ADD CONSTRAINT "ep_variant_fk" FOREIGN KEY ("workspace_id","variant_id") REFERENCES "public"."experiment_variants"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -3850,6 +3905,8 @@ ALTER TABLE "report_schedules" ADD CONSTRAINT "report_schedules_workspace_id_wor
 ALTER TABLE "report_schedules" ADD CONSTRAINT "report_schedules_report_fk" FOREIGN KEY ("workspace_id","report_id") REFERENCES "public"."saved_reports"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "report_snapshots" ADD CONSTRAINT "report_snapshots_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "report_snapshots" ADD CONSTRAINT "report_snapshots_report_fk" FOREIGN KEY ("workspace_id","report_id") REFERENCES "public"."saved_reports"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "saved_report_versions" ADD CONSTRAINT "saved_report_versions_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "saved_report_versions" ADD CONSTRAINT "saved_report_versions_report_fk" FOREIGN KEY ("workspace_id","report_id") REFERENCES "public"."saved_reports"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "saved_reports" ADD CONSTRAINT "saved_reports_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "saved_reports" ADD CONSTRAINT "saved_reports_owner_fk" FOREIGN KEY ("workspace_id","owner_membership_id") REFERENCES "public"."memberships"("workspace_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "budget_alerts" ADD CONSTRAINT "budget_alerts_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -3921,11 +3978,15 @@ CREATE UNIQUE INDEX "password_reset_tokens_hash_uq" ON "password_reset_tokens" U
 CREATE INDEX "recovery_codes_user_idx" ON "recovery_codes" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "role_assignments_member_idx" ON "role_assignments" USING btree ("workspace_id","membership_id","revoked_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "roles_ws_key_uq" ON "roles" USING btree ("workspace_id","key");--> statement-breakpoint
+CREATE UNIQUE INDEX "roles_ws_active_name_uq" ON "roles" USING btree ("workspace_id",lower("name")) WHERE archived_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "sessions_token_hash_uq" ON "sessions" USING btree ("token_hash");--> statement-breakpoint
 CREATE INDEX "sessions_user_idx" ON "sessions" USING btree ("user_id","revoked_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "users_normalized_email_uq" ON "users" USING btree ("normalized_email");--> statement-breakpoint
 CREATE INDEX "account_assignments_member_idx" ON "account_assignments" USING btree ("workspace_id","membership_id","valid_to");--> statement-breakpoint
+CREATE INDEX "account_assignments_account_idx" ON "account_assignments" USING btree ("workspace_id","account_id","valid_to");--> statement-breakpoint
+CREATE UNIQUE INDEX "account_assignments_open_uq" ON "account_assignments" USING btree ("account_id","membership_id","duty") WHERE valid_to IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "character_versions_no_uq" ON "character_versions" USING btree ("character_id","version_no");--> statement-breakpoint
+CREATE UNIQUE INDEX "character_versions_open_uq" ON "character_versions" USING btree ("character_id") WHERE state IN ('draft', 'submitted');--> statement-breakpoint
 CREATE UNIQUE INDEX "characters_primary_uq" ON "characters" USING btree ("project_id") WHERE is_primary AND archived_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "directions_active_name_uq" ON "directions" USING btree ("workspace_id","name_key") WHERE status = 'active';--> statement-breakpoint
 CREATE UNIQUE INDEX "episodes_number_uq" ON "episodes" USING btree ("season_id","number","language") WHERE archived_at IS NULL;--> statement-breakpoint
@@ -3934,35 +3995,51 @@ CREATE INDEX "project_memberships_project_idx" ON "project_memberships" USING bt
 CREATE INDEX "projects_list_idx" ON "projects" USING btree ("workspace_id","status","updated_at","id");--> statement-breakpoint
 CREATE INDEX "projects_direction_idx" ON "projects" USING btree ("workspace_id","direction_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "reference_links_uq" ON "reference_links" USING btree ("reference_id","target_type","target_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "reference_links_idea_uq" ON "reference_links" USING btree ("reference_id") WHERE kind = 'idea';--> statement-breakpoint
 CREATE INDEX "reference_links_target_idx" ON "reference_links" USING btree ("workspace_id","target_type","target_id");--> statement-breakpoint
 CREATE INDEX "references_list_idx" ON "references" USING btree ("workspace_id","updated_at","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "scene_characters_uq" ON "scene_characters" USING btree ("scene_id","character_version_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "scenes_order_uq" ON "scenes" USING btree ("episode_id","order_no") WHERE archived_at IS NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "seasons_order_uq" ON "seasons" USING btree ("project_id","order_no") WHERE archived_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "social_accounts_identity_uq" ON "social_accounts" USING btree ("workspace_id","identity_key") WHERE archived_at IS NULL AND deleted_at IS NULL;--> statement-breakpoint
 CREATE INDEX "social_accounts_list_idx" ON "social_accounts" USING btree ("workspace_id","status","updated_at","id");--> statement-breakpoint
 CREATE INDEX "social_accounts_project_idx" ON "social_accounts" USING btree ("workspace_id","project_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "article_ack_uq" ON "article_acknowledgements" USING btree ("article_version_id","membership_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "article_categories_name_uq" ON "article_categories" USING btree ("workspace_id","name_key") WHERE archived_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "article_versions_no_uq" ON "article_versions" USING btree ("article_id","version_no");--> statement-breakpoint
+CREATE INDEX "articles_list_idx" ON "articles" USING btree ("workspace_id","status","updated_at","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "asset_derivatives_kind_uq" ON "asset_derivatives" USING btree ("asset_version_id","kind");--> statement-breakpoint
 CREATE INDEX "asset_links_entity_idx" ON "asset_links" USING btree ("workspace_id","entity_type","entity_id");--> statement-breakpoint
 CREATE INDEX "asset_links_asset_idx" ON "asset_links" USING btree ("workspace_id","asset_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "asset_versions_no_uq" ON "asset_versions" USING btree ("asset_id","version_no");--> statement-breakpoint
 CREATE INDEX "asset_versions_checksum_idx" ON "asset_versions" USING btree ("workspace_id","checksum_sha256");--> statement-breakpoint
 CREATE INDEX "assets_list_idx" ON "assets" USING btree ("workspace_id","updated_at","id");--> statement-breakpoint
+CREATE INDEX "assets_folder_idx" ON "assets" USING btree ("workspace_id","folder_id");--> statement-breakpoint
+CREATE INDEX "assets_project_idx" ON "assets" USING btree ("workspace_id","project_id");--> statement-breakpoint
 CREATE INDEX "folders_parent_idx" ON "folders" USING btree ("workspace_id","parent_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "folders_sibling_name_uq" ON "folders" USING btree ("workspace_id",coalesce("parent_id", '00000000-0000-0000-0000-000000000000'::uuid),"name_key") WHERE archived_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "reading_assignments_uq" ON "reading_assignments" USING btree ("article_version_id","membership_id");--> statement-breakpoint
+CREATE INDEX "reading_assignments_member_idx" ON "reading_assignments" USING btree ("workspace_id","membership_id","status");--> statement-breakpoint
+CREATE INDEX "reading_assignments_article_idx" ON "reading_assignments" USING btree ("workspace_id","article_id","status");--> statement-breakpoint
 CREATE INDEX "upload_sessions_state_idx" ON "upload_sessions" USING btree ("state","expires_at");--> statement-breakpoint
 CREATE INDEX "comments_parent_idx" ON "comments" USING btree ("workspace_id","parent_type","parent_id","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "content_characters_uq" ON "content_characters" USING btree ("content_item_id","character_version_id");--> statement-breakpoint
+CREATE INDEX "content_items_account_idx" ON "content_items" USING btree ("workspace_id","account_id");--> statement-breakpoint
+CREATE INDEX "content_items_owner_idx" ON "content_items" USING btree ("workspace_id","owner_membership_id","stage");--> statement-breakpoint
 CREATE INDEX "content_items_list_idx" ON "content_items" USING btree ("workspace_id","stage","updated_at","id");--> statement-breakpoint
 CREATE INDEX "content_items_project_idx" ON "content_items" USING btree ("workspace_id","project_id","stage");--> statement-breakpoint
 CREATE INDEX "cse_content_idx" ON "content_stage_events" USING btree ("workspace_id","content_item_id","occurred_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "cva_slot_uq" ON "content_version_assets" USING btree ("content_version_id","slot","position");--> statement-breakpoint
 CREATE UNIQUE INDEX "content_versions_no_uq" ON "content_versions" USING btree ("content_item_id","version_no");--> statement-breakpoint
+CREATE UNIQUE INDEX "content_versions_draft_uq" ON "content_versions" USING btree ("content_item_id") WHERE submitted_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "review_decisions_final_uq" ON "review_decisions" USING btree ("review_id") WHERE decision <> 'revoked';--> statement-breakpoint
 CREATE INDEX "reviews_queue_idx" ON "reviews" USING btree ("workspace_id","status","submitted_at");--> statement-breakpoint
 CREATE INDEX "reviews_subject_idx" ON "reviews" USING btree ("workspace_id","subject_id");--> statement-breakpoint
+CREATE INDEX "reviews_reviewer_idx" ON "reviews" USING btree ("workspace_id","reviewer_membership_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "reviews_target_step_uq" ON "reviews" USING btree ("target_id","step_kind","round_no");--> statement-breakpoint
 CREATE UNIQUE INDEX "capacities_member_from_uq" ON "capacities" USING btree ("membership_id","effective_from");--> statement-breakpoint
+CREATE INDEX "personal_reminders_member_idx" ON "personal_reminders" USING btree ("workspace_id","membership_id","dismissed_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "personal_reminders_due_uq" ON "personal_reminders" USING btree ("membership_id","entity_type","entity_id","threshold","deadline_revision") WHERE source = 'due';--> statement-breakpoint
 CREATE UNIQUE INDEX "recurrence_occurrences_key_uq" ON "recurrence_occurrences" USING btree ("rule_id","occurrence_key");--> statement-breakpoint
 CREATE INDEX "task_checklist_items_task_idx" ON "task_checklist_items" USING btree ("workspace_id","task_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "task_dependencies_active_uq" ON "task_dependencies" USING btree ("predecessor_id","successor_id") WHERE removed_at IS NULL;--> statement-breakpoint
@@ -3972,28 +4049,52 @@ CREATE INDEX "tasks_assignee_due_idx" ON "tasks" USING btree ("workspace_id","as
 CREATE INDEX "tasks_project_idx" ON "tasks" USING btree ("workspace_id","project_id","status");--> statement-breakpoint
 CREATE UNIQUE INDEX "time_entries_one_running_uq" ON "time_entries" USING btree ("membership_id") WHERE state = 'running';--> statement-breakpoint
 CREATE INDEX "time_entries_member_date_idx" ON "time_entries" USING btree ("workspace_id","membership_id","work_date");--> statement-breakpoint
+CREATE UNIQUE INDEX "tss_member_week_pending_uq" ON "time_sheet_submissions" USING btree ("membership_id","week_start") WHERE state = 'submitted';--> statement-breakpoint
 CREATE UNIQUE INDEX "workload_allocations_uq" ON "workload_allocations" USING btree ("task_id","membership_id","work_date");--> statement-breakpoint
 CREATE UNIQUE INDEX "campaign_projects_uq" ON "campaign_projects" USING btree ("campaign_id","project_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "deal_projects_uq" ON "deal_projects" USING btree ("deal_id","project_id");--> statement-breakpoint
+CREATE INDEX "deal_projects_project_idx" ON "deal_projects" USING btree ("workspace_id","project_id");--> statement-breakpoint
+CREATE INDEX "deals_list_idx" ON "deals" USING btree ("workspace_id","stage","updated_at","id");--> statement-breakpoint
+CREATE INDEX "deals_partner_idx" ON "deals" USING btree ("workspace_id","partner_id");--> statement-breakpoint
+CREATE INDEX "deliverables_deal_idx" ON "deliverables" USING btree ("workspace_id","deal_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "ep_uq" ON "experiment_publications" USING btree ("experiment_id","publication_id");--> statement-breakpoint
+CREATE INDEX "pi_partner_idx" ON "partner_interactions" USING btree ("workspace_id","partner_id","occurred_at");--> statement-breakpoint
+CREATE INDEX "partners_list_idx" ON "partners" USING btree ("workspace_id","updated_at","id");--> statement-breakpoint
 CREATE UNIQUE INDEX "pbi_uq" ON "plan_baseline_items" USING btree ("baseline_id","publication_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "plan_baselines_week_uq" ON "plan_baselines" USING btree ("workspace_id","week_start");--> statement-breakpoint
 CREATE UNIQUE INDEX "publications_post_url_uq" ON "publications" USING btree ("account_id","normalized_post_url") WHERE normalized_post_url IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "publications_post_url_ws_uq" ON "publications" USING btree ("workspace_id","normalized_post_url") WHERE normalized_post_url IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "publications_account_schedule_idx" ON "publications" USING btree ("workspace_id","account_id","scheduled_at");--> statement-breakpoint
 CREATE INDEX "publications_account_published_idx" ON "publications" USING btree ("account_id","actual_published_at");--> statement-breakpoint
 CREATE INDEX "publications_schedule_idx" ON "publications" USING btree ("workspace_id","status","scheduled_at");--> statement-breakpoint
+CREATE INDEX "erasure_requests_entity_idx" ON "erasure_requests" USING btree ("workspace_id","entity_type","entity_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "erasure_requests_open_uq" ON "erasure_requests" USING btree ("entity_type","entity_id") WHERE state IN ('queued', 'running');--> statement-breakpoint
+CREATE UNIQUE INDEX "handover_items_open_task_uq" ON "handover_items" USING btree ("task_id") WHERE state = 'open' AND task_id IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "handover_items_open_operation_uq" ON "handover_items" USING btree ("operation_id") WHERE state = 'open' AND operation_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "handover_items_handover_idx" ON "handover_items" USING btree ("workspace_id","handover_id");--> statement-breakpoint
 CREATE INDEX "handovers_recipient_idx" ON "handovers" USING btree ("workspace_id","recipient_membership_id","state");--> statement-breakpoint
+CREATE INDEX "handovers_from_shift_idx" ON "handovers" USING btree ("workspace_id","from_shift_id");--> statement-breakpoint
 CREATE INDEX "interaction_logs_contact_idx" ON "interaction_logs" USING btree ("workspace_id","contact_id","occurred_at");--> statement-breakpoint
 CREATE INDEX "ofm_assignments_member_idx" ON "ofm_assignments" USING btree ("workspace_id","membership_id","valid_to");--> statement-breakpoint
 CREATE UNIQUE INDEX "ofm_contacts_identity_uq" ON "ofm_contacts" USING btree ("account_id","external_identifier");--> statement-breakpoint
 CREATE INDEX "ofm_contacts_list_idx" ON "ofm_contacts" USING btree ("workspace_id","account_id","stage");--> statement-breakpoint
+CREATE INDEX "ofm_contacts_manager_idx" ON "ofm_contacts" USING btree ("workspace_id","manager_membership_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "ofm_profiles_project_uq" ON "ofm_profiles" USING btree ("project_id");--> statement-breakpoint
 CREATE INDEX "operations_queue_idx" ON "operations" USING btree ("workspace_id","status","due_at");--> statement-breakpoint
+CREATE INDEX "operations_contact_idx" ON "operations" USING btree ("workspace_id","contact_id");--> statement-breakpoint
+CREATE INDEX "operations_shift_idx" ON "operations" USING btree ("workspace_id","shift_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "quality_disputes_one_open_uq" ON "quality_disputes" USING btree ("quality_review_id") WHERE state = 'open';--> statement-breakpoint
+CREATE INDEX "quality_reviews_subject_idx" ON "quality_reviews" USING btree ("workspace_id","subject_membership_id","state");--> statement-breakpoint
 CREATE UNIQUE INDEX "rubric_versions_uq" ON "rubric_versions" USING btree ("workspace_id","rubric_key","version_no");--> statement-breakpoint
 CREATE UNIQUE INDEX "sale_candidates_source_uq" ON "sale_candidates" USING btree ("workspace_id","source_namespace","source_transaction_id");--> statement-breakpoint
+CREATE INDEX "sale_candidates_state_idx" ON "sale_candidates" USING btree ("workspace_id","state","occurred_at");--> statement-breakpoint
+CREATE INDEX "sale_candidates_shift_idx" ON "sale_candidates" USING btree ("workspace_id","shift_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "shift_accounts_uq" ON "shift_accounts" USING btree ("shift_id","account_id");--> statement-breakpoint
+CREATE INDEX "shift_accounts_account_idx" ON "shift_accounts" USING btree ("workspace_id","account_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "shift_breaks_one_open_uq" ON "shift_breaks" USING btree ("shift_id") WHERE ended_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "srv_no_uq" ON "shift_report_versions" USING btree ("report_id","version_no");--> statement-breakpoint
 CREATE UNIQUE INDEX "shift_reports_shift_uq" ON "shift_reports" USING btree ("shift_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "ssr_one_open_uq" ON "shift_swap_requests" USING btree ("shift_id") WHERE state IN ('pending_acceptance', 'pending_approval');--> statement-breakpoint
 CREATE UNIQUE INDEX "shifts_one_active_uq" ON "shifts" USING btree ("membership_id") WHERE state IN ('active', 'paused');--> statement-breakpoint
 CREATE UNIQUE INDEX "shifts_occurrence_uq" ON "shifts" USING btree ("repeat_group_id","occurrence_key") WHERE occurrence_key IS NOT NULL;--> statement-breakpoint
 CREATE INDEX "shifts_member_time_idx" ON "shifts" USING btree ("workspace_id","membership_id","scheduled_start");--> statement-breakpoint
@@ -4005,8 +4106,11 @@ CREATE UNIQUE INDEX "metric_definitions_key_version_uq" ON "metric_definitions" 
 CREATE INDEX "metric_observations_entity_idx" ON "metric_observations" USING btree ("workspace_id","entity_type","entity_id","observed_at");--> statement-breakpoint
 CREATE INDEX "metric_observations_account_idx" ON "metric_observations" USING btree ("workspace_id","account_id","observed_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "metric_observations_dedupe_uq" ON "metric_observations" USING btree ("workspace_id","dedupe_key") WHERE quality_state NOT IN ('superseded', 'rejected', 'pending_correction');--> statement-breakpoint
+CREATE UNIQUE INDEX "metric_observations_pending_uq" ON "metric_observations" USING btree ("workspace_id","root_observation_id") WHERE quality_state = 'pending_correction';--> statement-breakpoint
+CREATE INDEX "metric_observations_publication_idx" ON "metric_observations" USING btree ("workspace_id","publication_id","observed_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "metric_values_uq" ON "metric_values" USING btree ("observation_id","metric_key");--> statement-breakpoint
 CREATE INDEX "metric_values_key_idx" ON "metric_values" USING btree ("workspace_id","metric_key");--> statement-breakpoint
+CREATE UNIQUE INDEX "saved_report_versions_no_uq" ON "saved_report_versions" USING btree ("report_id","version_no");--> statement-breakpoint
 CREATE UNIQUE INDEX "budget_alerts_active_uq" ON "budget_alerts" USING btree ("budget_version_id","threshold") WHERE reset_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "budget_lines_uq" ON "budget_lines" USING btree ("budget_version_id","category_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "budget_versions_no_uq" ON "budget_versions" USING btree ("budget_id","version_no");--> statement-breakpoint
@@ -4016,12 +4120,14 @@ CREATE INDEX "compensation_lines_run_idx" ON "compensation_lines" USING btree ("
 CREATE UNIQUE INDEX "crv_no_uq" ON "compensation_rule_versions" USING btree ("rule_id","version_no");--> statement-breakpoint
 CREATE UNIQUE INDEX "finance_categories_key_uq" ON "finance_categories" USING btree ("workspace_id","key");--> statement-breakpoint
 CREATE INDEX "fa_project_idx" ON "financial_allocations" USING btree ("workspace_id","project_id","effective_date");--> statement-breakpoint
+CREATE INDEX "fa_entry_idx" ON "financial_allocations" USING btree ("workspace_id","entry_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "financial_entries_source_uq" ON "financial_entries" USING btree ("workspace_id","source_namespace","source_external_id") WHERE source_external_id IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "financial_entries_reversal_uq" ON "financial_entries" USING btree ("reverses_entry_id") WHERE reverses_entry_id IS NOT NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "financial_entries_comp_run_uq" ON "financial_entries" USING btree ("compensation_run_id") WHERE compensation_run_id IS NOT NULL AND reverses_entry_id IS NULL;--> statement-breakpoint
 CREATE INDEX "financial_entries_recognition_idx" ON "financial_entries" USING btree ("workspace_id","state","recognition_date");--> statement-breakpoint
 CREATE UNIQUE INDEX "fel_line_no_uq" ON "financial_entry_lines" USING btree ("entry_id","line_no");--> statement-breakpoint
 CREATE UNIQUE INDEX "fel_transaction_uq" ON "financial_entry_lines" USING btree ("workspace_id","source_namespace","transaction_ref") WHERE transaction_ref IS NOT NULL AND is_reversal = false;--> statement-breakpoint
+CREATE INDEX "fel_entry_idx" ON "financial_entry_lines" USING btree ("workspace_id","entry_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "fx_rates_uq" ON "fx_rates" USING btree ("workspace_id","from_currency","to_currency","effective_date","source");--> statement-breakpoint
 CREATE UNIQUE INDEX "period_locks_active_uq" ON "period_locks" USING btree ("workspace_id","period_start") WHERE state = 'locked';--> statement-breakpoint
 CREATE INDEX "sa_target_entry_idx" ON "settlement_allocations" USING btree ("workspace_id","target_entry_id");--> statement-breakpoint
@@ -4031,9 +4137,12 @@ CREATE INDEX "settlements_paid_idx" ON "settlements" USING btree ("workspace_id"
 CREATE INDEX "audit_events_ws_actor_idx" ON "audit_events" USING btree ("workspace_id","actor_membership_id","occurred_at");--> statement-breakpoint
 CREATE INDEX "audit_events_ws_entity_idx" ON "audit_events" USING btree ("workspace_id","entity_type","entity_id","occurred_at");--> statement-breakpoint
 CREATE INDEX "audit_events_ws_time_idx" ON "audit_events" USING btree ("workspace_id","occurred_at");--> statement-breakpoint
+CREATE INDEX "automation_action_effects_run_idx" ON "automation_action_effects" USING btree ("workspace_id","run_id");--> statement-breakpoint
+CREATE INDEX "automation_action_effects_entity_idx" ON "automation_action_effects" USING btree ("workspace_id","entity_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "arv_no_uq" ON "automation_rule_versions" USING btree ("rule_id","version_no");--> statement-breakpoint
 CREATE UNIQUE INDEX "automation_runs_operation_uq" ON "automation_runs" USING btree ("workspace_id","operation_key");--> statement-breakpoint
 CREATE INDEX "automation_runs_rule_idx" ON "automation_runs" USING btree ("workspace_id","rule_id","created_at");--> statement-breakpoint
+CREATE INDEX "automation_runs_root_idx" ON "automation_runs" USING btree ("workspace_id","root_event_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "custom_field_definitions_key_uq" ON "custom_field_definitions" USING btree ("workspace_id","entity_type","key") WHERE archived_at IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "custom_field_values_uq" ON "custom_field_values" USING btree ("definition_id","entity_id");--> statement-breakpoint
 CREATE INDEX "custom_field_values_entity_idx" ON "custom_field_values" USING btree ("workspace_id","entity_type","entity_id");--> statement-breakpoint

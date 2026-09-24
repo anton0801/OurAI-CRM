@@ -5,85 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1790204288113,
-      "tag": "0000_military_lyja",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1790207764947,
-      "tag": "0001_serious_brood",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1790209549791,
-      "tag": "0002_classy_nebula",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1790216109538,
-      "tag": "0003_pink_dreaming_celestial",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1790216575286,
-      "tag": "0004_eager_roxanne_simpson",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1790216862646,
-      "tag": "0005_glamorous_maggott",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1790217502968,
-      "tag": "0006_sour_psynapse",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1790217699474,
-      "tag": "0007_loving_paladin",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "7",
-      "when": 1790234877442,
-      "tag": "0008_low_eddie_brock",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1790235383964,
-      "tag": "0009_sleepy_colossus",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "7",
-      "when": 1790236049562,
-      "tag": "0010_calm_jamie_braddock",
-      "breakpoints": true
-    },
-    {
-      "idx": 11,
-      "version": "7",
-      "when": 1790237763186,
-      "tag": "0011_typical_nuke",
+      "when": 1790238088597,
+      "tag": "0000_initial",
       "breakpoints": true
     }
   ]

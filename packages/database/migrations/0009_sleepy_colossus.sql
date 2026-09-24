@@ -1,2 +1,0 @@
-CREATE UNIQUE INDEX "publications_post_url_ws_uq" ON "publications" USING btree ("workspace_id","normalized_post_url") WHERE normalized_post_url IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "publications_account_schedule_idx" ON "publications" USING btree ("workspace_id","account_id","scheduled_at");

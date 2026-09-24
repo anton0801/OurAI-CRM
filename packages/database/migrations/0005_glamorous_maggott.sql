@@ -1,2 +1,0 @@
-ALTER TABLE "email_change_requests" ADD COLUMN "cancelled_at" timestamp with time zone;--> statement-breakpoint
-CREATE UNIQUE INDEX "roles_ws_active_name_uq" ON "roles" USING btree ("workspace_id",lower("name")) WHERE archived_at IS NULL;

@@ -1,1 +1,0 @@
-ALTER TABLE "upload_sessions" ADD COLUMN "purpose" text DEFAULT 'general' NOT NULL;

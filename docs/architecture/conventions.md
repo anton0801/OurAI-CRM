@@ -263,8 +263,9 @@ module**, never reorder or rewrite existing lines.
   workspace_id, created/updated at/by, row_version), exposes `tenantUnique('<table>', t)` and links
   other tenant tables with `tfk(name, t.workspaceId, t.refId, refTable)`.
 * Enum columns: values in `packages/domain/src/enums.ts`, `enumText(...)` + `enumCheck(...)`.
-* Then `pnpm db:generate` and commit the new migration file. (Before the first production release
-  the integration lead squashes migrations into one initial migration.)
+* Then `pnpm db:generate` and commit the new migration file. The module migrations were squashed into
+  `0000_initial.sql` before the first release; from now on migrations are only added, never edited
+  (expand → migrate → contract, see `docs/runbooks/deploy.md`).
 * Triggers/functions that must survive regeneration go to `packages/database/sql/post/*.sql`
   (idempotent `CREATE OR REPLACE` / `DROP TRIGGER IF EXISTS`).
 
