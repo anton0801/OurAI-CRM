@@ -22,3 +22,4 @@ export * from './templates/templates';
 export * from './custom-field-values';
 export * from './custom-fields';
 export * from './retention';
+export * from './tombstones';

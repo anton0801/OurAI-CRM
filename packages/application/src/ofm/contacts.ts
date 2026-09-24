@@ -1,6 +1,5 @@
 import { and, desc, eq, ilike, inArray, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
-  deletionTombstones,
   erasureRequests,
   interactionLogs,
   ofmContactRelations,
@@ -21,6 +20,7 @@ import { loadMemberRefs, refOrUnknown } from '../core/members';
 import { notify } from '../core/notify';
 import { assertVersion, lockById, stamp, touch } from '../core/rows';
 import { indexSearchDocument } from '../core/search';
+import { defineTombstoneReplay, recordTombstone } from '../platform/tombstones';
 import {
   accountRefOr,
   assertAccountOpen,
@@ -628,17 +628,11 @@ export const requestErasure = async (ctx: CommandContext, id: string, input: { r
   return { id: reqId, state: 'queued', plan };
 };
 
-/** Job body: pseudonymise the contact, delete personal notes, keep financial links (idempotent). */
-export const executeContactErasure = async (ctx: CommandContext, requestId: string) => {
-  const [req] = await ctx.tx.select().from(erasureRequests).where(eq(erasureRequests.id, requestId)).for('update');
-  if (!req || req.state === 'completed') return req?.result ?? null;
-  const at = ctx.app.clock.now();
-  await ctx.tx.update(erasureRequests).set({ state: 'running', updatedAt: at }).where(eq(erasureRequests.id, requestId));
-  const [c] = await ctx.tx.select().from(ofmContacts).where(eq(ofmContacts.id, req.entityId)).for('update');
-  if (!c) {
-    await ctx.tx.update(erasureRequests).set({ state: 'failed', result: { error: 'Contact not found' }, updatedAt: at }).where(eq(erasureRequests.id, requestId));
-    return null;
-  }
+/**
+ * Pseudonymise a contact: alias and external identifier replaced, business notes, interaction
+ * notes and operation details deleted; financial references stay linked to the pseudonym.
+ */
+const pseudonymiseContact = async (ctx: CommandContext, c: typeof ofmContacts.$inferSelect, at: Date) => {
   const pseudonym = `Erased contact ${c.id.slice(0, 8)}`;
   const [row] = await ctx.tx
     .update(ofmContacts)
@@ -667,10 +661,33 @@ export const executeContactErasure = async (ctx: CommandContext, requestId: stri
     .set({ details: null, rowVersion: sql`${operations.rowVersion} + 1`, updatedAt: at })
     .where(and(eq(operations.contactId, c.id), sql`${operations.details} IS NOT NULL`))
     .returning({ id: operations.id });
-  const [sales] = await ctx.tx.select({ n: sql<string>`count(*)::text` }).from(saleCandidates).where(eq(saleCandidates.contactId, c.id));
   await indexContact(ctx, row!);
-  await ctx.tx.insert(deletionTombstones).values({ id: newId(), workspaceId: c.workspaceId, entityType: 'ofm_contact', entityId: c.id, action: 'erase', details: { requestId }, executedAt: at });
-  const result = { contact: 'pseudonymised', interactionsErased: inter.length, operationDetailsErased: ops.length, saleCandidatesKept: Number(sales?.n ?? 0), searchIndex: 'updated' };
+  return { interactionsErased: inter.length, operationDetailsErased: ops.length };
+};
+
+// Disaster restore to a point before the erasure: the journal replays it before access reopens (T157).
+defineTombstoneReplay('ofm_contact', 'erase', async (ctx, t) => {
+  const [c] = await ctx.tx.select().from(ofmContacts).where(eq(ofmContacts.id, t.entityId)).for('update');
+  if (!c) return 'not_present';
+  await pseudonymiseContact(ctx, c, c.erasedAt ?? t.executedAt);
+  return 'applied';
+});
+
+/** Job body: pseudonymise the contact, delete personal notes, keep financial links (idempotent). */
+export const executeContactErasure = async (ctx: CommandContext, requestId: string) => {
+  const [req] = await ctx.tx.select().from(erasureRequests).where(eq(erasureRequests.id, requestId)).for('update');
+  if (!req || req.state === 'completed') return req?.result ?? null;
+  const at = ctx.app.clock.now();
+  await ctx.tx.update(erasureRequests).set({ state: 'running', updatedAt: at }).where(eq(erasureRequests.id, requestId));
+  const [c] = await ctx.tx.select().from(ofmContacts).where(eq(ofmContacts.id, req.entityId)).for('update');
+  if (!c) {
+    await ctx.tx.update(erasureRequests).set({ state: 'failed', result: { error: 'Contact not found' }, updatedAt: at }).where(eq(erasureRequests.id, requestId));
+    return null;
+  }
+  const { interactionsErased, operationDetailsErased } = await pseudonymiseContact(ctx, c, at);
+  const [sales] = await ctx.tx.select({ n: sql<string>`count(*)::text` }).from(saleCandidates).where(eq(saleCandidates.contactId, c.id));
+  await recordTombstone(ctx, { workspaceId: c.workspaceId, entityType: 'ofm_contact', entityId: c.id, action: 'erase', details: { requestId } });
+  const result = { contact: 'pseudonymised', interactionsErased, operationDetailsErased, saleCandidatesKept: Number(sales?.n ?? 0), searchIndex: 'updated' };
   await ctx.tx.update(erasureRequests).set({ state: 'completed', result, completedAt: at, updatedAt: at }).where(eq(erasureRequests.id, requestId));
   await audit(ctx, { action: 'ofm_contact.erased', entityType: 'ofm_contact', entityId: c.id, projectId: c.projectId, metadata: { requestId, ...result }, sensitivity: 'ofm' });
   await emit(ctx, { type: 'ofm_contact.erased', entityType: 'ofm_contact', entityId: c.id });

@@ -76,6 +76,31 @@ export class FilesystemStorage implements StorageAdapter {
     await fs.rm(this.pathFor(key), { force: true });
   }
 
+  async listObjects(prefix: string): Promise<string[]> {
+    const base = resolve(this.root, 'objects');
+    const keys: string[] = [];
+    const walk = async (dir: string) => {
+      let entries;
+      try {
+        entries = await fs.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const e of entries) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) await walk(p);
+        else {
+          const key = p.slice(base.length + 1).split(sep).join('/');
+          if (key.startsWith(prefix)) keys.push(key);
+        }
+      }
+    };
+    // Start from the deepest directory named by the prefix.
+    const dirPart = prefix.includes('/') ? prefix.slice(0, prefix.lastIndexOf('/')) : '';
+    await walk(dirPart ? this.pathFor(dirPart) : base);
+    return keys.sort();
+  }
+
   async createMultipartUpload(): Promise<{ uploadId: string }> {
     const uploadId = randomUUID();
     await fs.mkdir(join(this.root, 'multipart', uploadId), { recursive: true });

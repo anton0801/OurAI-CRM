@@ -8,7 +8,6 @@ import {
   characters,
   contentItems,
   customFieldValues,
-  deletionTombstones,
   directions,
   memberships,
   ofmAssignments,
@@ -38,6 +37,7 @@ import { defineImportDataset, type ImportIssue } from '../../core/import-registr
 import { loadMemberRefs } from '../../core/members';
 import { lockById, touch } from '../../core/rows';
 import { indexSearchDocument, removeSearchDocument } from '../../core/search';
+import { defineTombstoneReplay, recordTombstone } from '../tombstones';
 import { createProject, projectScope, updateProject } from '../../organization/projects';
 
 type ProjectRow = typeof projects.$inferSelect;
@@ -336,16 +336,29 @@ extendArchiveHandler('project', {
   purge: async (ctx, id) => {
     const p = await lockById(ctx, projects, id, 'Project');
     if (!p.deletedAt || p.status !== 'draft') throw new AppError('INVALID_STATE', 'Only trashed draft projects can be permanently deleted.');
-    const deps = await projectDependents(ctx, p);
-    if (deps.length) throw new AppError('INVALID_STATE', `Held references prevent deletion: ${deps.map((d) => `${d.count} ${d.label}`).join(', ')}.`);
-    await ctx.tx.delete(customFieldValues).where(and(eq(customFieldValues.workspaceId, p.workspaceId), eq(customFieldValues.entityType, 'project'), eq(customFieldValues.entityId, id)));
-    await ctx.tx.delete(ofmProfiles).where(and(eq(ofmProfiles.workspaceId, p.workspaceId), eq(ofmProfiles.projectId, id)));
-    await ctx.tx.delete(projectMemberships).where(and(eq(projectMemberships.workspaceId, p.workspaceId), eq(projectMemberships.projectId, id)));
-    await ctx.tx.delete(projectDirectionHistory).where(and(eq(projectDirectionHistory.workspaceId, p.workspaceId), eq(projectDirectionHistory.projectId, id)));
-    await ctx.tx.delete(projects).where(eq(projects.id, id));
-    await removeSearchDocument(ctx.tx, p.workspaceId, 'project', id);
-    await ctx.tx.insert(deletionTombstones).values({ id: newId(), workspaceId: p.workspaceId, entityType: 'project', entityId: id, action: 'purge', details: { name: '[purged]' }, executedAt: ctx.app.clock.now() });
+    await purgeProjectRows(ctx, p);
+    await recordTombstone(ctx, { workspaceId: p.workspaceId, entityType: 'project', entityId: id, action: 'purge', details: { name: '[purged]' } });
   },
+});
+
+/** Delete a trashed draft project and its owned ephemeral rows; held references block. */
+const purgeProjectRows = async (ctx: CommandContext, p: typeof projects.$inferSelect) => {
+  const deps = await projectDependents(ctx, p);
+  if (deps.length) throw new AppError('INVALID_STATE', `Held references prevent deletion: ${deps.map((d) => `${d.count} ${d.label}`).join(', ')}.`);
+  await ctx.tx.delete(customFieldValues).where(and(eq(customFieldValues.workspaceId, p.workspaceId), eq(customFieldValues.entityType, 'project'), eq(customFieldValues.entityId, p.id)));
+  await ctx.tx.delete(ofmProfiles).where(and(eq(ofmProfiles.workspaceId, p.workspaceId), eq(ofmProfiles.projectId, p.id)));
+  await ctx.tx.delete(projectMemberships).where(and(eq(projectMemberships.workspaceId, p.workspaceId), eq(projectMemberships.projectId, p.id)));
+  await ctx.tx.delete(projectDirectionHistory).where(and(eq(projectDirectionHistory.workspaceId, p.workspaceId), eq(projectDirectionHistory.projectId, p.id)));
+  await ctx.tx.delete(projects).where(eq(projects.id, p.id));
+  await removeSearchDocument(ctx.tx, p.workspaceId, 'project', p.id);
+};
+
+// Disaster restore to a point before the purge: delete the project again before access reopens.
+defineTombstoneReplay('project', 'purge', async (ctx, t) => {
+  const [p] = await ctx.tx.select().from(projects).where(eq(projects.id, t.entityId)).for('update');
+  if (!p) return 'not_present';
+  await purgeProjectRows(ctx, p);
+  return 'applied';
 });
 
 // ——— Export dataset: projects ———

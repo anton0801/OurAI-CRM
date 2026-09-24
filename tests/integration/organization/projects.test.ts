@@ -3,9 +3,9 @@ import { eq } from 'drizzle-orm';
 import { newIdempotencyKey } from '@castlane/api-client';
 import { directionEndpoints, projectEndpoints } from '@castlane/api-contracts';
 import { getAppServices } from '@castlane/application';
-import { projects, seasons } from '@castlane/database';
+import { contentItems, projects, publications, seasons, shifts, tasks } from '@castlane/database';
 import { newId } from '@castlane/domain';
-import { addMember, assignToProject, clientFor, createDirection, createProject, createWorkspace, sessionFor } from '../../support';
+import { addMember, assignToProject, clientFor, createAccount, createDirection, createProject, createWorkspace, sessionFor } from '../../support';
 
 const db = () => getAppServices().db;
 
@@ -80,8 +80,47 @@ describe('projects', () => {
   });
 });
 
-describe('project access scope (T014–T016)', () => {
-  it('scoped roles see only their projects; out-of-scope ids are 404; budget field absent without finance rights', async () => {
+describe('archiving an active project (T023)', () => {
+  it('needs scheduled publications, active shifts and open high-priority work resolved first', async () => {
+    const { ws, owner, directionId } = await setup();
+    const W = { workspaceId: ws.workspaceId };
+    const p = await createProject(db(), ws, { directionId, name: 'Night Shift', type: 'influencer' });
+    await db().update(projects).set({ status: 'active', briefSummary: 'Lifestyle' }).where(eq(projects.id, p.id));
+    const accountId = await createAccount(db(), ws, { projectId: p.id });
+    const now = new Date();
+    const taskId = newId();
+    await db().insert(tasks).values({ id: taskId, workspaceId: ws.workspaceId, projectId: p.id, title: 'Cut the trailer', status: 'in_progress', priority: 'urgent', createdAt: now, updatedAt: now });
+    const shiftId = newId();
+    await db().insert(shifts).values({ id: shiftId, workspaceId: ws.workspaceId, projectId: p.id, primaryAccountId: accountId, membershipId: ws.owner.membershipId, scheduledStart: new Date(now.getTime() + 3_600_000), scheduledEnd: new Date(now.getTime() + 7_200_000), timezone: 'Europe/Berlin', state: 'scheduled', createdAt: now, updatedAt: now });
+    const contentItemId = newId();
+    await db().insert(contentItems).values({ id: contentItemId, workspaceId: ws.workspaceId, projectId: p.id, title: 'Teaser', format: 'short_video', stage: 'approved', ownerMembershipId: ws.owner.membershipId, createdAt: now, updatedAt: now });
+    const publicationId = newId();
+    await db().insert(publications).values({ id: publicationId, workspaceId: ws.workspaceId, contentItemId, accountId, projectId: p.id, ownerMembershipId: ws.owner.membershipId, status: 'scheduled', scheduledAt: new Date(now.getTime() + 86_400_000), createdAt: now, updatedAt: now });
+
+    const detail = await owner.call(projectEndpoints.get, { params: { ...W, projectId: p.id } });
+    // Active → Archived is not a direct transition: the project is completed first.
+    const direct = await owner.attempt(projectEndpoints.transition, { params: { ...W, projectId: p.id }, body: { targetState: 'archived', reason: 'Wrapped' } }, { ifMatch: detail.rowVersion });
+    expect(direct.status).toBe(409);
+    const preview = await owner.call(projectEndpoints.archivePreview, { params: { ...W, projectId: p.id } });
+    expect(preview.items.filter((i) => i.blocking).map((i) => i.kind).sort()).toEqual(['active_shifts', 'open_tasks', 'scheduled_publications']);
+    const blocked = await owner.attempt(projectEndpoints.transition, { params: { ...W, projectId: p.id }, body: { targetState: 'completed' } }, { ifMatch: detail.rowVersion });
+    expect(blocked.status).toBe(409);
+    expect((blocked.error as unknown as { details: { items: { kind: string }[] } }).details.items.map((i) => i.kind).sort()).toEqual(['active_shifts', 'open_tasks', 'scheduled_publications']);
+    expect((await db().select().from(projects).where(eq(projects.id, p.id)))[0]?.status).toBe('active');
+
+    // Untangle: the task is done, the shift and the placement cancelled → complete, then archive.
+    await db().update(tasks).set({ status: 'done', completedAt: now }).where(eq(tasks.id, taskId));
+    await db().update(shifts).set({ state: 'cancelled' }).where(eq(shifts.id, shiftId));
+    await db().update(publications).set({ status: 'cancelled' }).where(eq(publications.id, publicationId));
+    expect((await owner.call(projectEndpoints.archivePreview, { params: { ...W, projectId: p.id } })).items.filter((i) => i.blocking)).toEqual([]);
+    const done = await owner.call(projectEndpoints.transition, { params: { ...W, projectId: p.id }, body: { targetState: 'completed' } }, { ifMatch: detail.rowVersion });
+    const archived = await owner.call(projectEndpoints.transition, { params: { ...W, projectId: p.id }, body: { targetState: 'archived', reason: 'Wrapped' } }, { ifMatch: done.rowVersion });
+    expect(archived.status).toBe('archived');
+  });
+});
+
+describe('project access scope', () => {
+  it('scoped roles see only their projects; out-of-scope ids are 404; budget field absent without finance rights (T016)', async () => {
     const { ws } = await setup();
     const dirA = await createDirection(db(), ws, 'A');
     const dirB = await createDirection(db(), ws, 'B');

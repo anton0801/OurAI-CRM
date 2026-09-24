@@ -9,7 +9,7 @@ import { db, getTask, member, newTask, transition, workFixture } from './helpers
 afterEach(() => resetClock());
 
 describe('task create/edit', () => {
-  it('creates once per Idempotency-Key, defaults priority to Normal and requires If-Match on edits (T021-like, T163, T164)', async () => {
+  it('creates once per Idempotency-Key, defaults priority to Normal and requires If-Match on edits (T163, T164)', async () => {
     const f = await workFixture();
     const key = newIdempotencyKey();
     const body = { title: 'Storyboard episode 1', projectId: f.projectId };
@@ -82,7 +82,7 @@ describe('task create/edit', () => {
   });
 });
 
-describe('task access scope (T014, T159-like)', () => {
+describe('task access scope (T014)', () => {
   it('lists, counts and reads only tasks in scope; out-of-scope ids are 404; module without permission is 403', async () => {
     const f = await workFixture();
     const creator = await member(f, 'creator', { projects: [f.projectId] });

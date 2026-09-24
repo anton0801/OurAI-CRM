@@ -17,6 +17,7 @@ await build({
   entryPoints: {
     index: 'src/index.ts',
     'cli/bootstrap-owner': 'src/cli/bootstrap-owner.ts',
+    'cli/replay-tombstones': 'src/cli/replay-tombstones.ts',
     'cli/migrate': '../../packages/database/src/cli/migrate.ts',
   },
   outdir: 'dist',

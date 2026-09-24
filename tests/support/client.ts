@@ -18,6 +18,9 @@ export class TestClient {
   lastStatus = 0;
   lastHeaders: Headers | null = null;
 
+  /** Client address seen by the per-IP rate limits (tests that sign in often use their own). */
+  ip = '127.0.0.1';
+
   constructor(sessionToken?: string) {
     if (sessionToken) this.cookies.set(SESSION_COOKIE, sessionToken);
     this.api = createApiClient({
@@ -33,7 +36,7 @@ export class TestClient {
     // Tests may pass their own Origin (foreign-site checks) or 'none' to omit it.
     if (!headers.has('origin')) headers.set('origin', ORIGIN);
     else if (headers.get('origin') === 'none') headers.delete('origin');
-    headers.set('x-real-ip', '127.0.0.1');
+    headers.set('x-real-ip', this.ip);
     if (this.cookies.size) headers.set('cookie', [...this.cookies].map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('; '));
     const req = new Request(url, { ...init, headers });
     const res = await dispatch(req, url.pathname.replace(/^\/api\/v1/, ''));
@@ -85,4 +88,8 @@ export class TestClient {
   }
 }
 
-export const clientFor = async (sessionToken?: string) => new TestClient(sessionToken).init();
+export const clientFor = async (sessionToken?: string, opts: { ip?: string } = {}) => {
+  const c = new TestClient(sessionToken);
+  if (opts.ip) c.ip = opts.ip;
+  return c.init();
+};

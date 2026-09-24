@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { ofmEndpoints as E } from '@castlane/api-contracts';
-import { getAppServices, runContactRetention } from '@castlane/application';
+import { TOMBSTONE_JOURNAL_PREFIX, getAppServices, replayTombstones, runContactRetention } from '@castlane/application';
 import { auditEvents, deletionTombstones, interactionLogs, notifications, ofmContacts, outboxEvents, saleCandidates, searchDocuments } from '@castlane/database';
 import { addMember, clientFor, runQueuedJobs, sessionFor } from '../../support';
 import { db, ofmSetup } from './helpers';
@@ -149,5 +149,61 @@ describe('OFM contacts (S45/S46)', () => {
     const [aged] = await db().select().from(ofmContacts).where(eq(ofmContacts.id, old.id));
     expect(aged!.businessNotes).toBeNull();
     expect(aged!.alias).toBe('Old');
+  });
+
+  it('T157: a database restored to before an erasure is corrected by replaying the tombstone journal before reopening', async () => {
+    const app = getAppServices();
+    const s = await ofmSetup();
+    const c = await s.owner.call(E.createContact, { params: s.p, body: { accountId: s.accountA, externalIdentifier: 'restore_me', alias: 'Restore Probe', businessNotes: SECRET_NOTE } });
+    await s.owner.call(E.createInteraction, { params: s.p, body: { contactId: c.id, type: 'request', occurredAt: new Date().toISOString(), businessNote: SECRET_NOTE } });
+    // The "backup": rows as they were before the erasure.
+    const [before] = await db().select().from(ofmContacts).where(eq(ofmContacts.id, c.id));
+    const logsBefore = await db().select().from(interactionLogs).where(eq(interactionLogs.contactId, c.id));
+    const recoveryPoint = new Date(Date.now() - 1000);
+
+    await s.owner.call(E.requestErasure, { params: { ...s.p, contactId: c.id }, body: { reason: 'Data subject request' } });
+    await runQueuedJobs(['ofm.contact_erasure']);
+    await runQueuedJobs(['tombstones.journal']);
+    const [tomb] = await db().select().from(deletionTombstones).where(eq(deletionTombstones.entityId, c.id));
+    // The journal lives in object storage, outside database backups, and holds identifiers only.
+    const key = (await app.storage.listObjects(TOMBSTONE_JOURNAL_PREFIX)).find((k) => k.endsWith(`_${tomb!.id}.json`));
+    expect(key).toBeTruthy();
+    const { stream } = await app.storage.getObjectStream(key!);
+    let journal = '';
+    for await (const chunk of stream) journal += Buffer.from(chunk as Buffer).toString('utf8');
+    expect(journal).toContain(c.id);
+    expect(journal).not.toContain('divorce');
+    expect(journal).not.toContain('Restore Probe');
+
+    // Disaster restore to a point before the erasure: the contact and its notes are back, the tombstone row is gone.
+    await db()
+      .update(ofmContacts)
+      .set({ alias: before!.alias, externalIdentifier: before!.externalIdentifier, businessNotes: before!.businessNotes, erasedAt: null, restricted: before!.restricted, stage: before!.stage, archivedAt: before!.archivedAt, archiveReason: before!.archiveReason, nextFollowUpAt: before!.nextFollowUpAt })
+      .where(eq(ofmContacts.id, c.id));
+    for (const l of logsBefore) await db().update(interactionLogs).set({ businessNote: l.businessNote, erasedAt: null }).where(eq(interactionLogs.id, l.id));
+    await db().delete(deletionTombstones).where(eq(deletionTombstones.id, tomb!.id));
+
+    const dry = await replayTombstones(app, { since: recoveryPoint, dryRun: true });
+    expect(dry.pending).toBeGreaterThanOrEqual(1);
+    expect((await db().select().from(ofmContacts).where(eq(ofmContacts.id, c.id)))[0]!.businessNotes).toBe(SECRET_NOTE);
+
+    const replay = await replayTombstones(app, { since: recoveryPoint });
+    expect(replay.failed).toEqual([]);
+    expect(replay.applied).toBeGreaterThanOrEqual(1);
+    const [erased] = await db().select().from(ofmContacts).where(eq(ofmContacts.id, c.id));
+    expect(erased).toMatchObject({ alias: expect.stringMatching(/^Erased contact/), businessNotes: null });
+    expect(erased!.erasedAt).not.toBeNull();
+    const logs = await db().select().from(interactionLogs).where(eq(interactionLogs.contactId, c.id));
+    expect(logs.every((l) => l.businessNote === '[erased]' && l.erasedAt)).toBe(true);
+    const docs = await db().select().from(searchDocuments).where(eq(searchDocuments.entityId, c.id));
+    expect(JSON.stringify(docs)).not.toContain('Restore Probe');
+    const [again] = await db().select().from(deletionTombstones).where(eq(deletionTombstones.id, tomb!.id));
+    expect(again?.details).toMatchObject({ replayOutcome: 'applied' });
+    expect(await db().select().from(auditEvents).where(and(eq(auditEvents.entityId, c.id), eq(auditEvents.action, 'tombstone.replayed')))).toHaveLength(1);
+
+    // Idempotent: a second run applies nothing.
+    const second = await replayTombstones(app, { since: recoveryPoint });
+    expect(second.applied).toBe(0);
+    expect(second.alreadyApplied).toBeGreaterThanOrEqual(1);
   });
 });

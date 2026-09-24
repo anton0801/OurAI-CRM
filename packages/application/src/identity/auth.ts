@@ -196,7 +196,9 @@ export const verifyMfa = async (
   meta: AuthRequestMeta,
 ): Promise<{ sessionToken: string; redirectTo: string }> => {
   const at = app.clock.now();
-  return withTransaction(app.db, async (tx) => {
+  // A failed code is committed (attempt counter + audit) before the error is raised: throwing
+  // inside the transaction would roll both back and defeat the rate limit.
+  const result = await withTransaction(app.db, async (tx): Promise<{ sessionToken: string; redirectTo: string } | { failed: 'totp' | 'recovery' }> => {
     const c = await loadChallenge(tx, input.challengeToken, at);
     if (c.purpose !== 'mfa_verify') throw new AppError('UNAUTHENTICATED', 'This verification step is not valid.');
     const [user] = await tx.select().from(users).where(eq(users.id, c.userId)).for('update');
@@ -227,13 +229,15 @@ export const verifyMfa = async (
     if (!ok) {
       await tx.update(authChallenges).set({ attempts: c.attempts + 1 }).where(eq(authChallenges.id, c.id));
       await auditRaw(tx, { action: 'auth.mfa_failed', workspaceId: null, actorUserId: user.id, actorKind: 'user', at, requestId: meta.requestId, ipHash: meta.ipHash, metadata: { kind: input.kind } });
-      throw new AppError('UNAUTHENTICATED', input.kind === 'recovery' ? 'This recovery code is not valid.' : 'The verification code is not valid.');
+      return { failed: input.kind };
     }
     await tx.update(authChallenges).set({ consumedAt: at }).where(eq(authChallenges.id, c.id));
     const s = await createSession(tx, user.id, at, { userAgent: meta.userAgent, ipHash: meta.ipHash }, { mfaVerified: true });
     await auditRaw(tx, { action: input.kind === 'recovery' ? 'auth.sign_in_recovery_code' : 'auth.sign_in', workspaceId: null, actorUserId: user.id, actorKind: 'user', entityType: 'user', entityId: user.id, at, requestId: meta.requestId, ipHash: meta.ipHash });
     return { sessionToken: s.token, redirectTo: await landingPath(tx, user.id, c.returnTo) };
   });
+  if ('failed' in result) throw new AppError('UNAUTHENTICATED', result.failed === 'recovery' ? 'This recovery code is not valid.' : 'The verification code is not valid.');
+  return result;
 };
 
 /** Begin TOTP setup from a setup challenge, or from an authenticated session with recent auth. */
@@ -276,16 +280,16 @@ export const confirmMfaSetup = async (
   meta: AuthRequestMeta,
 ): Promise<{ sessionToken: string; recoveryCodes: string[]; redirectTo: string }> => {
   const at = app.clock.now();
-  return withTransaction(app.db, async (tx) => {
+  // As in verifyMfa, the failed attempt is committed before the error is raised.
+  const result = await withTransaction(app.db, async (tx): Promise<{ sessionToken: string; recoveryCodes: string[]; redirectTo: string } | { failed: true }> => {
     const c = await loadChallenge(tx, input.challengeToken, at);
     if (c.purpose !== 'mfa_setup' || !c.pendingSecretEnc) throw new AppError('UNAUTHENTICATED', 'Start the setup again.');
     const secret = decryptSecret(c.pendingSecretEnc, app.config.MFA_ENCRYPTION_KEY);
     const step = verifyTotp(secret, input.code, at);
     if (step === null) {
       await tx.update(authChallenges).set({ attempts: c.attempts + 1 }).where(eq(authChallenges.id, c.id));
-      throw new AppError('VALIDATION_FAILED', 'The verification code is not valid.', {
-        fieldErrors: [{ field: 'code', code: 'INVALID_CODE', message: 'The verification code is not valid.' }],
-      });
+      await auditRaw(tx, { action: 'auth.mfa_failed', workspaceId: null, actorUserId: c.userId, actorKind: 'user', at, requestId: meta.requestId, ipHash: meta.ipHash, metadata: { kind: 'setup' } });
+      return { failed: true };
     }
     await tx
       .update(users)
@@ -302,6 +306,11 @@ export const confirmMfaSetup = async (
     await auditRaw(tx, { action: 'auth.mfa_enabled', workspaceId: null, actorUserId: c.userId, actorKind: 'user', entityType: 'user', entityId: c.userId, at, requestId: meta.requestId, ipHash: meta.ipHash });
     return { sessionToken: s.token, recoveryCodes: codes, redirectTo: await landingPath(tx, c.userId, c.returnTo) };
   });
+  if ('failed' in result)
+    throw new AppError('VALIDATION_FAILED', 'The verification code is not valid.', {
+      fieldErrors: [{ field: 'code', code: 'INVALID_CODE', message: 'The verification code is not valid.' }],
+    });
+  return result;
 };
 
 export const regenerateRecoveryCodes = async (app: AppServices, session: SessionRow, meta: AuthRequestMeta): Promise<string[]> => {

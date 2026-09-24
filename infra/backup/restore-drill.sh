@@ -12,6 +12,10 @@
 #   DUMP_FILE               specific dump to restore (default: newest)
 #   S3_ENDPOINT, STORAGE_BUCKET_PRIVATE, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 #                           when set, every referenced object key is checked with `aws s3api head-object`
+#   STORAGE_FS_ROOT         filesystem storage root (development/local stacks): keys are checked on disk
+#   REPLAY_CMD              command that replays the tombstone journal against $DATABASE_URL, e.g.
+#                           "node /app/dist/cli/replay-tombstones.js" (worker image) or "pnpm -s tombstones:replay";
+#                           it is run against the restored copy with --since <recovered timestamp>
 #   KEEP_RESTORED=1         keep the restored database for manual inspection
 set -euo pipefail
 : "${DATABASE_URL:?}" "${DRILL_ADMIN_URL:?}" "${BACKUP_DIR:?}" "${BACKUP_AGE_IDENTITY:?}"
@@ -55,18 +59,35 @@ UNBALANCED="$(q "SELECT count(*) FROM financial_entries e WHERE e.state = 'poste
 q "SELECT storage_key FROM asset_versions WHERE storage_key IS NOT NULL AND status = 'available'" > "$WORK/keys.txt" || true
 TOTAL_KEYS="$(wc -l < "$WORK/keys.txt" | tr -d ' ')"
 MISSING=0
+STORAGE_CHECKED=false
 if [ -n "${S3_ENDPOINT:-}" ] && [ -n "${STORAGE_BUCKET_PRIVATE:-}" ]; then
+  STORAGE_CHECKED=true
   while read -r key; do
     [ -z "$key" ] && continue
     aws --endpoint-url "$S3_ENDPOINT" s3api head-object --bucket "$STORAGE_BUCKET_PRIVATE" --key "$key" >/dev/null 2>&1 || { MISSING=$((MISSING+1)); echo "missing object: $key" >> "$WORK/missing.txt"; }
   done < "$WORK/keys.txt"
+elif [ -n "${STORAGE_FS_ROOT:-}" ]; then
+  STORAGE_CHECKED=true
+  while read -r key; do
+    [ -z "$key" ] && continue
+    [ -f "${STORAGE_FS_ROOT%/}/objects/$key" ] || { MISSING=$((MISSING+1)); echo "missing object: $key" >> "$WORK/missing.txt"; }
+  done < "$WORK/keys.txt"
 fi
+[ -f "$WORK/missing.txt" ] && head -20 "$WORK/missing.txt" >&2
 
 # Tombstones executed in production after the recovery point must be replayed before opening access.
 TOMBSTONES="$(psql "$DATABASE_URL" -At -c "SELECT count(*) FROM deletion_tombstones WHERE executed_at > '$RECOVERED'::timestamptz")"
+REPLAYED=null
+if [ -n "${REPLAY_CMD:-}" ]; then
+  # The same step as a real disaster restore: replay the storage journal against the restored copy.
+  DATABASE_URL="$DRILL_URL" $REPLAY_CMD --since "$RECOVERED" > "$WORK/replay.json" || fail "tombstone replay failed"
+  REPLAYED="$(python3 -c 'import json,sys; t=open(sys.argv[1]).read(); r=json.loads(t[t.index("{"):]); print(r["applied"] + r["notPresent"])' "$WORK/replay.json")"
+  PENDING="$(q "SELECT count(*) FROM deletion_tombstones WHERE executed_at > '$RECOVERED'::timestamptz")"
+  [ "$PENDING" -ge "$TOMBSTONES" ] || fail "replayed $PENDING of $TOMBSTONES tombstones"
+fi
 
 STATUS=succeeded
 [ "$MISSING" = "0" ] || STATUS=failed
-record "$STATUS" "'$RECOVERED'" "{\"dump\":\"$(basename "$DUMP")\",\"counts\":$COUNTS,\"objectsChecked\":$TOTAL_KEYS,\"missingObjects\":$MISSING,\"tombstonesToReplay\":$TOMBSTONES,\"storageChecked\":$([ -n "${S3_ENDPOINT:-}" ] && echo true || echo false)}"
-echo "restore drill $STATUS: recovered through $RECOVERED, objects checked $TOTAL_KEYS, missing $MISSING, tombstones to replay $TOMBSTONES"
+record "$STATUS" "'$RECOVERED'" "{\"dump\":\"$(basename "$DUMP")\",\"counts\":$COUNTS,\"objectsChecked\":$TOTAL_KEYS,\"missingObjects\":$MISSING,\"tombstonesToReplay\":$TOMBSTONES,\"tombstonesReplayed\":$REPLAYED,\"storageChecked\":$STORAGE_CHECKED}"
+echo "restore drill $STATUS: recovered through $RECOVERED, objects checked $TOTAL_KEYS, missing $MISSING, tombstones to replay $TOMBSTONES, replayed $REPLAYED"
 [ "$STATUS" = succeeded ]

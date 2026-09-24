@@ -54,7 +54,8 @@ docs/                    spec, architecture (ADRs), runbooks, guides, API (OpenA
 
 ## Local development
 
-Prerequisites: Node 22, pnpm 10, PostgreSQL 16 with a role that can create databases.
+Prerequisites: Node 22, pnpm 10, PostgreSQL 16 with a role that can create databases; for the
+backup/restore-drill test also `pg_dump`/`psql` 16 and [`age`](https://age-encryption.org).
 
 ```bash
 pnpm install
@@ -91,6 +92,7 @@ A production-like local stack (HTTPS via Caddy, S3-compatible storage, ClamAV, M
 | `pnpm bootstrap:owner` | one-time creation of the first Owner (refused afterwards) |
 | `pnpm openapi:generate` | regenerate `docs/api/openapi.json` from the contracts (`--check` in CI) |
 | `pnpm fixtures:load` | opt-in demo data (never in production) |
+| `pnpm tombstones:replay` | disaster restore: re-apply purges/erasures from the storage journal (`--since`, `--dry-run`) |
 
 Integration tests need PostgreSQL on 127.0.0.1:5432 with role `castlane/castlane` (CREATEDB);
 override with `TEST_DATABASE_ADMIN_URL`.

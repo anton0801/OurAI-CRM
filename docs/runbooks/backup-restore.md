@@ -26,10 +26,13 @@ BACKUP_AGE_IDENTITY=/secure/castlane-backup.agekey \
 S3_ENDPOINT=https://s3.… STORAGE_BUCKET_PRIVATE=castlane-private AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… \
 infra/backup/restore-drill.sh
 ```
+Add `REPLAY_CMD="node /app/dist/cli/replay-tombstones.js"` (worker image) so the drill also replays
+the deletion journal, exactly like a real disaster restore; with filesystem storage set
+`STORAGE_FS_ROOT` instead of the S3 variables.
 It verifies the checksum, decrypts, restores into a new database, runs integrity checks (posted
 finance entries have lines, row counts), checks every available file version exists in storage,
-counts deletion tombstones that would need replay, records duration / recovered timestamp /
-result in `backup_runs` (shown in **System Health** as *Restore Last Tested*, separate from
+counts deletion tombstones executed after the recovery point and replays them into the copy,
+records duration / recovered timestamp / result in `backup_runs` (shown in **System Health** as *Restore Last Tested*, separate from
 *Backup Last Success*) and drops the copy. A drill with missing objects is recorded as failed.
 Then run smoke workflows against the restored copy if kept (`KEEP_RESTORED=1`): sign in with a
 test account, open a project, play a video, open finance overview.
@@ -43,9 +46,16 @@ test account, open a project, play a video, open finance overview.
    or `pg_restore` of the dump. Run `migrate` with the same release as before the failure.
 4. **Verify storage references**: `restore-drill.sh` logic, or query `asset_versions` for available
    keys and `head-object` them; restore missing objects from bucket versions.
-5. **Replay tombstones and revocations**: re-apply `deletion_tombstones` executed after the recovery
-   point (erasures/purges must not come back) and re-run revocations (removed members, revoked
-   sessions) recorded in the incident log after the recovery point.
+5. **Replay tombstones and revocations** while the application is still closed:
+   `node dist/cli/replay-tombstones.js --since <recovery point ISO time>` in the worker image
+   (`pnpm tombstones:replay --since …` from a checkout; add `--dry-run` first to see the plan).
+   Every purge and erasure writes a tombstone row and a write-once journal object in storage
+   (`journal/tombstones/…`, identifiers only), so erasures executed after the recovery point are
+   re-applied to the restored database (contacts pseudonymised again, purged projects deleted
+   again); a second run changes nothing. The command exits non-zero if an entry failed — do not
+   reopen until it is clean. Then re-run revocations (removed members, revoked sessions) recorded
+   in the incident log after the recovery point. Keep the `journal/` prefix out of bucket lifecycle
+   rules shorter than the backup retention.
 6. **Invalidate sessions/tokens** per incident policy: `UPDATE sessions SET revoked_at = now() WHERE revoked_at IS NULL;`
    and rotate SESSION_SECRET if compromise is suspected (access-revocation.md).
 7. **Consistency checks**: finance integrity (posted entries balanced, no duplicate source keys),

@@ -1,3 +1,4 @@
+/// <reference path="./pdfkit.d.ts" />
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';

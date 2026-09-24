@@ -7,6 +7,7 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   ListPartsCommand,
   PutObjectCommand,
   S3Client,
@@ -74,6 +75,17 @@ export class S3Storage implements StorageAdapter {
 
   async deleteObject(key: string): Promise<void> {
     await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+  }
+
+  async listObjects(prefix: string): Promise<string[]> {
+    const keys: string[] = [];
+    let token: string | undefined;
+    do {
+      const r = await this.client.send(new ListObjectsV2Command({ Bucket: this.bucket, Prefix: prefix, ContinuationToken: token }));
+      for (const o of r.Contents ?? []) if (o.Key) keys.push(o.Key);
+      token = r.IsTruncated ? r.NextContinuationToken : undefined;
+    } while (token);
+    return keys.sort();
   }
 
   async createMultipartUpload(key: string, contentType: string) {

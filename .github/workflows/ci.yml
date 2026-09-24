@@ -36,6 +36,8 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Backup tools for the restore-drill test (pg_dump 16, age)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client-16 age
       - name: Typecheck
         run: pnpm typecheck
       - name: OpenAPI document is up to date

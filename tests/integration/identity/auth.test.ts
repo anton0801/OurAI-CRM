@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { TOTP, Secret } from 'otpauth';
 import { authEndpoints, setupEndpoints } from '@castlane/api-contracts';
 import { bootstrapOwner, getAppServices, decryptSecret } from '@castlane/application';
-import { invitations, memberships, sessions, users } from '@castlane/database';
+import { auditEvents, invitations, memberships, sessions, users } from '@castlane/database';
 import { addMember, clientFor, createWorkspace, DEFAULT_TEST_PASSWORD, sessionFor, TestClient } from '../../support';
 
 const db = () => getAppServices().db;
@@ -20,7 +20,7 @@ describe('bootstrap (T001, T002)', () => {
   });
 });
 
-describe('sign-in (T007–T010)', () => {
+describe('sign-in', () => {
   it('does not reveal whether an account exists and never sets a session on failure', async () => {
     const c = await clientFor();
     const a = await c.attempt(authEndpoints.signIn, { body: { email: 'nobody@test.invalid', password: 'whatever password' } });
@@ -40,7 +40,7 @@ describe('sign-in (T007–T010)', () => {
     expect(last).toBe(429);
   }, 60_000);
 
-  it('recovery response is identical for unknown and known e-mails', async () => {
+  it('recovery response is identical for unknown and known e-mails (T007)', async () => {
     const ws = await createWorkspace(db());
     const c = await clientFor();
     const a = await c.call(authEndpoints.recovery, { body: { email: 'unknown@test.invalid' } });
@@ -48,7 +48,7 @@ describe('sign-in (T007–T010)', () => {
     expect(a).toEqual(b);
   });
 
-  it('owner must set up MFA; TOTP codes cannot be replayed', async () => {
+  it('owner must set up MFA; TOTP codes cannot be replayed; a recovery code works once (T009, T010)', async () => {
     const ws = await createWorkspace(db());
     const c = await clientFor();
     const r = await c.call(authEndpoints.signIn, { body: { email: ws.owner.email, password: DEFAULT_TEST_PASSWORD } });
@@ -90,6 +90,71 @@ describe('sign-in (T007–T010)', () => {
   });
 });
 
+describe('password reset and MFA failures (T008, T009)', () => {
+  let n = 0;
+  const IP = () => `10.0.9.${++n}`;
+  const enrol = async (email: string) => {
+    const c = await clientFor(undefined, { ip: IP() });
+    const r = await c.call(authEndpoints.signIn, { body: { email, password: DEFAULT_TEST_PASSWORD } });
+    if (r.status !== 'mfa_setup_required') throw new Error('expected MFA setup');
+    const setup = await c.call(authEndpoints.mfaSetupStart, { body: { challengeId: r.challengeId } });
+    const totp = new TOTP({ secret: Secret.fromBase32(setup.secret), digits: 6, period: 30 });
+    const code = totp.generate();
+    await c.call(authEndpoints.mfaSetupConfirm, { body: { challengeId: setup.challengeId, code } });
+    return { client: c, usedCode: code };
+  };
+
+  it('a reset token works once; the second use is rejected and the old sessions are revoked (T008)', async () => {
+    const ws = await createWorkspace(db());
+    const existing = await sessionFor(db(), ws.owner.userId);
+    const anon = await clientFor(undefined, { ip: IP() });
+    await anon.call(authEndpoints.recovery, { body: { email: ws.owner.email } });
+    const mail = await db().execute(`SELECT payload FROM jobs WHERE type = 'mail.send' AND payload->>'template' = 'passwordReset' ORDER BY created_at DESC LIMIT 1`);
+    const token = (mail.rows[0] as { payload: { vars: { resetUrl: string } } }).payload.vars.resetUrl.split('/').pop()!;
+    await anon.call(authEndpoints.reset, { body: { token, newPassword: 'a brand new passphrase 2026' } });
+    const replay = await anon.attempt(authEndpoints.reset, { body: { token, newPassword: 'another new passphrase 2026' } });
+    expect(replay.status).toBe(409);
+    expect(replay.error?.message).toMatch(/already been used/);
+    // Every earlier session is revoked; the old one no longer reaches workspace data.
+    const open = await db().select().from(sessions).where(and(eq(sessions.userId, ws.owner.userId), isNull(sessions.revokedAt)));
+    expect(open).toEqual([]);
+    const stale = new TestClient(existing);
+    stale.csrf = 'x';
+    expect((await stale.attempt(setupEndpoints.progress, { params: { workspaceId: ws.workspaceId } })).status).toBe(401);
+    // The first new password stays in force (the replay changed nothing).
+    const c = await clientFor(undefined, { ip: IP() });
+    const ok = await c.call(authEndpoints.signIn, { body: { email: ws.owner.email, password: 'a brand new passphrase 2026' } });
+    expect(['mfa_required', 'mfa_setup_required']).toContain(ok.status);
+    const wrong = await c.attempt(authEndpoints.signIn, { body: { email: ws.owner.email, password: 'another new passphrase 2026' } });
+    expect(wrong.status).toBe(401);
+  });
+
+  it('wrong or repeated TOTP codes create no session, are rate-limited and audited without the code (T009)', async () => {
+    const ws = await createWorkspace(db());
+    const { usedCode } = await enrol(ws.owner.email);
+    const c = await clientFor(undefined, { ip: IP() });
+    const again = await c.call(authEndpoints.signIn, { body: { email: ws.owner.email, password: DEFAULT_TEST_PASSWORD } });
+    if (again.status !== 'mfa_required') throw new Error('expected mfa');
+    const valid = usedCode;
+    const wrongCode = valid === '000000' ? '111111' : '000000';
+    const statuses: number[] = [];
+    // The code used for setup is a replay; then wrong codes until the challenge is locked.
+    statuses.push((await c.attempt(authEndpoints.mfaVerify, { body: { challengeId: again.challengeId, code: valid, kind: 'totp' } })).status);
+    for (let i = 0; i < 5; i++) statuses.push((await c.attempt(authEndpoints.mfaVerify, { body: { challengeId: again.challengeId, code: wrongCode, kind: 'totp' } })).status);
+    expect(statuses.slice(0, 5)).toEqual([401, 401, 401, 401, 401]);
+    expect(statuses[5]).toBe(429);
+    expect(c.cookies.has('castlane_session')).toBe(false);
+    const open = await db().select().from(sessions).where(and(eq(sessions.userId, ws.owner.userId), isNull(sessions.revokedAt)));
+    // Only the session created by the setup step exists; the failed challenge created none.
+    expect(open).toHaveLength(1);
+    const failures = await db().select().from(auditEvents).where(and(eq(auditEvents.actorUserId, ws.owner.userId), eq(auditEvents.action, 'auth.mfa_failed')));
+    expect(failures).toHaveLength(5);
+    const serialized = JSON.stringify(failures);
+    expect(serialized).not.toContain(valid);
+    expect(serialized).not.toContain(wrongCode);
+  });
+});
+
 describe('CSRF and session (T161, T011)', () => {
   it('rejects mutations without a valid CSRF token or from another origin', async () => {
     const ws = await createWorkspace(db());
@@ -115,8 +180,8 @@ describe('CSRF and session (T161, T011)', () => {
   });
 });
 
-describe('invitations (T004–T006)', () => {
-  it('accepting twice creates one user and one membership', async () => {
+describe('invitations', () => {
+  it('accepting twice creates one user and one membership (T004)', async () => {
     const ws = await createWorkspace(db());
     const owner = await clientFor(await sessionFor(db(), ws.owner.userId));
     const creator = await ws.roleId('creator');
@@ -144,7 +209,7 @@ describe('invitations (T004–T006)', () => {
     expect(people).toHaveLength(1);
   });
 
-  it('resend revokes the previous token; expired invitations grant nothing', async () => {
+  it('resend revokes the previous token; expired invitations grant nothing (T005, T006)', async () => {
     const ws = await createWorkspace(db());
     const owner = await clientFor(await sessionFor(db(), ws.owner.userId));
     const viewer = await ws.roleId('viewer');

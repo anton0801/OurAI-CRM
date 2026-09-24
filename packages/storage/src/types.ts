@@ -32,6 +32,8 @@ export interface StorageAdapter {
   headObject(key: string): Promise<ObjectHead | null>;
   copyObject(sourceKey: string, targetKey: string): Promise<PutResult>;
   deleteObject(key: string): Promise<void>;
+  /** Keys under a prefix in lexical order (operational journals such as deletion tombstones). */
+  listObjects(prefix: string): Promise<string[]>;
   /** Multipart upload support (resumable). */
   createMultipartUpload(key: string, contentType: string): Promise<{ uploadId: string }>;
   presignUploadPart(key: string, uploadId: string, partNumber: number, expiresSeconds: number): Promise<PresignedUpload>;

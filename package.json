@@ -22,6 +22,7 @@
     "db:migrate": "tsx --env-file-if-exists=.env packages/database/src/cli/migrate.ts",
     "db:reset": "tsx --env-file-if-exists=.env packages/database/src/cli/reset.ts",
     "bootstrap:owner": "tsx --env-file-if-exists=.env apps/worker/src/cli/bootstrap-owner.ts",
+    "tombstones:replay": "tsx --env-file-if-exists=.env apps/worker/src/cli/replay-tombstones.ts",
     "fixtures:load": "tsx --env-file-if-exists=.env tests/tools/demo/load-demo.ts",
     "openapi:generate": "tsx packages/api-contracts/src/cli/generate-openapi.ts",
     "format": "prettier --write .",
