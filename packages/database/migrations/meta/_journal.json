@@ -36,6 +36,13 @@
       "when": 1790267485548,
       "tag": "0004_dashboard_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790270482627,
+      "tag": "0005_list_indexes",
+      "breakpoints": true
     }
   ]
 }

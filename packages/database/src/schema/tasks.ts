@@ -100,6 +100,10 @@ export const tasks = pgTable(
     index('tasks_parent_idx').on(t.workspaceId, t.parentTaskId).where(sql`parent_task_id IS NOT NULL`),
     /** Tasks of a content item (content list/detail counters). */
     index('tasks_content_item_idx').on(t.workspaceId, t.contentItemId).where(sql`content_item_id IS NOT NULL`),
+    /** Tasks of a publication (publication detail); without it every detail view scanned all tasks. */
+    index('tasks_publication_idx').on(t.workspaceId, t.publicationId).where(sql`publication_id IS NOT NULL`),
+    /** Task lists of account-scoped members (publishers) and account detail. */
+    index('tasks_account_idx').on(t.workspaceId, t.accountId).where(sql`account_id IS NOT NULL`),
     enumCheck('tasks_status_ck', 'status', TASK_STATUSES),
     enumCheck('tasks_priority_ck', 'priority', TASK_PRIORITIES),
     rawCheck('tasks_dates_ck', '"start_at" IS NULL OR "due_at" IS NULL OR "start_at" <= "due_at"'),

@@ -86,6 +86,10 @@ export const contentItems = pgTable(
     tfk('content_items_reviewer_fk', t.workspaceId, t.reviewerMembershipId, memberships),
     index('content_items_list_idx').on(t.workspaceId, t.stage, t.updatedAt, t.id),
     index('content_items_project_idx').on(t.workspaceId, t.projectId, t.stage),
+    /** Default list order (recently updated first) of live content. */
+    index('content_items_recent_idx')
+      .on(t.workspaceId, t.updatedAt.desc().nullsLast(), t.id.desc().nullsFirst())
+      .where(sql`deleted_at IS NULL AND archived_at IS NULL`),
     enumCheck('content_items_format_ck', 'format', CONTENT_FORMATS),
     enumCheck('content_items_stage_ck', 'stage', CONTENT_STAGES),
   ],

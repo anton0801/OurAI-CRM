@@ -131,6 +131,13 @@ export const publications = pgTable(
     index('publications_content_item_idx').on(t.workspaceId, t.contentItemId),
     /** Next scheduled placement per project (project list/detail). */
     index('publications_project_schedule_idx').on(t.workspaceId, t.projectId, t.status, t.scheduledAt),
+    /** List filtered by status (e.g. the scheduled queue) in the default order. */
+    index('publications_status_when_idx').on(t.workspaceId, t.status, sql`coalesce(${t.actualPublishedAt}, ${t.scheduledAt}, ${t.createdAt})`, t.id),
+    /**
+     * Content visible through live placements on an account (content visibility of account-scoped
+     * members): answered from the index alone.
+     */
+    index('publications_account_content_idx').on(t.accountId, t.workspaceId, t.contentItemId).where(sql`deleted_at IS NULL AND status <> 'cancelled'`),
     enumCheck('publications_status_ck', 'status', PUBLICATION_STATUSES),
   ],
 );

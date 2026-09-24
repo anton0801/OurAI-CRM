@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, inArray, isNull, lt, max, min, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNull, lt, min, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
   accountAssignments,
   accountIdentityHistory,
@@ -83,12 +83,16 @@ const summaryExtras = async (ctx: QueryContext | CommandContext, rows: AccountRo
   const now = ctx.app.clock.now();
   if (!ids.length) return { metrics: new Map<string, Date | null>(), next: new Map<string, Date | null>(), missing: new Map<string, number>(), projects: new Map(), refs: new Map() };
   const [metricRows, pubRows, missingRows, projectMap, refs] = await all(ctx, [
+    // Latest usable observation per account: one backward probe of metric_observations_account_idx
+    // per account instead of aggregating every observation of the page's accounts.
     () =>
       db
-        .select({ accountId: metricObservations.accountId, last: max(metricObservations.observedAt) })
-        .from(metricObservations)
-        .where(and(eq(metricObservations.workspaceId, ws), inArray(metricObservations.accountId, ids), sql`${metricObservations.qualityState} NOT IN ('superseded', 'rejected')`))
-        .groupBy(metricObservations.accountId),
+        .select({
+          accountId: socialAccounts.id,
+          last: sql<Date | null>`(SELECT o.observed_at FROM metric_observations o WHERE o.workspace_id = "social_accounts"."workspace_id" AND o.account_id = "social_accounts"."id" AND o.quality_state NOT IN ('superseded', 'rejected') ORDER BY o.observed_at DESC LIMIT 1)`.mapWith(metricObservations.observedAt),
+        })
+        .from(socialAccounts)
+        .where(and(eq(socialAccounts.workspaceId, ws), inArray(socialAccounts.id, ids))),
     () =>
       db
         .select({ accountId: publications.accountId, next: min(publications.scheduledAt) })
