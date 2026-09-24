@@ -64,7 +64,12 @@ const compile = (path: string) => {
 
 /** Register a handler for an endpoint contract. Duplicate registrations are a programming error. */
 export const route = <E extends AnyEndpoint>(endpoint: E, handler: Handler<E>): void => {
-  if (routes.some((r) => r.endpoint.id === endpoint.id)) throw new Error(`Duplicate route ${endpoint.id}`);
+  const existing = routes.findIndex((r) => r.endpoint.id === endpoint.id);
+  if (existing >= 0) {
+    // Hot module reload re-runs handler modules in development: replace the stale registration.
+    if (process.env.NODE_ENV === 'production') throw new Error(`Duplicate route ${endpoint.id}`);
+    routes.splice(existing, 1);
+  }
   const { regex, keys } = compile(endpoint.path);
   routes.push({ endpoint, handler: handler as unknown as Handler<AnyEndpoint>, regex, keys });
 };

@@ -19,6 +19,7 @@ import { stageBase } from './stage-base';
 import { stageWork } from './stage-work';
 import { stageContent } from './stage-content';
 import { stageOps } from './stage-ops';
+import { stageInsights } from './stage-insights';
 
 const arg = (name: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -93,9 +94,10 @@ const main = async () => {
   const png = (w: number, h: number, bg: string) => sharp({ create: { width: w, height: h, channels: 3, background: bg } }).png().toBuffer();
   const base = await stageBase({ client, workspaceId, ownerMembershipId: ownerRow.membershipId, team, png, tz: ws.timezone });
   await stageWork({ client, workspaceId, ownerMembershipId: ownerRow.membershipId, team, base, tz: ws.timezone });
-  await stageContent({ client, workspaceId, ownerMembershipId: ownerRow.membershipId, team, base, tz: ws.timezone, png });
+  const content = await stageContent({ client, workspaceId, ownerMembershipId: ownerRow.membershipId, team, base, tz: ws.timezone, png });
   const clientOf = async (m: { userId: string }) => new TestClient(await sessionFor(db, m.userId, { workspaceId })).init();
   await stageOps({ client, workspaceId, ownerMembershipId: ownerRow.membershipId, team, base, tz: ws.timezone, clientOf });
+  await stageInsights({ client, workspaceId, ownerMembershipId: ownerRow.membershipId, team, base, tz: ws.timezone, teaserPublicationId: content.publications.teaser });
 
   await db.insert(systemState).values({ key: marker, value: { loadedAt: new Date().toISOString(), projects: base.projects } });
   console.log('Demo data loaded:', JSON.stringify({ projects: Object.keys(base.projects).length, accounts: Object.keys(base.accounts).length }));
