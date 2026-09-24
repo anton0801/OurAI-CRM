@@ -1,4 +1,4 @@
-import { and, eq, gt, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { PgTransaction, type PgColumn } from 'drizzle-orm/pg-core';
 import {
   can,
@@ -18,6 +18,7 @@ import {
   roleAssignments,
   roles,
   socialAccounts,
+  workspaceAccessRevisions,
   type DbOrTx,
 } from '@castlane/database';
 import { AppError, forbidden, notFound } from '@castlane/domain';
@@ -37,26 +38,48 @@ const concurrently = async <T extends readonly (() => Promise<unknown>)[]>(db: D
   return (await Promise.all(fns.map((f) => f()))) as never;
 };
 
+type Interval = { validFrom: Date; validTo: Date | null };
+const activeAt = (r: Interval, at: Date) => r.validFrom.getTime() <= at.getTime() && (r.validTo === null || r.validTo.getTime() > at.getTime());
+
+/** A member's grant and assignment rows with their validity intervals (filtered per request time). */
+interface MemberAccessRows {
+  grants: (Interval & { roleId: string; roleKey: string; permissions: string[]; scopeType: AccessSnapshot['grants'][number]['scopeType']; scopeId: string | null })[];
+  denies: AccessSnapshot['denies'];
+  projects: (Interval & { projectId: string })[];
+  accounts: (Interval & { accountId: string })[];
+}
+
+interface WorkspaceStructure {
+  projectDirection: ReadonlyMap<string, string>;
+  accountProject: ReadonlyMap<string, string>;
+}
+
 /**
- * Build a fresh access snapshot for (workspace, user). Called on every request so a revoked
- * role or membership takes effect on the next API call.
+ * Per-process access cache. Entries are keyed by the workspace access revision, which database
+ * triggers bump in the same transaction as every change to grants, denies, team/account/OFM
+ * assignments, roles and the project/account structure (sql/post/011_access_revision.sql), and by
+ * the member's own access_revision. The revision is read on every request before the cached rows
+ * are used, so a committed change applies to the very next request; the TTL is only a backstop.
+ * Validity intervals are evaluated per request, so time-bounded grants expire on time.
  */
-export const loadAccessSnapshot = async (
-  db: DbOrTx,
-  workspaceId: string,
-  userId: string,
-  at: Date,
-): Promise<AccessSnapshot | null> => {
-  const [m] = await db
-    .select()
-    .from(memberships)
-    .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, userId)))
-    .limit(1);
-  if (!m) return null;
+const ACCESS_CACHE_MAX = 10_000;
+const accessCacheTtlMs = () => Number(process.env.ACCESS_CACHE_TTL_MS ?? 30_000);
+const memberCache = new Map<string, { rows: MemberAccessRows; loadedAt: number }>();
+const structureCache = new Map<string, { revision: number; structure: WorkspaceStructure; loadedAt: number }>();
 
-  const activeInterval = (from: PgColumn, to: PgColumn) => and(lte(from, at), or(isNull(to), gt(to, at)));
+/** Drop every cached snapshot (tests, or after restoring a database under a running process). */
+export const clearAccessCache = () => {
+  memberCache.clear();
+  structureCache.clear();
+};
 
-  const [grantRows, denyRows, projectRows, accountRows, ofmRows, structure, accountsMap] = await concurrently(db, [
+const fresh = (loadedAt: number) => {
+  const ttl = accessCacheTtlMs();
+  return ttl > 0 && Date.now() - loadedAt < ttl;
+};
+
+const loadMemberRows = async (db: DbOrTx, workspaceId: string, membershipId: string): Promise<MemberAccessRows> => {
+  const [grantRows, denyRows, projectRows, accountRows, ofmRows] = await concurrently(db, [
     () =>
       db
         .select({
@@ -65,73 +88,104 @@ export const loadAccessSnapshot = async (
           permissions: roles.permissions,
           scopeType: roleAssignments.scopeType,
           scopeId: roleAssignments.scopeId,
+          validFrom: roleAssignments.validFrom,
+          validTo: roleAssignments.validTo,
         })
         .from(roleAssignments)
         .innerJoin(roles, and(eq(roles.id, roleAssignments.roleId), eq(roles.workspaceId, roleAssignments.workspaceId)))
         .where(
           and(
             eq(roleAssignments.workspaceId, workspaceId),
-            eq(roleAssignments.membershipId, m.id),
+            eq(roleAssignments.membershipId, membershipId),
             isNull(roleAssignments.revokedAt),
             isNull(roles.archivedAt),
-            activeInterval(roleAssignments.validFrom, roleAssignments.validTo),
           ),
         ),
     () =>
       db
         .select({ permission: accessDenies.permission, objectType: accessDenies.objectType, objectId: accessDenies.objectId })
         .from(accessDenies)
-        .where(and(eq(accessDenies.workspaceId, workspaceId), eq(accessDenies.membershipId, m.id), isNull(accessDenies.revokedAt))),
+        .where(and(eq(accessDenies.workspaceId, workspaceId), eq(accessDenies.membershipId, membershipId), isNull(accessDenies.revokedAt))),
     () =>
       db
-        .select({ projectId: projectMemberships.projectId })
+        .select({ projectId: projectMemberships.projectId, validFrom: projectMemberships.validFrom, validTo: projectMemberships.validTo })
         .from(projectMemberships)
-        .where(
-          and(
-            eq(projectMemberships.workspaceId, workspaceId),
-            eq(projectMemberships.membershipId, m.id),
-            activeInterval(projectMemberships.validFrom, projectMemberships.validTo),
-          ),
-        ),
+        .where(and(eq(projectMemberships.workspaceId, workspaceId), eq(projectMemberships.membershipId, membershipId))),
     () =>
       db
-        .select({ accountId: accountAssignments.accountId })
+        .select({ accountId: accountAssignments.accountId, validFrom: accountAssignments.validFrom, validTo: accountAssignments.validTo })
         .from(accountAssignments)
-        .where(
-          and(
-            eq(accountAssignments.workspaceId, workspaceId),
-            eq(accountAssignments.membershipId, m.id),
-            activeInterval(accountAssignments.validFrom, accountAssignments.validTo),
-          ),
-        ),
+        .where(and(eq(accountAssignments.workspaceId, workspaceId), eq(accountAssignments.membershipId, membershipId))),
     () =>
       db
-        .select({ accountId: ofmAssignments.accountId })
+        .select({ accountId: ofmAssignments.accountId, validFrom: ofmAssignments.validFrom, validTo: ofmAssignments.validTo })
         .from(ofmAssignments)
-        .where(
-          and(
-            eq(ofmAssignments.workspaceId, workspaceId),
-            eq(ofmAssignments.membershipId, m.id),
-            isNull(ofmAssignments.endedAt),
-            activeInterval(ofmAssignments.validFrom, ofmAssignments.validTo),
-          ),
-        ),
-    () =>
-      db.select({ id: projects.id, directionId: projects.directionId }).from(projects).where(eq(projects.workspaceId, workspaceId)),
-    () =>
-      db
-        .select({ id: socialAccounts.id, projectId: socialAccounts.projectId })
-        .from(socialAccounts)
-        .where(eq(socialAccounts.workspaceId, workspaceId)),
+        .where(and(eq(ofmAssignments.workspaceId, workspaceId), eq(ofmAssignments.membershipId, membershipId), isNull(ofmAssignments.endedAt))),
   ] as const);
+  return { grants: grantRows, denies: denyRows, projects: projectRows, accounts: [...accountRows, ...ofmRows] };
+};
 
-  const grants = grantRows.map((g) => ({
-    roleId: g.roleId,
-    roleKey: g.roleKey,
-    permissions: new Set(g.permissions),
-    scopeType: g.scopeType,
-    scopeId: g.scopeId,
-  }));
+const loadStructure = async (db: DbOrTx, workspaceId: string): Promise<WorkspaceStructure> => {
+  const [structure, accountsMap] = await concurrently(db, [
+    () => db.select({ id: projects.id, directionId: projects.directionId }).from(projects).where(eq(projects.workspaceId, workspaceId)),
+    () => db.select({ id: socialAccounts.id, projectId: socialAccounts.projectId }).from(socialAccounts).where(eq(socialAccounts.workspaceId, workspaceId)),
+  ] as const);
+  return { projectDirection: new Map(structure.map((p) => [p.id, p.directionId])), accountProject: new Map(accountsMap.map((a) => [a.id, a.projectId])) };
+};
+
+/**
+ * Access snapshot for (workspace, user) at a point in time. The membership row and the workspace
+ * access revision are read on every call (one query); grants, assignments and the workspace
+ * structure come from the per-process cache when the revisions match. Inside a transaction the
+ * cache is bypassed (the transaction may see its own uncommitted changes).
+ */
+export const loadAccessSnapshot = async (
+  db: DbOrTx,
+  workspaceId: string,
+  userId: string,
+  at: Date,
+): Promise<AccessSnapshot | null> => {
+  // Revision first: rows loaded afterwards are at least as new as the revision they are cached under.
+  const [row] = await db
+    .select({ m: memberships, revision: workspaceAccessRevisions.revision })
+    .from(memberships)
+    .leftJoin(workspaceAccessRevisions, eq(workspaceAccessRevisions.workspaceId, memberships.workspaceId))
+    .where(and(eq(memberships.workspaceId, workspaceId), eq(memberships.userId, userId)))
+    .limit(1);
+  if (!row) return null;
+  const m = row.m;
+  const revision = row.revision ?? 0;
+  const inTx = db instanceof PgTransaction;
+
+  let rows: MemberAccessRows;
+  const memberKey = `${workspaceId}:${m.id}:${m.accessRevision}:${revision}`;
+  const cachedRows = inTx ? undefined : memberCache.get(memberKey);
+  if (cachedRows && fresh(cachedRows.loadedAt)) {
+    rows = cachedRows.rows;
+    memberCache.delete(memberKey); // keep recently used entries at the end (LRU eviction order)
+    memberCache.set(memberKey, cachedRows);
+  } else {
+    rows = await loadMemberRows(db, workspaceId, m.id);
+    if (!inTx) {
+      memberCache.set(memberKey, { rows, loadedAt: Date.now() });
+      while (memberCache.size > ACCESS_CACHE_MAX) memberCache.delete(memberCache.keys().next().value!);
+    }
+  }
+
+  let structure: WorkspaceStructure;
+  const cachedStructure = inTx ? undefined : structureCache.get(workspaceId);
+  if (cachedStructure && cachedStructure.revision === revision && fresh(cachedStructure.loadedAt)) structure = cachedStructure.structure;
+  else {
+    structure = await loadStructure(db, workspaceId);
+    if (!inTx) {
+      structureCache.set(workspaceId, { revision, structure, loadedAt: Date.now() });
+      while (structureCache.size > ACCESS_CACHE_MAX) structureCache.delete(structureCache.keys().next().value!);
+    }
+  }
+
+  const grants = rows.grants
+    .filter((g) => activeAt(g, at))
+    .map((g) => ({ roleId: g.roleId, roleKey: g.roleKey, permissions: new Set(g.permissions), scopeType: g.scopeType, scopeId: g.scopeId }));
   return {
     workspaceId,
     userId,
@@ -140,11 +194,11 @@ export const loadAccessSnapshot = async (
     accessRevision: m.accessRevision,
     isOwner: grants.some((g) => g.roleKey === 'owner' && g.scopeType === 'workspace'),
     grants,
-    denies: denyRows,
-    assignedProjectIds: new Set(projectRows.map((r) => r.projectId)),
-    assignedAccountIds: new Set([...accountRows.map((r) => r.accountId), ...ofmRows.map((r) => r.accountId)]),
-    projectDirection: new Map(structure.map((p) => [p.id, p.directionId])),
-    accountProject: new Map(accountsMap.map((a) => [a.id, a.projectId])),
+    denies: rows.denies,
+    assignedProjectIds: new Set(rows.projects.filter((r) => activeAt(r, at)).map((r) => r.projectId)),
+    assignedAccountIds: new Set(rows.accounts.filter((r) => activeAt(r, at)).map((r) => r.accountId)),
+    projectDirection: structure.projectDirection,
+    accountProject: structure.accountProject,
   };
 };
 
