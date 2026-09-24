@@ -11,6 +11,7 @@ import {
   DataTable,
   EmptyState,
   Input,
+  Menu,
   MultiSelect,
   NoResults,
   PageHeader,
@@ -24,6 +25,7 @@ import {
   type Column,
 } from '@castlane/ui';
 import { DirectionSelect, MemberSelect } from '@/components/common/pickers';
+import { SavedViewsMenu } from '@/components/saved-views/saved-views-menu';
 import { QueryState } from '@/components/common/query-state';
 import { useDebounced } from '@/components/common/use-debounced';
 import { useApiInfinite } from '@/lib/hooks';
@@ -112,14 +114,32 @@ export const ProjectsScreen = () => {
         title="Projects"
         description="Series, models and influencers — with their teams, accounts, content and results."
         actions={
-          can('projects.create') ? (
-            <Button variant="primary" icon={<Plus size={14} weight="bold" />} onClick={() => router.push(wsPath('/projects/new'))}>
-              New Project
-            </Button>
-          ) : undefined
+          <>
+            {can('projects.create') ? (
+              <Button variant="primary" icon={<Plus size={14} weight="bold" />} onClick={() => router.push(wsPath('/projects/new'))}>
+                New Project
+              </Button>
+            ) : null}
+            {can(['imports.create', 'exports.create']) ? (
+              <Menu
+                label="More project actions"
+                trigger={<Button variant="ghost">More</Button>}
+                items={[
+                  { label: 'Import Projects', hidden: !can('imports.create'), onSelect: () => router.push(wsPath('/imports?new=1&dataset=projects')) },
+                  { label: 'Export Projects', hidden: !can('exports.create'), onSelect: () => router.push(wsPath('/exports?new=1&dataset=projects')) },
+                ]}
+              />
+            ) : null}
+          </>
         }
       />
       <Toolbar>
+        <SavedViewsMenu
+          module="projects"
+          params={{ q: 'text', status: 'list', type: 'list', directionId: 'id', ownerMembershipId: 'id', archived: 'flag' }}
+          sort={{ key: 'sort', dir: 'dir' }}
+          onApply={(v) => setSearch(v.q ?? '')}
+        />
         <div className="w-full sm:w-[240px]">
           <Input
             value={search}

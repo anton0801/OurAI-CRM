@@ -45,6 +45,7 @@ import { isActiveMember, loadMemberRefs, refOrUnknown } from '../core/members';
 import { assertVersion, findById, lockById, stamp, touch } from '../core/rows';
 import { indexSearchDocument } from '../core/search';
 import { resolveTags } from '../core/tags';
+import { assertCustomFieldsComplete } from '../platform/custom-fields';
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectStatus = ProjectRow['status'];
@@ -460,6 +461,8 @@ export const transitionProject = async (
     throw new AppError('INVALID_STATE', 'Add a brief summary before activating the project.', { details: { missing: ['briefSummary'] } });
   if (p.status === 'completed' && input.targetState === 'active' && !input.reason)
     throw new AppError('VALIDATION_FAILED', 'Give a reason for reopening the project.', { fieldErrors: [{ field: 'reason', code: 'REQUIRED', message: 'Give a reason for reopening the project.' }] });
+  // Custom fields required at the target stage must be filled first (section 21, Required At Stage).
+  await assertCustomFieldsComplete(ctx, 'project', id, input.targetState, id);
   if (input.targetState === 'completed' || (input.targetState === 'archived' && p.status === 'draft')) {
     const blocking = (await projectObligations(ctx, p)).filter((i) => i.blocking);
     if (blocking.length) throw new AppError('INVALID_STATE', 'Resolve the open obligations first.', { details: { items: blocking } });

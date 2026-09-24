@@ -57,6 +57,10 @@ const PREFIXES: Record<string, string[]> = {
   capacity: ['workload.'],
   recurrence_rule: ['recurrences.', 'tasks.'],
   personal_reminder: ['reminders.', 'myWork.', 'tasks.'],
+  template: ['templates.'],
+  custom_field_definition: ['customFields.'],
+  custom_field_values: ['customFields.'],
+  saved_view: ['savedViews.'],
 };
 
 export const useLiveEvents = (workspaceId: string) => {

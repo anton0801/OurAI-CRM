@@ -14,6 +14,7 @@
     "@castlane/storage": "workspace:*",
     "@castlane/test-fixtures": "workspace:*",
     "drizzle-orm": "0.45.3",
+    "exceljs": "4.4.0",
     "otpauth": "9.5.2",
     "pg": "8.23.0",
     "sharp": "0.35.4"

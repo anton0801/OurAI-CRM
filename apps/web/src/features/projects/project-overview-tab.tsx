@@ -3,6 +3,7 @@ import { PushPin, Plus } from '@phosphor-icons/react';
 import { useState } from 'react';
 import { projectEndpoints, type ProjectDetail } from '@castlane/api-contracts';
 import { Button, DateInput, DescriptionList, Dialog, Field, Input, Panel, Textarea, formatDate } from '@castlane/ui';
+import { CustomFieldsPanel } from '@/components/custom-fields/custom-fields-panel';
 import { useApiMutation } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useWorkspace } from '@/lib/workspace-context';
@@ -100,6 +101,7 @@ export const ProjectOverviewTab = ({ project }: { project: ProjectDetail }) => {
           </ul>
         )}
       </Panel>
+      <CustomFieldsPanel entityType="project" entityId={project.id} className="lg:col-span-3" />
       <Dialog
         open={milestoneOpen}
         onOpenChange={setMilestoneOpen}

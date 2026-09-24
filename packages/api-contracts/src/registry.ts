@@ -10,6 +10,7 @@ import { accountEndpoints } from './accounts';
 import { characterEndpoints, referenceEndpoints, seriesEndpoints } from './creative';
 import { dealEndpoints, partnerEndpoints } from './partners';
 import { workEndpointGroups } from './work';
+import { PLATFORM_ENDPOINT_GROUPS } from './platform';
 
 /**
  * Every endpoint group, used by the OpenAPI generator and contract tests.
@@ -33,6 +34,7 @@ export const ENDPOINT_GROUPS: Record<string, Record<string, AnyEndpoint>> = {
   partners: partnerEndpoints,
   deals: dealEndpoints,
   ...workEndpointGroups,
+  ...PLATFORM_ENDPOINT_GROUPS,
 };
 
 export const allEndpoints = (): AnyEndpoint[] => Object.values(ENDPOINT_GROUPS).flatMap((g) => Object.values(g));

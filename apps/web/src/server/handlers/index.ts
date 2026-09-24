@@ -11,3 +11,4 @@ import './accounts';
 import './creative';
 import './partners';
 import './work';
+import './platform';

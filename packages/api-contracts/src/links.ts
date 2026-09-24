@@ -50,6 +50,8 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   recurrence_rule: (id) => `/tasks?view=recurring&rule=${id}`,
   absence: (id) => `/team/workload?absence=${id}`,
   personal_reminder: () => `/my-work`,
+  custom_field_definition: (id) => `/settings/templates?tab=fields&open=${id}`,
+  audit_event: (id) => `/settings/audit?event=${id}`,
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {

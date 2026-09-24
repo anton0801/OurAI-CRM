@@ -326,7 +326,7 @@ export const reminderView = z.object({
 });
 export type ReminderView = z.infer<typeof reminderView>;
 
-export const savedView = z.object({ id: uuid, name: z.string(), filters: z.record(z.string(), z.string()), shared: z.boolean(), mine: z.boolean(), owner: memberRef.nullable() });
+export const taskSavedView = z.object({ id: uuid, name: z.string(), filters: z.record(z.string(), z.string()), shared: z.boolean(), mine: z.boolean(), owner: memberRef.nullable() });
 
 const P = <S extends z.ZodRawShape = {}>(shape: S = {} as S) => wsId({ taskId: uuid, ...shape });
 
@@ -722,7 +722,7 @@ export const taskEndpoints = {
     auth: 'workspace',
     permission: 'tasks.read',
     params: wsId({}),
-    response: z.array(savedView),
+    response: z.array(taskSavedView),
   }),
   saveView: endpoint({
     id: 'tasks.saveView',
@@ -735,7 +735,7 @@ export const taskEndpoints = {
     idempotent: true,
     params: wsId({}),
     body: z.object({ name: z.string().trim().min(2).max(80), filters: z.record(z.string().max(40), z.string().max(400)), shared: z.boolean().default(false) }),
-    response: savedView,
+    response: taskSavedView,
     successStatus: 201,
   }),
   deleteView: endpoint({
