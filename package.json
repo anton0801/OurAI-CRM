@@ -24,7 +24,8 @@
     "bootstrap:owner": "tsx --env-file-if-exists=.env apps/worker/src/cli/bootstrap-owner.ts",
     "fixtures:load": "tsx --env-file-if-exists=.env packages/test-fixtures/src/cli/load-demo.ts",
     "openapi:generate": "tsx packages/api-contracts/src/cli/generate-openapi.ts",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "acceptance:report": "tsx tests/tools/acceptance-report.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
