@@ -28,7 +28,7 @@ export const CommandPalette = ({ open, onOpenChange }: { open: boolean; onOpenCh
   const router = useRouter();
   const [q, setQ] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
-  const focus = useOverlayFocusReturn();
+  const focus = useOverlayFocusReturn(open);
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(0);
 

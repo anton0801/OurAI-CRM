@@ -24,9 +24,10 @@ const widths = { small: 'max-w-[440px]', regular: 'max-w-[640px]', wide: 'max-w-
 
 /**
  * Focus return (T166). Overlays here are opened from state, not from a Radix Trigger, so Radix has
- * no trigger to go back to and would leave focus on <body> after closing. The control to return to
- * is the one focused (or pressed) when the overlay opened; a menu item stands for its menu's
- * button, because the menu is gone by the time the overlay closes.
+ * no trigger to go back to and would leave focus on <body> after closing (it also skips its own
+ * open/close focus hooks when a field inside autofocuses). The control to return to is taken when
+ * the overlay renders open — before its content exists — as the control that has focus or was last
+ * focused or pressed. A menu item stands for its menu's button, since the menu is gone by then.
  */
 const CONTROL = 'button, a[href], input, select, textarea, summary, [role="menuitem"], [tabindex]:not([tabindex="-1"])';
 const controlOf = (node: EventTarget | null): HTMLElement | null => {
@@ -38,15 +39,19 @@ const controlOf = (node: EventTarget | null): HTMLElement | null => {
   }
   return node.closest<HTMLElement>(CONTROL);
 };
-let lastControl: HTMLElement | null = null;
+/** Most recent controls first (opening may be asynchronous, e.g. after a URL change). */
+const recent: HTMLElement[] = [];
 if (typeof document !== 'undefined') {
   const remember = (e: Event) => {
     const c = controlOf(e.target);
-    if (c) lastControl = c;
+    if (!c || recent[0] === c) return;
+    recent.unshift(c);
+    recent.length = Math.min(recent.length, 8);
   };
   document.addEventListener('focusin', remember, true);
   document.addEventListener('pointerdown', remember, true);
 }
+const currentControl = () => [controlOf(document.activeElement), ...recent].find((c) => c?.isConnected) ?? null;
 
 /** The page title, made programmatically focusable, for when the trigger no longer exists. */
 const pageHeading = (): HTMLElement | null => {
@@ -56,16 +61,20 @@ const pageHeading = (): HTMLElement | null => {
 };
 
 /**
- * Spread onto a Radix Dialog.Content so closing returns focus to the control that opened it. When
- * that control is gone (the action it offered no longer applies, e.g. after Mark Published), focus
- * moves to the page title instead of being dropped on <body>, unless `fallback` is false.
+ * Spread onto a Radix Dialog.Content (with the overlay's `open`) so closing returns focus to the
+ * control that opened it. When that control is gone (the action it offered no longer applies, e.g.
+ * after Mark Published), focus moves to the page title instead of being dropped on <body>, unless
+ * `fallback` is false.
  */
-export const useOverlayFocusReturn = ({ fallback = true }: { fallback?: boolean } = {}) => {
+export const useOverlayFocusReturn = (open: boolean, { fallback = true }: { fallback?: boolean } = {}) => {
   const target = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(false);
+  // Read during the render that opens the overlay: nothing inside it can hold focus yet.
+  if (open !== wasOpen.current) {
+    wasOpen.current = open;
+    if (open && typeof document !== 'undefined') target.current = currentControl();
+  }
   return {
-    onOpenAutoFocus: () => {
-      target.current = controlOf(document.activeElement) ?? lastControl;
-    },
     onCloseAutoFocus: (e: Event) => {
       const t = target.current;
       target.current = null;
@@ -80,7 +89,7 @@ export const useOverlayFocusReturn = ({ fallback = true }: { fallback?: boolean 
 
 const DiscardGuard = ({ open, onKeep, onDiscard }: { open: boolean; onKeep: () => void; onDiscard: () => void }) => {
   // After Discard the parent overlay closes too and returns focus to its own trigger.
-  const focus = useOverlayFocusReturn({ fallback: false });
+  const focus = useOverlayFocusReturn(open, { fallback: false });
   return (
     <D.Root open={open} onOpenChange={(o) => !o && onKeep()}>
       <D.Portal>
@@ -106,7 +115,7 @@ const DiscardGuard = ({ open, onKeep, onDiscard }: { open: boolean; onKeep: () =
 /** Modal dialog (440 / 640 / 960 px), focus-trapped; focus returns to the trigger on close. */
 export const Dialog = ({ open, onOpenChange, title, description, size = 'regular', children, footer, dirty }: DialogProps) => {
   const [confirm, setConfirm] = useState(false);
-  const focus = useOverlayFocusReturn();
+  const focus = useOverlayFocusReturn(open);
   const request = (o: boolean) => {
     if (!o && dirty) setConfirm(true);
     else onOpenChange(o);
@@ -162,7 +171,7 @@ export interface DrawerProps extends Omit<DialogProps, 'size'> {
  */
 export const Drawer = ({ open, onOpenChange, title, description, width = 560, children, footer, dirty, headerActions }: DrawerProps) => {
   const [confirm, setConfirm] = useState(false);
-  const focus = useOverlayFocusReturn();
+  const focus = useOverlayFocusReturn(open);
   const request = (o: boolean) => {
     if (!o && dirty) setConfirm(true);
     else onOpenChange(o);
