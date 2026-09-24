@@ -77,7 +77,7 @@ const Loaded = ({
         crumbs={[...(can('members.read') ? [{ label: 'Team', href: wsPath('/team') }] : []), { label: m.displayName }]}
         title={
           <span className="flex items-center gap-3">
-            <Avatar name={m.displayName} src={m.avatarUrl} size={64} className="hidden sm:inline-flex" />
+            <Avatar name={m.displayName} src={m.avatarUrl} size={64} className="hidden sm:inline-flex" decorative />
             <span>{m.displayName}</span>
           </span>
         }

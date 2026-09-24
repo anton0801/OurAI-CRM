@@ -162,7 +162,7 @@ export function DataTable<T>(p: DataTableProps<T>) {
   };
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex min-w-0 max-w-full flex-col gap-2">
       {selectable && selection && (selection.ids.size > 0 || selection.allMatching) ? (
         <div className="flex flex-wrap items-center gap-2 rounded-[8px] bg-selection px-3 py-2 text-[13px] text-fg" role="status">
           <span>
@@ -182,7 +182,7 @@ export function DataTable<T>(p: DataTableProps<T>) {
       ) : null}
       <div
         ref={scrollRef}
-        className="overflow-auto rounded-[12px] border border-line bg-surface"
+        className="relative min-w-0 max-w-full overflow-auto rounded-[12px] border border-line bg-surface"
         style={virtual ? { maxHeight } : undefined}
         tabIndex={0}
         role="region"
