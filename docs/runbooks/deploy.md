@@ -56,5 +56,7 @@ Mailpit on http://localhost:8025).
 ## Configuration reference
 `.env.example` documents every variable. Required in production: APP_ORIGIN (https), DATABASE_URL
 (least-privilege role, see `infra/postgres/init/001-app-role.sh`), SESSION_SECRET,
-MFA_ENCRYPTION_KEY, STORAGE_* (S3), SCANNER_MODE=clamd + CLAMD_HOST/PORT, MAIL_TRANSPORT=smtp +
-SMTP_*, TRUST_PROXY=true only behind the proxy that sets X-Forwarded-For.
+MFA_ENCRYPTION_KEY, STORAGE_* (S3), SCANNER_MODE=clamd + CLAMD_HOST/PORT, MAIL_TRANSPORT=smtp,
+TRUST_PROXY=true only behind the proxy that sets X-Forwarded-For. The SMTP server comes from SMTP_*
+or is entered by the Owner in Settings → Workspace → Mail (encrypted with SECRETS_ENCRYPTION_KEY,
+falling back to MFA_ENCRYPTION_KEY; set a separate random value).

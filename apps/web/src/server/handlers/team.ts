@@ -58,6 +58,8 @@ import {
   revokeMemberSessions,
   revokeRole,
   revokeWorkspaceInvitation,
+  removeMailServer,
+  saveMailServer,
   sendTestMail,
   suspendMember,
   transferWork,
@@ -155,6 +157,8 @@ route(S.workspace, ({ ctx }) => getWorkspaceSettings(ctx));
 route(S.previewWorkspace, ({ ctx, input }) => previewWorkspaceSettings(ctx, input.body));
 route(S.updateWorkspace, ({ run, input }) => run((c) => updateWorkspaceSettings(c, input.body)));
 route(S.testMail, ({ run }) => run((c) => sendTestMail(c)));
+route(S.saveMailServer, ({ run, input }) => run((c) => saveMailServer(c, input.body)));
+route(S.removeMailServer, ({ run }) => run((c) => removeMailServer(c)));
 route(S.mailTest, ({ ctx, input }) => mailTestStatus(ctx, input.params.messageId));
 route(S.logoImage, async ({ ctx, input, res, http }) => streamImage(ctx.app, res, await loadLogoDerivative(ctx, input.query.size), http));
 

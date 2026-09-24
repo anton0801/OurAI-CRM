@@ -1,5 +1,5 @@
 import { hostname } from 'node:os';
-import { configureMailer, createMailer, getAppServices } from '@castlane/application';
+import { getAppServices } from '@castlane/application';
 import '@castlane/application/register-all';
 import { dispatchOutboxBatch } from './outbox';
 import { JobRunner, sweepCancelled } from './runner';
@@ -9,7 +9,7 @@ process.env.CASTLANE_PROCESS ??= 'worker';
 
 const main = async () => {
   const app = getAppServices();
-  configureMailer(createMailer(app.config));
+  // The mailer is resolved per message: a server saved in Workspace Settings wins over SMTP_* variables.
   const workerId = `${hostname()}:${process.pid}`;
   app.logger.info('worker_starting', { workerId, mail: app.config.MAIL_TRANSPORT, storage: app.config.STORAGE_DRIVER, scanner: app.config.SCANNER_MODE });
 

@@ -15,6 +15,8 @@ const schema = z.object({
   DATABASE_URL: z.string().min(1),
   SESSION_SECRET: z.string().min(32),
   MFA_ENCRYPTION_KEY: z.string().min(32),
+  /** Encrypts secrets entered in the UI (SMTP password). Defaults to MFA_ENCRYPTION_KEY when unset. */
+  SECRETS_ENCRYPTION_KEY: z.preprocess((v) => (v === '' ? undefined : v), z.string().min(32).optional()),
   PASSWORD_PEPPER: z.string().optional(),
   STORAGE_DRIVER: z.enum(['s3', 'filesystem']).default('filesystem'),
   STORAGE_ENDPOINT: z.string().optional(),
@@ -69,11 +71,11 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
     const problems: string[] = [];
     if (cfg.SCANNER_MODE !== 'clamd') problems.push('SCANNER_MODE must be clamd in production');
     if (cfg.MAIL_TRANSPORT !== 'smtp') problems.push('MAIL_TRANSPORT must be smtp in production');
-    if (cfg.MAIL_TRANSPORT === 'smtp' && !cfg.SMTP_HOST) problems.push('SMTP_HOST is required');
     if (cfg.STORAGE_DRIVER === 's3' && (!cfg.STORAGE_ACCESS_KEY_ID || !cfg.STORAGE_SECRET_ACCESS_KEY))
       problems.push('S3 credentials are required');
     if (!cfg.APP_ORIGIN.startsWith('https://')) problems.push('APP_ORIGIN must be https in production');
-    if (Object.values(DEV_DEFAULTS).includes(cfg.SESSION_SECRET) || Object.values(DEV_DEFAULTS).includes(cfg.MFA_ENCRYPTION_KEY))
+    // The SMTP server may come from the environment or be entered in Workspace Settings (S67).
+    if (Object.values(DEV_DEFAULTS).includes(cfg.SESSION_SECRET) || Object.values(DEV_DEFAULTS).includes(cfg.MFA_ENCRYPTION_KEY) || (cfg.SECRETS_ENCRYPTION_KEY && Object.values(DEV_DEFAULTS).includes(cfg.SECRETS_ENCRYPTION_KEY)))
       problems.push('development secrets must not be used in production');
     if (problems.length) throw new Error(`Production configuration invalid: ${problems.join('; ')}`);
   }
@@ -84,3 +86,6 @@ export const loadConfig = (env: NodeJS.ProcessEnv = process.env): AppConfig => {
 export const resetConfigCache = () => {
   cached = undefined;
 };
+
+/** Key for secrets entered through the UI (never the session secret). */
+export const secretsKey = (cfg: AppConfig) => cfg.SECRETS_ENCRYPTION_KEY ?? cfg.MFA_ENCRYPTION_KEY;

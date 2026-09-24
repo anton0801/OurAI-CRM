@@ -9,4 +9,7 @@ Helpers for other modules (`@castlane/application`):
 
 Registries: responsibility `directions.lead`, `projects.owner`; archive `direction`; export `team_roster`; renders `MEMBER_TABS`.
 
-Limits: SMTP credentials are configured on the server (S67 shows status only). The Owner cannot be denied, suspended or deactivated; members cannot change their own access.
+Mail server (S67): the Owner saves host/port/TLS/username/password/sender (`saveMailServer`, recent auth);
+the password is encrypted (`SECRETS_ENCRYPTION_KEY`, fallback `MFA_ENCRYPTION_KEY`), write-only and never
+returned; `effectiveMail` (platform/mail.ts) prefers it over SMTP_* and the worker resolves the mailer per
+message. Limits: The Owner cannot be denied, suspended or deactivated; members cannot change their own access.

@@ -61,6 +61,41 @@ const files = z.object({ quotaBytes: z.string().regex(/^\d{1,16}$/, 'Enter a who
 
 export const workspaceSettingsGroups = { workingTime, metrics, retention, security, notifications, modules, files };
 
+/** A mail server saved in Workspace Settings. The password is write-only: only whether one is set. */
+export const mailServerView = z.object({
+  host: z.string(),
+  port: z.number().int(),
+  secure: z.boolean(),
+  username: z.string().nullable(),
+  secretSaved: z.boolean(),
+  from: z.string(),
+  updatedAt: isoDateTime,
+});
+
+export const mailStatus = z.object({
+  transport: z.enum(['smtp', 'dev_sink']),
+  configured: z.boolean(),
+  /** Where the SMTP server comes from: saved here (wins), the server environment, or nowhere. */
+  source: z.enum(['settings', 'environment', 'none']),
+  from: z.string().nullable(),
+  /** Saved server (details only for members who manage workspace settings). */
+  saved: mailServerView.nullable(),
+  canEdit: z.boolean(),
+  lastTest: z.object({ at: isoDateTime, status: z.enum(['queued', 'sent', 'failed']), error: z.string().nullable() }).nullable(),
+});
+export type MailStatus = z.infer<typeof mailStatus>;
+
+export const mailServerInput = z.object({
+  host: z.string().trim().min(1).max(253),
+  port: z.number().int().min(1).max(65535),
+  secure: z.boolean(),
+  username: z.string().trim().max(200).nullable().optional(),
+  /** Write-only. Omit to keep the saved password; never returned. */
+  password: z.string().min(1).max(500).optional(),
+  clearPassword: z.boolean().optional(),
+  from: z.string().trim().min(3).max(320),
+});
+
 export const workspaceSettingsView = z.object({
   general: z.object({
     name: z.string(),
@@ -79,12 +114,7 @@ export const workspaceSettingsView = z.object({
   security,
   notifications,
   modules,
-  mail: z.object({
-    transport: z.enum(['smtp', 'dev_sink']),
-    configured: z.boolean(),
-    from: z.string().nullable(),
-    lastTest: z.object({ at: isoDateTime, status: z.enum(['queued', 'sent', 'failed']), error: z.string().nullable() }).nullable(),
-  }),
+  mail: mailStatus,
   defaults: z.object({ workingTime, metrics, files, retention, security, notifications, modules }),
   roles: z.array(z.object({ key: z.string(), name: z.string(), alwaysRequiresMfa: z.boolean() })),
   settingsVersion: z.number().int(),
@@ -223,6 +253,31 @@ export const settingsEndpoints = {
     params: wsId({}),
     response: z.object({ messageId: uuid, to: z.string() }),
     successStatus: 202,
+  }),
+  saveMailServer: endpoint({
+    id: 'settings.saveMailServer',
+    method: 'PUT',
+    path: '/workspaces/{workspaceId}/settings/workspace/mail',
+    summary: 'Save the outgoing mail server (Owner, recent authentication). The password is write-only and never returned.',
+    tags: ['Settings'],
+    auth: 'workspace',
+    permission: 'workspace.update',
+    idempotent: true,
+    params: wsId({}),
+    body: mailServerInput,
+    response: mailStatus,
+  }),
+  removeMailServer: endpoint({
+    id: 'settings.removeMailServer',
+    method: 'DELETE',
+    path: '/workspaces/{workspaceId}/settings/workspace/mail',
+    summary: 'Remove the saved mail server (the SMTP_* environment applies again, if set).',
+    tags: ['Settings'],
+    auth: 'workspace',
+    permission: 'workspace.update',
+    idempotent: true,
+    params: wsId({}),
+    response: mailStatus,
   }),
   mailTest: endpoint({
     id: 'settings.mailTest',

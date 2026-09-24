@@ -3,8 +3,10 @@
 Symptoms: invitations/password resets not arriving; System Health shows mail failures; jobs of
 type `mail.*` retrying or dead-lettered.
 
-1. Check the SMTP relay status and credentials (SMTP_HOST/PORT/USERNAME/PASSWORD/SECURE). The worker
-   logs `mail_send_failed` with the provider error code (never the message body).
+1. Check the SMTP relay status and credentials. Settings → Workspace → Mail shows which server is in
+   use: *Saved in these settings* (the Owner can correct host/password there — the password is
+   write-only) or *Server environment* (SMTP_HOST/PORT/USERNAME/PASSWORD/SECURE; change and restart).
+   The worker logs `mail_send_failed` with the provider error code (never the message body).
 2. In-app notifications keep working (Inbox) — tell users to check the Inbox; security alerts are
    also stored in-app.
 3. After the relay is back, retry dead-lettered mail jobs from System Health. Mail jobs are

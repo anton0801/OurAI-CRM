@@ -38,8 +38,11 @@ For the Owner and administrators of a Castlane workspace. Operators of the serve
 Settings → Workspace: name, logo, time zone, currency, working hours, security policy (which roles
 must use two-factor authentication, session limits), retention periods and notification defaults.
 Every change shows its impact first and is recorded in the Audit Log.
-Mail delivery is configured on the server (SMTP); the settings page shows its status and can send a
-test message to you.
+Mail: the Owner can enter the SMTP server under **Mail** (host, port, TLS, username, password, sender).
+The password is write-only — typed into a masked field, stored encrypted and never shown again; leave
+it empty to keep the saved one, or tick *Remove the saved password*. A saved server is used instead
+of the deployment's SMTP_* variables; *Remove Saved Server* falls back to them. Saving needs a recent
+password/verification-code confirmation. **Test Mail to Self** shows the real delivery result.
 
 ## 4. Templates and custom fields
 Settings → Templates and Custom Fields: task, content, checklist and quality-rubric templates have

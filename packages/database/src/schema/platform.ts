@@ -656,6 +656,23 @@ export const backupRuns = pgTable('backup_runs', {
   reportedBy: text('reported_by').notNull(),
 });
 
+/**
+ * Outgoing mail server entered in Workspace Settings (S67). One row per installation ('default');
+ * the password is stored encrypted (AES-256-GCM envelope) and is never returned by the API.
+ */
+export const mailSettings = pgTable('mail_settings', {
+  id: text('id').primaryKey(),
+  host: text('host').notNull(),
+  port: integer('port').notNull(),
+  secure: boolean('secure').notNull().default(false),
+  username: text('username'),
+  passwordEnc: text('password_enc'),
+  fromAddress: text('from_address').notNull(),
+  updatedAt: ts('updated_at').notNull().defaultNow(),
+  updatedByUserId: uuid('updated_by_user_id'),
+  rowVersion: integer('row_version').notNull().default(1),
+});
+
 /** Permission-aware search index; maintained transactionally by use cases. */
 export const searchDocuments = pgTable(
   'search_documents',

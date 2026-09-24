@@ -6,6 +6,7 @@ import {
   financialEntries,
   jobs,
   mailMessages,
+  mailSettings,
   memberships,
   roleAssignments,
   roles,
@@ -14,14 +15,17 @@ import {
   workspaces,
   type WorkspaceSettings,
 } from '@castlane/database';
-import { AppError, isSupportedCurrency, isValidTimeZone, newId, notFound } from '@castlane/domain';
+import { AppError, isEmail, isSupportedCurrency, isValidTimeZone, newId, notFound } from '@castlane/domain';
 import { HIDEABLE_MODULES, SETTINGS_BOUNDS, type WorkspaceSettingsPatch } from '@castlane/api-contracts';
 import { requirePermission, requireRecentAuth } from '../core/access';
-import { audit, type Diff } from '../core/audit';
+import { audit, diffFields, type Diff } from '../core/audit';
+import { secretsKey } from '../core/config';
+import { encryptSecret } from '../core/crypto';
 import { dbOf, type CommandContext, type QueryContext } from '../core/context';
 import { emit } from '../core/events';
 import { enqueueJob } from '../core/jobs';
 import { DEFAULT_WORKSPACE_SETTINGS } from '../identity/workspace-defaults';
+import { MAIL_SETTINGS_ID } from '../platform/mail';
 
 type WorkspaceRow = typeof workspaces.$inferSelect;
 
@@ -92,6 +96,100 @@ const lastMailTest = async (ctx: QueryContext | CommandContext) => {
   return m ? { at: m.createdAt.toISOString(), status: m.status, error: m.error } : null;
 };
 
+// ——— Mail server (S67): the password is write-only ———
+
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+
+/** `Name <address>` or a bare address; returns the address or null. */
+const fromAddressOf = (from: string) => {
+  const m = /^(?:[^<>]{1,200}<([^<>\s]+)>|([^<>\s]+))$/.exec(from.trim());
+  const address = m?.[1] ?? m?.[2] ?? '';
+  return isEmail(address) ? address : null;
+};
+
+const loadMailRow = async (ctx: QueryContext | CommandContext, forUpdate = false) => {
+  const q = dbOf(ctx).select().from(mailSettings).where(eq(mailSettings.id, MAIL_SETTINGS_ID));
+  const [row] = forUpdate && 'tx' in ctx ? await q.for('update') : await q;
+  return row ?? null;
+};
+
+/** Mail status for S67: transport, where the server comes from, the saved server without its password. */
+export const mailStatusView = async (ctx: QueryContext | CommandContext) => {
+  const cfg = ctx.app.config;
+  const row = await loadMailRow(ctx);
+  const smtp = cfg.MAIL_TRANSPORT === 'smtp';
+  const source = !smtp ? ('none' as const) : row ? ('settings' as const) : cfg.SMTP_HOST ? ('environment' as const) : ('none' as const);
+  const manage = hasAnywhere(ctx.actor.access, 'workspace.update');
+  return {
+    transport: cfg.MAIL_TRANSPORT,
+    configured: smtp && source !== 'none',
+    source,
+    from: source === 'settings' ? row!.fromAddress : smtp ? (cfg.SMTP_FROM ?? null) : (row?.fromAddress ?? cfg.SMTP_FROM ?? null),
+    saved:
+      row && manage
+        ? { host: row.host, port: row.port, secure: row.secure, username: row.username, secretSaved: !!row.passwordEnc, from: row.fromAddress, updatedAt: row.updatedAt.toISOString() }
+        : null,
+    canEdit: manage && ctx.actor.access.isOwner,
+    lastTest: await lastMailTest(ctx),
+  };
+};
+
+const assertMailManager = (ctx: CommandContext) => {
+  requirePermission(ctx, 'workspace.update');
+  // The mail server serves the whole installation (sign-in e-mails included): Owner only.
+  if (!ctx.actor.access.isOwner) throw new AppError('FORBIDDEN', 'Only the Owner can change the mail server.');
+  requireRecentAuth(ctx);
+};
+
+export interface MailServerInput {
+  host: string;
+  port: number;
+  secure: boolean;
+  username?: string | null;
+  password?: string;
+  clearPassword?: boolean;
+  from: string;
+}
+
+export const saveMailServer = async (ctx: CommandContext, input: MailServerInput) => {
+  assertMailManager(ctx);
+  const errors: { field: string; code: string; message: string }[] = [];
+  const host = input.host.trim().toLowerCase();
+  if (!HOSTNAME.test(host)) errors.push({ field: 'host', code: 'INVALID', message: 'Enter a host name such as smtp.example.com.' });
+  if (!fromAddressOf(input.from)) errors.push({ field: 'from', code: 'INVALID', message: 'Use an address, or a name with an address: Castlane <no-reply@example.com>.' });
+  if (input.password !== undefined && input.clearPassword) errors.push({ field: 'password', code: 'CONFLICT', message: 'Enter a new password or remove the saved one, not both.' });
+  if (errors.length) throw new AppError('VALIDATION_FAILED', 'Check the mail server settings.', { fieldErrors: errors });
+  const cur = await loadMailRow(ctx, true);
+  const at = ctx.app.clock.now();
+  const passwordEnc = input.password !== undefined ? encryptSecret(input.password, secretsKey(ctx.app.config)) : input.clearPassword ? null : (cur?.passwordEnc ?? null);
+  const next = { host, port: input.port, secure: input.secure, username: input.username?.trim() || null, fromAddress: input.from.trim() };
+  await ctx.tx
+    .insert(mailSettings)
+    .values({ id: MAIL_SETTINGS_ID, ...next, passwordEnc, updatedAt: at, updatedByUserId: ctx.actor.userId, rowVersion: 1 })
+    .onConflictDoUpdate({ target: mailSettings.id, set: { ...next, passwordEnc, updatedAt: at, updatedByUserId: ctx.actor.userId, rowVersion: sql`${mailSettings.rowVersion} + 1` } });
+  await audit(ctx, {
+    action: 'workspace.mail_server_saved',
+    entityType: 'workspace',
+    entityId: ctx.actor.workspaceId,
+    diff: diffFields(cur as Record<string, unknown> | null, next, ['host', 'port', 'secure', 'username', 'fromAddress']),
+    metadata: { passwordChanged: input.password !== undefined, passwordRemoved: !!input.clearPassword && !!cur?.passwordEnc },
+    sensitivity: 'security',
+  });
+  await emit(ctx, { type: 'workspace.settings_updated', entityType: 'workspace', entityId: ctx.actor.workspaceId, payload: { groups: ['mail'] } });
+  return mailStatusView(ctx);
+};
+
+export const removeMailServer = async (ctx: CommandContext) => {
+  assertMailManager(ctx);
+  const cur = await loadMailRow(ctx, true);
+  if (cur) {
+    await ctx.tx.delete(mailSettings).where(eq(mailSettings.id, MAIL_SETTINGS_ID));
+    await audit(ctx, { action: 'workspace.mail_server_removed', entityType: 'workspace', entityId: ctx.actor.workspaceId, metadata: { host: cur.host }, sensitivity: 'security' });
+    await emit(ctx, { type: 'workspace.settings_updated', entityType: 'workspace', entityId: ctx.actor.workspaceId, payload: { groups: ['mail'] } });
+  }
+  return mailStatusView(ctx);
+};
+
 export const getWorkspaceSettings = async (ctx: QueryContext | CommandContext) => {
   requirePermission(ctx, 'workspace.read');
   const ws = await loadWorkspace(ctx);
@@ -123,12 +221,7 @@ export const getWorkspaceSettings = async (ctx: QueryContext | CommandContext) =
     security: g.security,
     notifications: g.notifications,
     modules: g.modules,
-    mail: {
-      transport: cfg.MAIL_TRANSPORT,
-      configured: cfg.MAIL_TRANSPORT === 'smtp' && !!cfg.SMTP_HOST,
-      from: cfg.SMTP_FROM ?? null,
-      lastTest: await lastMailTest(ctx),
-    },
+    mail: await mailStatusView(ctx),
     defaults: SETTINGS_DEFAULTS,
     roles: roleRows.map((r) => ({
       key: r.key,

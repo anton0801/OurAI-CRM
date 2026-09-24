@@ -18,6 +18,7 @@ import {
   Banner,
   Button,
   Checkbox,
+  ConfirmDialog,
   DescriptionList,
   Dialog,
   Field,
@@ -577,7 +578,10 @@ const SettingsForm = ({ view, refetch }: { view: View; refetch: () => Promise<{ 
   );
 };
 
-/** Mail transport status (credentials are deployment secrets and never shown) and Test Mail to Self. */
+/**
+ * Mail: transport status, the saved SMTP server (Owner; the password is write-only — entered masked,
+ * never returned) and Test Mail to Self.
+ */
 const MailPanel = ({ view }: { view: View }) => {
   const { workspace, user } = useWorkspace();
   const [messageId, setMessageId] = useState<string | null>(null);
@@ -597,6 +601,7 @@ const MailPanel = ({ view }: { view: View }) => {
         items={[
           { label: 'Transport', value: view.mail.transport === 'smtp' ? 'SMTP' : 'Development sink (not delivered)' },
           { label: 'Status', value: view.mail.configured ? <Badge tone="success">Configured</Badge> : <Badge tone="warning">Not configured</Badge> },
+          { label: 'Server', value: view.mail.source === 'settings' ? 'Saved in these settings' : view.mail.source === 'environment' ? 'Server environment (SMTP_* variables)' : 'None' },
           { label: 'From', value: view.mail.from },
           {
             label: 'Last Test',
@@ -612,7 +617,10 @@ const MailPanel = ({ view }: { view: View }) => {
           },
         ]}
       />
-      <p className="text-[12px] text-fg-2">SMTP credentials are deployment secrets: they are set on the server, never entered or shown here.</p>
+      {view.mail.transport === 'dev_sink' ? (
+        <p className="text-[12px] text-fg-2">This installation uses the development mail sink: nothing is delivered, even with a saved server.</p>
+      ) : null}
+      {view.mail.canEdit ? <MailServerForm view={view} /> : <p className="text-[12px] text-fg-2">Only the Owner can change the mail server. Its password is never shown.</p>}
       {error ? <Banner tone="danger">{error}</Banner> : null}
       {view.permissions.testMail ? (
         <div>
@@ -634,5 +642,116 @@ const MailPanel = ({ view }: { view: View }) => {
         </div>
       ) : null}
     </Panel>
+  );
+};
+
+const blankServer = { host: '', port: '587', secure: false, username: '', password: '', clearPassword: false, from: '' };
+
+/** SMTP server form (Owner, recent authentication). The saved password is never loaded into the page. */
+const MailServerForm = ({ view }: { view: View }) => {
+  const { workspace, user } = useWorkspace();
+  const saved = view.mail.saved;
+  const initial = () => (saved ? { host: saved.host, port: String(saved.port), secure: saved.secure, username: saved.username ?? '', password: '', clearPassword: false, from: saved.from } : blankServer);
+  const [v, setV] = useState(initial);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  useEffect(() => setV(initial()), [saved?.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  const { guard, dialog } = useRecentAuth();
+  const save = useApiMutation(settingsEndpoints.saveMailServer, { invalidate: ['settings.workspace'], successMessage: 'Mail server saved', silentErrors: true });
+  const remove = useApiMutation(settingsEndpoints.removeMailServer, { invalidate: ['settings.workspace'], successMessage: 'Saved mail server removed', silentErrors: true });
+  const set = (patch: Partial<typeof v>) => setV((x) => ({ ...x, ...patch }));
+  const submit = async () => {
+    const port = Number(v.port);
+    const local: Record<string, string> = {};
+    if (!v.host.trim()) local.host = 'Enter the SMTP host.';
+    if (!Number.isInteger(port) || port < 1 || port > 65535) local.port = 'Use a port between 1 and 65535.';
+    if (!v.from.trim()) local.from = 'Enter the sender address.';
+    setErrors(local);
+    if (Object.keys(local).length) return;
+    try {
+      await guard(() =>
+        save.run({
+          params: { workspaceId: workspace.id },
+          body: { host: v.host.trim(), port, secure: v.secure, username: v.username.trim() || null, from: v.from.trim(), ...(v.password ? { password: v.password } : {}), ...(v.clearPassword ? { clearPassword: true } : {}) },
+        }),
+      );
+      set({ password: '', clearPassword: false });
+    } catch (e) {
+      if (isApiError(e) && e.fieldErrors.length) setErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field, f.message])));
+      else reportError(e);
+    }
+  };
+  return (
+    <form
+      className="flex flex-col gap-4 rounded-[12px] border border-line p-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+      aria-label="SMTP server"
+    >
+      <div className="flex flex-col gap-1">
+        <h3 className="text-[14px] font-semibold text-fg">SMTP server</h3>
+        <p className="text-[12px] text-fg-2">
+          {saved ? `Saved ${formatDateTime(saved.updatedAt, user.timezone)}. It is used instead of the server environment.` : 'Optional: enter the server here instead of the SMTP_* variables of the deployment.'} The password is stored encrypted and is
+          never shown again.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-[2fr_1fr]">
+        <Field label="Host" required error={errors.host}>
+          <Input value={v.host} onChange={(e) => set({ host: e.target.value })} placeholder="smtp.example.com" autoComplete="off" spellCheck={false} />
+        </Field>
+        <Field label="Port" required error={errors.port}>
+          <Input value={v.port} onChange={(e) => set({ port: e.target.value })} inputMode="numeric" />
+        </Field>
+        <Field label="Username" error={errors.username}>
+          <Input value={v.username} onChange={(e) => set({ username: e.target.value })} autoComplete="off" spellCheck={false} />
+        </Field>
+        <Field label="Password" error={errors.password} helper={saved?.secretSaved ? 'A password is saved. Leave empty to keep it.' : 'Write-only: it is never shown after saving.'}>
+          <Input
+            type="password"
+            value={v.password}
+            onChange={(e) => set({ password: e.target.value, clearPassword: false })}
+            placeholder={saved?.secretSaved ? '•••••••• (saved)' : ''}
+            autoComplete="new-password"
+            disabled={v.clearPassword}
+          />
+        </Field>
+        <Field label="From" required error={errors.from} helper="An address, or a name with an address.">
+          <Input value={v.from} onChange={(e) => set({ from: e.target.value })} placeholder="Castlane <no-reply@example.com>" />
+        </Field>
+        <div className="flex flex-col justify-end gap-2 pb-1">
+          <Checkbox checked={v.secure} onCheckedChange={(c) => set({ secure: c })} label="Use TLS from the start (port 465)" description="Otherwise STARTTLS is used when the server offers it." />
+          {saved?.secretSaved ? <Checkbox checked={v.clearPassword} onCheckedChange={(c) => set({ clearPassword: c, password: '' })} label="Remove the saved password" /> : null}
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" variant="primary" loading={save.isPending}>
+          Save Mail Server
+        </Button>
+        {saved ? (
+          <Button type="button" variant="danger-secondary" onClick={() => setConfirmRemove(true)}>
+            Remove Saved Server
+          </Button>
+        ) : null}
+      </div>
+      <ConfirmDialog
+        open={confirmRemove}
+        onOpenChange={setConfirmRemove}
+        title="Remove the saved mail server?"
+        body={view.mail.transport === 'smtp' ? 'Mail then uses the server environment (SMTP_* variables) if it is set; otherwise mail cannot be delivered until a server is saved again.' : 'The saved server and its password are deleted.'}
+        confirmLabel="Remove"
+        destructive
+        onConfirm={async () => {
+          try {
+            await guard(() => remove.run({ params: { workspaceId: workspace.id } }));
+            setConfirmRemove(false);
+          } catch (e) {
+            reportError(e);
+          }
+        }}
+      />
+      {dialog}
+    </form>
   );
 };

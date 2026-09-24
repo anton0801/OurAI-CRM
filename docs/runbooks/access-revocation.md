@@ -23,6 +23,6 @@ Downloaded files cannot be recalled; restricted assets can no longer be read thr
 |---|---|
 | SESSION_SECRET | Rotate → all sessions and CSRF tokens become invalid; everybody signs in again. |
 | MFA_ENCRYPTION_KEY | Do **not** simply rotate (TOTP secrets become undecryptable). Re-encrypt with a migration script, or require all members to re-enrol MFA. |
-| Database/S3/SMTP credentials | Rotate at the provider, update the environment, restart web + worker. |
+| Database/S3/SMTP credentials | Rotate at the provider, update the environment, restart web + worker. A saved SMTP server (Settings → Workspace → Mail) is updated there by the Owner — no restart. |
 | Backup age identity | Create a new key, re-encrypt retained dumps or keep the old key sealed until they expire. |
 Record the incident in System Health with the timeline.

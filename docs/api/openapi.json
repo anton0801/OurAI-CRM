@@ -27267,6 +27267,21 @@
         ],
         "additionalProperties": false
       },
+      "SettingsSaveMailServer": {
+        "type": "object",
+        "required": [
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/SettingsWorkspaceMail"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/AuthCsrfMeta"
+          }
+        }
+      },
       "SettingsUpdateWorkspace": {
         "type": "object",
         "properties": {
@@ -27747,11 +27762,25 @@
           "configured": {
             "type": "boolean"
           },
+          "source": {
+            "type": "string",
+            "enum": [
+              "settings",
+              "environment",
+              "none"
+            ]
+          },
           "from": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "saved": {
+            "$ref": "#/components/schemas/SettingsWorkspaceMailSaved"
+          },
+          "canEdit": {
+            "type": "boolean"
           },
           "lastTest": {
             "$ref": "#/components/schemas/SettingsWorkspaceMailLastTest"
@@ -27760,7 +27789,10 @@
         "required": [
           "transport",
           "configured",
+          "source",
           "from",
+          "saved",
+          "canEdit",
           "lastTest"
         ],
         "additionalProperties": false
@@ -27800,6 +27832,57 @@
           "at",
           "status",
           "error"
+        ],
+        "additionalProperties": false
+      },
+      "SettingsWorkspaceMailSaved": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/SettingsWorkspaceMailSaved2"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "SettingsWorkspaceMailSaved2": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "secure": {
+            "type": "boolean"
+          },
+          "username": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "secretSaved": {
+            "type": "boolean"
+          },
+          "from": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "$ref": "#/components/schemas/AuthReauthenticateRecentAuthAt"
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "secure",
+          "username",
+          "secretSaved",
+          "from",
+          "updatedAt"
         ],
         "additionalProperties": false
       },
@@ -117207,6 +117290,216 @@
             "$ref": "#/components/responses/Error"
           },
           "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/workspaces/{workspaceId}/settings/workspace/mail": {
+      "put": {
+        "operationId": "settings.saveMailServer",
+        "summary": "Save the outgoing mail server (Owner, recent authentication). The password is write-only and never returned.",
+        "tags": [
+          "Settings"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-permission": "workspace.update",
+        "x-auth": "workspace",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AuthInvitationInfoInvitationId2"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Replays return the stored response; a different body with the same key is rejected."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "host": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 253
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "secure": {
+                    "type": "boolean"
+                  },
+                  "username": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "clearPassword": {
+                    "type": "boolean"
+                  },
+                  "from": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 320
+                  }
+                },
+                "required": [
+                  "host",
+                  "port",
+                  "secure",
+                  "from"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsSaveMailServer"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "settings.removeMailServer",
+        "summary": "Remove the saved mail server (the SMTP_* environment applies again, if set).",
+        "tags": [
+          "Settings"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "x-permission": "workspace.update",
+        "x-auth": "workspace",
+        "parameters": [
+          {
+            "name": "workspaceId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/AuthInvitationInfoInvitationId2"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Replays return the stored response; a different body with the same key is rejected."
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsSaveMailServer"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
             "$ref": "#/components/responses/Error"
           },
           "429": {
