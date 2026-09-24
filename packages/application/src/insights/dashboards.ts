@@ -1,6 +1,6 @@
 import { and, eq, inArray, max, sql } from 'drizzle-orm';
 import { hasAnywhere } from '@castlane/authorization';
-import { buckets, compareValues, groupRecords, hasValue, type MetricValue, type TimeGrain } from '@castlane/analytics';
+import { bucketLocator, buckets, compareValues, groupRecords, hasValue, type MetricValue, type TimeGrain } from '@castlane/analytics';
 import {
   budgets,
   compensationRuns,
@@ -519,7 +519,8 @@ const followersChart = async (ctx: Ctx, q: InsightQuery, grain: TimeGrain): Prom
   const g = grainFor(d, grain)!;
   const rows = await d.load(ctx, { ...q, grain: g });
   const dirs = await projectDirections(ctx);
-  const perAccount = groupRecords(rows, ['account', 'period'], (r, dim) => dimensionValue(r, dim as DimKey, g, q.period.zone, dirs), (rs) => d.reduce(rs, q));
+  const locate = bucketLocator(q.period, g);
+  const perAccount = groupRecords(rows, ['account', 'period'], (r, dim) => dimensionValue(r, dim as DimKey, g, q.period.zone, dirs, locate), (rs) => d.reduce(rs, q));
   const latest = new Map<string, number>();
   for (const x of perAccount) if (x.dims.account && x.dims.period && hasValue(x.value)) latest.set(x.dims.account, Math.max(latest.get(x.dims.account) ?? 0, Number(x.value.value)));
   const top = [...latest.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k]) => k);

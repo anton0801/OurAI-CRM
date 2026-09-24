@@ -2,6 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { hasAnywhere } from '@castlane/authorization';
 import {
   bucketKeyOf,
+  bucketLocator,
   fillSeries,
   groupRecords,
   tupleKey,
@@ -139,8 +140,16 @@ const FIELD_OF: Partial<Record<DimKey, keyof BaseRec>> = {
   stage: 'stage',
 };
 
-export const dimensionValue = (r: BaseRec, dim: DimKey, grain: TimeGrain, zone: string, dirs: ReadonlyMap<string, string>): string | null => {
-  if (dim === 'period') return r.at ? bucketKeyOf(r.at, grain, zone) : null;
+export const dimensionValue = (
+  r: BaseRec,
+  dim: DimKey,
+  grain: TimeGrain,
+  zone: string,
+  dirs: ReadonlyMap<string, string>,
+  /** Fast bucket lookup for the query period (same keys as bucketKeyOf). */
+  locate?: (at: Date) => string,
+): string | null => {
+  if (dim === 'period') return r.at ? (locate ? locate(r.at) : bucketKeyOf(r.at, grain, zone)) : null;
   if (dim === 'direction') return r.projectId ? (dirs.get(r.projectId) ?? null) : null;
   const f = FIELD_OF[dim];
   const v = f ? r[f] : null;
@@ -151,7 +160,8 @@ export const dimensionValue = (r: BaseRec, dim: DimKey, grain: TimeGrain, zone: 
 export const groupInsight = async <R extends BaseRec>(ctx: Ctx, d: InsightMetric<R>, q: InsightQuery, rows: R[], dims: DimKey[]): Promise<GroupRow[]> => {
   const dirs = dims.includes('direction') ? await projectDirections(ctx) : new Map<string, string>();
   const grain = q.grain ?? 'week';
-  const groups = groupRecords(rows, dims, (r, dim) => dimensionValue(r, dim as DimKey, grain, q.period.zone, dirs), (rs) => d.reduce(rs, q));
+  const locate = dims.includes('period') ? bucketLocator(q.period, grain) : undefined;
+  const groups = groupRecords(rows, dims, (r, dim) => dimensionValue(r, dim as DimKey, grain, q.period.zone, dirs, locate), (rs) => d.reduce(rs, q));
   if (d.zeroWhenEmpty || dims.length === 0) return groups;
   return groups;
 };
@@ -170,19 +180,29 @@ export interface InsightResult extends MetricResult {
   groups?: { key: string; label: string; value: MetricValue }[];
 }
 
+/**
+ * Give other requests a turn on the event loop. Metrics of one dashboard share their loaded rows,
+ * so without a macrotask boundary every metric's reduction runs back to back in one microtask
+ * drain after the shared load resolves, stalling the web process for seconds.
+ */
+export const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 /** Evaluate a metric: total, optional series (gaps for missing buckets) and one breakdown. */
 export const computeInsight = async <R extends BaseRec>(ctx: Ctx, d: InsightMetric<R>, q: InsightQuery): Promise<InsightResult> => {
   assertMetricAccess(ctx, d);
   if (q.groupBy && !d.dimensions.includes(q.groupBy as DimKey)) throw new AppError('VALIDATION_FAILED', `${d.label} cannot be broken down by ${q.groupBy}.`);
   if (q.grain && !d.grains.includes(q.grain)) throw new AppError('VALIDATION_FAILED', `${d.label} has no ${q.grain} series.`);
   const rows = await d.load(ctx, q);
+  await yieldToEventLoop();
   const total = d.reduce(rows, q);
   const out: InsightResult = { total, sourceAsOf: maxAt(d, rows)?.toISOString() ?? null };
   if (q.grain) {
+    await yieldToEventLoop();
     const g = await groupInsight(ctx, d, { ...q, grain: q.grain }, rows, ['period']);
     out.series = fillSeries(g, q.period, q.grain, { zeroCount: !!d.zeroWhenEmpty, unit: d.unit });
   }
   if (q.groupBy) {
+    await yieldToEventLoop();
     const g = await groupInsight(ctx, d, q, rows, [q.groupBy as DimKey]);
     const labels = await dimensionLabels(ctx, q.groupBy as DimKey, g.map((x) => x.dims[q.groupBy!] ?? null));
     out.groups = g.map((x) => {
@@ -198,6 +218,7 @@ export const groupedInsight = async (ctx: Ctx, id: string, q: InsightQuery, dims
   const d = insightMetric(id);
   assertMetricAccess(ctx, d);
   const rows = await d.load(ctx, q);
+  await yieldToEventLoop();
   const groups = await groupInsight(ctx, d, q, rows, dims);
   return { metric: d, groups, total: d.reduce(rows, q), rows, sourceAsOf: maxAt(d, rows) };
 };
