@@ -399,6 +399,8 @@ export const templateApplications = pgTable(
 export interface AutomationTrigger {
   event: string;
   schedule?: { cadence: 'daily' | 'weekly' | 'monthly'; localTime: string; weekday?: number; monthDay?: number };
+  /** Deadline triggers: hours before (due soon) or after (overdue/stale) the deadline. */
+  thresholdHours?: number;
 }
 export interface AutomationCondition {
   field: string;
@@ -407,8 +409,12 @@ export interface AutomationCondition {
 }
 export interface AutomationAction {
   type:
+    | 'create_task'
     | 'create_task_from_template'
     | 'assign_member'
+    | 'add_checklist_item'
+    | 'add_tag'
+    | 'set_field'
     | 'create_checkpoint'
     | 'notify'
     | 'request_internal_approval'
@@ -468,20 +474,29 @@ export const automationRuns = pgTable(
     operationKey: text('operation_key').notNull(),
     startedAt: ts('started_at'),
     finishedAt: ts('finished_at'),
-    actionResults: json<{ index: number; type: string; ok: boolean; entityType?: string; entityId?: string; error?: string }[]>(
-      'action_results',
-    )
+    actionResults: json<
+      { index: number; type: string; ok: boolean; entityType?: string; entityId?: string; error?: string; note?: string; skipped?: boolean; effects?: number }[]
+    >('action_results')
       .notNull()
       .default([]),
     errorCode: text('error_code'),
     errorMessage: text('error_message'),
     attempts: integer('attempts').notNull().default(0),
+    /** Trigger key and triggering record (null for scheduled triggers). */
+    triggerEvent: text('trigger_event'),
+    entityType: text('entity_type'),
+    entityId: uuid('entity_id'),
+    /** Throttled runs wait until this moment (the source event is never dropped). */
+    notBefore: ts('not_before'),
+    /** Safe payload of the triggering event (ids and state names only), kept for retries. */
+    eventPayload: json<Record<string, unknown>>('event_payload').notNull().default({}),
   },
   (t) => [
     tenantUnique('automation_runs', t),
     tfk('automation_runs_rule_fk', t.workspaceId, t.ruleId, automationRules),
     uniqueIndex('automation_runs_operation_uq').on(t.workspaceId, t.operationKey),
     index('automation_runs_rule_idx').on(t.workspaceId, t.ruleId, t.createdAt),
+    index('automation_runs_root_idx').on(t.workspaceId, t.rootEventId),
   ],
 );
 
@@ -496,7 +511,11 @@ export const automationActionEffects = pgTable(
     entityId: uuid('entity_id'),
     createdAt: ts('created_at').notNull().defaultNow(),
   },
-  (t) => [primaryKey({ name: 'automation_action_effects_pk', columns: [t.workspaceId, t.effectKey] })],
+  (t) => [
+    primaryKey({ name: 'automation_action_effects_pk', columns: [t.workspaceId, t.effectKey] }),
+    index('automation_action_effects_run_idx').on(t.workspaceId, t.runId),
+    index('automation_action_effects_entity_idx').on(t.workspaceId, t.entityId),
+  ],
 );
 
 export interface ImportOptions {

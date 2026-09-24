@@ -8,3 +8,4 @@ import './tasks/register-tabs';
 import './finance/register-tabs';
 import './content/register-tabs';
 import './publications/register-tabs';
+import './goals/register-tabs';

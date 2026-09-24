@@ -29,6 +29,8 @@ export interface NotifyInput {
   at: Date;
   /** Skip the actor themselves (default true). */
   excludeActor?: boolean;
+  /** false = In-App Inbox only, never an email copy (e.g. automation rules set to Inbox Only). Default true. */
+  email?: boolean;
 }
 
 const PREF_KEY: Record<NotificationKind, 'mentions' | 'assignments' | 'reviewRequests' | 'dueReminders' | null> = {
@@ -121,7 +123,7 @@ export const notify = async (db: DbOrTx, input: NotifyInput): Promise<number> =>
     await streamEvent(db, { workspaceId: input.workspaceId, kind: 'inbox', recipientMembershipId: m.id });
 
     const emailImmediate = pref?.notifications?.emailImmediate ?? false;
-    if (input.kind === 'security' || emailImmediate) {
+    if (input.kind === 'security' || (emailImmediate && input.email !== false)) {
       const zone = pref?.timezone ?? 'UTC';
       const quiet =
         input.kind !== 'security' && inQuietHours(input.at, zone, pref?.quietHoursStart ?? '22:00', pref?.quietHoursEnd ?? '08:00');

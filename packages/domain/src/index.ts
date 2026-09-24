@@ -10,3 +10,4 @@ export * from './pagination';
 export * from './state-machine';
 export * from './ofm';
 export * from './finance';
+export * from './automation';

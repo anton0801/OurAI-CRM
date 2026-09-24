@@ -80,7 +80,7 @@ export const userRequiresMfa = async (db: DbOrTx, userId: string, at: Date): Pro
 /** Where to send a freshly signed-in user. */
 export const landingPath = async (db: DbOrTx, userId: string, returnTo?: string | null): Promise<string> => {
   const rows = await db
-    .select({ id: workspaces.id, setupStep: workspaces.setupStep, roleKey: roles.key })
+    .select({ id: workspaces.id, setupStep: workspaces.setupStep, roleKey: roles.key, permissions: roles.permissions })
     .from(memberships)
     .innerJoin(workspaces, eq(workspaces.id, memberships.workspaceId))
     .leftJoin(roleAssignments, and(eq(roleAssignments.membershipId, memberships.id), isNull(roleAssignments.revokedAt)))
@@ -91,7 +91,10 @@ export const landingPath = async (db: DbOrTx, userId: string, returnTo?: string 
   const safe = safeReturnTo(returnTo);
   if (safe) return safe;
   const first = rows[0];
-  return first ? `/w/${first.id}/my-work` : '/auth/no-workspace';
+  if (!first) return '/auth/no-workspace';
+  // Leads (roles that manage a project team or the workspace) land on Overview; staff on My Work (§17).
+  const lead = rows.some((r) => r.id === first.id && (r.roleKey === 'owner' || (r.permissions ?? []).includes('project.members.manage')));
+  return `/w/${first.id}/${lead ? 'overview' : 'my-work'}`;
 };
 
 const createChallenge = async (

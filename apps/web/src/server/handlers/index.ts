@@ -17,3 +17,4 @@ import './ofm';
 import './finance';
 import './production';
 import './publishing';
+import './automation'; import './goals'; import './overview';

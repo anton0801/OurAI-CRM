@@ -11,3 +11,4 @@ import './ofm';
 import './finance';
 import './production';
 import './publishing';
+import './automation';

@@ -13,3 +13,4 @@ export * from './ofm';
 export * from './finance';
 export * from './production';
 export * from './publishing';
+export * from './automation'; export * from './goals'; export * from './overview';

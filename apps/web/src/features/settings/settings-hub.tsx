@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { Archive, Buildings, ClockCounterClockwise, Compass, DownloadSimple, Gauge, ListChecks, ShieldCheck, UploadSimple, UserCircle, UsersThree, type Icon } from '@phosphor-icons/react';
 import { PageHeader } from '@castlane/ui';
 import { useCan, useWsPath } from '@/lib/workspace-context';
+import { Lightning } from '@phosphor-icons/react';
 
 interface Entry {
   href: string;
@@ -25,6 +26,7 @@ const ENTRIES: Entry[] = [
   { href: '/exports', title: 'Export Center', description: 'Request CSV or XLSX exports of records you may see; downloads expire after 7 days.', icon: DownloadSimple, anyOf: ['exports.create'] },
   { href: '/archive', title: 'Archive and Trash', description: 'Archived and recently deleted records.', icon: Archive, anyOf: [] },
   { href: '/operations/health', title: 'System Health', description: 'Incidents, jobs, mail delivery and backup status.', icon: Gauge, anyOf: ['incidents.read', 'system.jobs.read', 'backups.status.read'] },
+  { href: '/automations', title: 'Automations', description: 'Rules that create internal tasks, reminders and notifications, with dry runs and run history.', icon: Lightning, anyOf: ['automations.read'] },
 ];
 
 /** Settings landing page: only the sections the member can open are listed. */
