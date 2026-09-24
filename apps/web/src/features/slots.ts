@@ -7,3 +7,4 @@ import './knowledge/register-slots';
 import './tasks/register-slots';
 import './ofm/register-slots';
 import './finance/register-slots';
+import './content/register-slots';

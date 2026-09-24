@@ -57,6 +57,13 @@
       "when": 1790217699474,
       "tag": "0007_loving_paladin",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1790234877442,
+      "tag": "0008_low_eddie_brock",
+      "breakpoints": true
     }
   ]
 }

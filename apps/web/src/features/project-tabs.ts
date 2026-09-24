@@ -6,3 +6,4 @@ import './library/register-tabs';
 import './accounts/register-project-tabs';
 import './tasks/register-tabs';
 import './finance/register-tabs';
+import './content/register-tabs';

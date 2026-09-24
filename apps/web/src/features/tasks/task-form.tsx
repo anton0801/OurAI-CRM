@@ -61,7 +61,7 @@ export interface TaskFormProps {
   /** Edit an existing task; otherwise create. */
   task?: TaskDetail;
   /** Defaults for a new task (project tab, subtask, quick create). */
-  defaults?: Partial<Pick<Values, 'projectId' | 'assigneeMembershipId' | 'status' | 'accountId'>>;
+  defaults?: Partial<Pick<Values, 'projectId' | 'assigneeMembershipId' | 'status' | 'accountId' | 'contentItemId'>>;
   parentTaskId?: string;
   onSaved?: (id: string) => void;
 }
@@ -117,7 +117,7 @@ export const TaskForm = ({ open, onOpenChange, task, defaults, parentTaskId, onS
             tags: '',
             requiredForParent: true,
             accountId: defaults?.accountId ?? null,
-            contentItemId: null,
+            contentItemId: defaults?.contentItemId ?? null,
             publicationId: null,
             shiftId: null,
             dealId: null,

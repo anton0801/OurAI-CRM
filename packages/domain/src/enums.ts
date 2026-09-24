@@ -87,7 +87,8 @@ export const CONTENT_SLOTS = defineEnum([
 export const REVIEW_STEP_KINDS = defineEnum(['content_quality', 'release_approval'] as const);
 export const REVIEW_STATUSES = defineEnum(['pending', 'approved', 'changes_requested', 'cancelled', 'superseded'] as const);
 export const REVIEW_TARGET_TYPES = defineEnum(['content_version', 'character_version'] as const);
-export const COMMENT_SEVERITIES = defineEnum(['note', 'blocking'] as const);
+/** Note (information), Issue (a concrete change to make), Blocking (prevents approval until resolved). */
+export const COMMENT_SEVERITIES = defineEnum(['note', 'issue', 'blocking'] as const);
 export const COMMENT_STATES = defineEnum(['open', 'resolved', 'reopened'] as const);
 
 // Tasks & time

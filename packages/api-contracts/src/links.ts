@@ -65,6 +65,7 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   fx_rate: () => `/finance/fx-rates`,
   period_lock: () => `/finance/periods`,
   finance_category: () => `/finance/categories`,
+  content_version: (id) => `/content/versions/${id}`,
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {

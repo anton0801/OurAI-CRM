@@ -42,3 +42,9 @@ export const EPISODE_PANELS = createSlot<{ episodeId: string; projectId: string 
 export const CAMPAIGN_TABS = createSlot<{ campaignId: string }>();
 /** Deal workspace panels (S74): deliverables' publications, finance entries. */
 export const DEAL_PANELS = createSlot<{ dealId: string }>();
+/**
+ * Content Detail panels (S24) contributed by other modules: placements (tab "publications") and
+ * results (tab "results"). Owned by the content module; the publications/metrics modules register
+ * with `visible: (p) => p.tab === 'publications'` (or 'results').
+ */
+export const CONTENT_PANELS = createSlot<{ contentId: string; projectId: string; tab: 'publications' | 'results' }>();

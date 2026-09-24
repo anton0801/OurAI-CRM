@@ -2,7 +2,7 @@ import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { ObjectScope } from '@castlane/authorization';
 import { commentRevisions, comments } from '@castlane/database';
 import type { CommentView } from '@castlane/api-contracts';
-import { AppError, newId, notFound } from '@castlane/domain';
+import { AppError, newId, notFound, type COMMENT_SEVERITIES } from '@castlane/domain';
 import { allowed, authorizeObject, authorizeRead } from '../core/access';
 import { audit } from '../core/audit';
 import { dbOf, type CommandContext, type QueryContext } from '../core/context';
@@ -29,7 +29,7 @@ export interface CommentCreateInput {
   parentId: string;
   body: string;
   replyToId?: string;
-  severity?: 'note' | 'blocking';
+  severity?: (typeof COMMENT_SEVERITIES)[number];
   mentions?: string[];
   targetVersionId?: string;
   assetVersionId?: string;
@@ -207,7 +207,7 @@ export const createComment = async (ctx: CommandContext, input: CommentCreateInp
   authorizeObject(ctx, def.commentPermission, scope, def.readPermission);
   const me = ctx.actor.membershipId;
   if (!me) throw new AppError('FORBIDDEN', 'Only members can comment.');
-  if (input.severity === 'blocking' && !def.allowSeverity) throw fieldFail('severity', 'UNSUPPORTED', 'Blocking comments are not available here.');
+  if (input.severity && input.severity !== 'note' && !def.allowSeverity) throw fieldFail('severity', 'UNSUPPORTED', 'Issue and blocking comments are not available here.');
   const annotated = input.targetVersionId || input.assetVersionId || input.timecodeMs !== undefined || input.pointX !== undefined || input.pointY !== undefined;
   if (annotated && !def.allowAnnotations) throw fieldFail('targetVersionId', 'UNSUPPORTED', 'Version annotations are not available here.');
   if ((input.pointX === undefined) !== (input.pointY === undefined)) throw fieldFail('pointX', 'INCOMPLETE', 'An image point needs both coordinates.');

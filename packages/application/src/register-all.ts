@@ -9,3 +9,4 @@ import './platform';
 import './team';
 import './ofm';
 import './finance';
+import './production';

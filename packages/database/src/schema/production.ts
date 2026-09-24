@@ -28,9 +28,11 @@ import {
 } from '../columns';
 import { memberships, tenantUnique } from './identity';
 import { assetVersions } from './media';
-import { characterVersions, projects } from './organization';
+import { characterVersions, projects, socialAccounts } from './organization';
 
 export interface ContentBrief {
+  /** Short brief summary (required before Ready, section 10.1). */
+  summary?: string;
   objective?: string;
   audience?: string;
   hook?: string;
@@ -71,10 +73,15 @@ export const contentItems = pgTable(
     templateVersionId: uuid('template_version_id'),
     episodeId: uuid('episode_id'),
     campaignId: uuid('campaign_id'),
+    /** Planned target account (optional); placements are separate publication records. */
+    accountId: uuid('account_id'),
   },
   (t) => [
     tenantUnique('content_items', t),
     tfk('content_items_project_fk', t.workspaceId, t.projectId, projects),
+    tfk('content_items_account_fk', t.workspaceId, t.accountId, socialAccounts),
+    index('content_items_account_idx').on(t.workspaceId, t.accountId),
+    index('content_items_owner_idx').on(t.workspaceId, t.ownerMembershipId, t.stage),
     tfk('content_items_owner_fk', t.workspaceId, t.ownerMembershipId, memberships),
     tfk('content_items_reviewer_fk', t.workspaceId, t.reviewerMembershipId, memberships),
     index('content_items_list_idx').on(t.workspaceId, t.stage, t.updatedAt, t.id),
@@ -154,6 +161,8 @@ export const contentVersions = pgTable(
     tenantUnique('content_versions', t),
     tfk('content_versions_content_fk', t.workspaceId, t.contentItemId, contentItems),
     uniqueIndex('content_versions_no_uq').on(t.contentItemId, t.versionNo),
+    /** At most one open (not yet submitted) version per content item. */
+    uniqueIndex('content_versions_draft_uq').on(t.contentItemId).where(sql`submitted_at IS NULL`),
   ],
 );
 
@@ -212,6 +221,7 @@ export const reviews = pgTable(
     tfk('reviews_reviewer_fk', t.workspaceId, t.reviewerMembershipId, memberships),
     index('reviews_queue_idx').on(t.workspaceId, t.status, t.submittedAt),
     index('reviews_subject_idx').on(t.workspaceId, t.subjectId),
+    index('reviews_reviewer_idx').on(t.workspaceId, t.reviewerMembershipId, t.status),
     uniqueIndex('reviews_target_step_uq').on(t.targetId, t.stepKind, t.roundNo),
     enumCheck('reviews_status_ck', 'status', REVIEW_STATUSES),
   ],
