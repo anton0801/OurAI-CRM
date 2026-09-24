@@ -134,8 +134,8 @@ describe('repeat schedule with DST preview', () => {
   });
 });
 
-describe('quality score (M31, T100, T101)', () => {
-  it('all Not Applicable → No Score, never 0 or 100', () => {
+describe('quality score (M31)', () => {
+  it('all Not Applicable → No Score, never 0 or 100 (T100)', () => {
     const r = qualityScore(DEFAULT_OFM_RUBRIC, DEFAULT_OFM_RUBRIC.map((c) => ({ key: c.key, score: null })));
     expect(r.total).toBeNull();
     expect(r.applicableCriteria).toBe(0);
@@ -167,7 +167,7 @@ describe('quality score (M31, T100, T101)', () => {
     );
   });
 
-  it('negative scores need evidence', () => {
+  it('negative scores need evidence (T101)', () => {
     expect(negativeScoresWithoutEvidence([{ key: 'a', score: 0 }, { key: 'b', score: 1, evidenceAssetIds: ['x'] }, { key: 'c', score: 2 }, { key: 'd', score: null }])).toEqual(['a']);
   });
 

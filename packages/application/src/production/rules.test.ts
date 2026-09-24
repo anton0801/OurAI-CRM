@@ -85,7 +85,7 @@ describe('transition requirements', () => {
   });
 });
 
-describe('deliverables and submission (T038)', () => {
+describe('deliverables and submission', () => {
   it('every format has at least one slot and a checklist', () => {
     for (const f of CONTENT_FORMATS) {
       expect(deliverableSlotsFor(f).length).toBeGreaterThan(0);
@@ -97,7 +97,7 @@ describe('deliverables and submission (T038)', () => {
     expect(deliverableSlotsFor('short_video', [{ slot: 'cover', required: true }])).toEqual([{ slot: 'cover', required: true }]);
   });
 
-  it('a processing file blocks submission until it is available', () => {
+  it('a processing file blocks submission until it is available (T038)', () => {
     const slots = deliverableSlotsFor('short_video');
     const checklist = checklistFor('short_video').map((c) => ({ ...c, done: true }));
     const processing = submitRequirements({ format: 'short_video', slots, checklist, files: [{ slot: 'main_video', status: 'processing' }] });
@@ -105,7 +105,7 @@ describe('deliverables and submission (T038)', () => {
     expect(submitRequirements({ format: 'short_video', slots, checklist, files: [{ slot: 'main_video', status: 'available' }] })).toEqual([]);
   });
 
-  it('missing required slots, rejected files and open mandatory items are all reported', () => {
+  it('missing required slots, files not yet Available (uploading, checking, processing) or rejected and open mandatory items all block submission (T038)', () => {
     const fx = fc.record({ status: fc.constantFrom('uploading', 'checking', 'processing', 'available', 'rejected', 'failed') });
     fc.assert(
       fc.property(fc.array(fx, { maxLength: 5 }), fc.boolean(), (files, done) => {
@@ -151,8 +151,8 @@ describe('review policy', () => {
   });
 });
 
-describe('annotations (T045, T046)', () => {
-  it('timecodes must lie within the duration', () => {
+describe('annotations', () => {
+  it('timecodes must lie within the duration (T045)', () => {
     fc.assert(
       fc.property(fc.integer({ min: 1, max: 3_600_000 }), fc.integer({ min: -10, max: 4_000_000 }), (duration, t) => {
         const errs = annotationErrors({ kind: 'video', durationMs: duration }, { timecodeMs: t });
@@ -161,7 +161,7 @@ describe('annotations (T045, T046)', () => {
     );
   });
 
-  it('unknown duration and non-timed files refuse a timecode', () => {
+  it('unknown duration and non-timed files refuse a timecode (T045)', () => {
     expect(annotationErrors({ kind: 'video', durationMs: null }, { timecodeMs: 10 })[0]?.code).toBe('DURATION_UNKNOWN');
     expect(annotationErrors({ kind: 'image', durationMs: null }, { timecodeMs: 10 })[0]?.code).toBe('NOT_TIMED');
   });
