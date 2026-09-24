@@ -751,7 +751,7 @@ export const ContentDetailScreen = ({ contentId }: { contentId: string }) => {
               {
                 label: 'Add Publication',
                 hidden: !c.approvedVersion || c.approvedVersion.revoked || !can('publications.write'),
-                href: wsPath(`/publications/new?contentId=${c.id}`),
+                href: wsPath(`/publications/new?contentItemId=${c.id}${c.account ? `&accountId=${c.account.id}` : ''}`),
               },
               {
                 label: 'Open Review',

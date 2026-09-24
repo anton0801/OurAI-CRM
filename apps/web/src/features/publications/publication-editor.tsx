@@ -61,7 +61,18 @@ type FormValues = z.infer<typeof schema>;
 const splitTags = (s: string) => [...new Set(s.split(',').map((t) => t.trim()).filter(Boolean))];
 
 /** Content and version pickers bound to the chosen account (content of the account's project only). */
-const ContentFields = ({ form, disabled, lockContent }: { form: UseFormReturn<FormValues>; disabled?: boolean; lockContent?: boolean }) => {
+const ContentFields = ({
+  form,
+  disabled,
+  lockContent,
+  pinApproved,
+}: {
+  form: UseFormReturn<FormValues>;
+  disabled?: boolean;
+  lockContent?: boolean;
+  /** New placements: content prefilled from a link gets its approved version, like picking it does. */
+  pinApproved?: boolean;
+}) => {
   const { workspace } = useWorkspace();
   const accountId = form.watch('accountId');
   const contentItemId = form.watch('contentItemId');
@@ -80,6 +91,10 @@ const ContentFields = ({ form, disabled, lockContent }: { form: UseFormReturn<Fo
     const m = new Map([...(recent.data ?? []), ...(options.data ?? [])].map((o) => [o.id, o]));
     return [...m.values()];
   }, [recent.data, options.data]);
+  const approvedOfPrefilled = pinApproved ? merged.find((o) => o.id === contentItemId)?.approvedVersion?.id : undefined;
+  useEffect(() => {
+    if (approvedOfPrefilled && !form.getValues('contentVersionId') && !form.getFieldState('contentVersionId').isDirty) form.setValue('contentVersionId', approvedOfPrefilled);
+  }, [approvedOfPrefilled, form]);
   const errors = form.formState.errors;
   return (
     <>
@@ -287,7 +302,7 @@ export const NewPublicationScreen = () => {
               <Field label="Owner" required error={errors.ownerMembershipId?.message}>
                 <Controller control={form.control} name="ownerMembershipId" render={({ field }) => <MemberSelect value={field.value} onChange={(v) => field.onChange(v ?? '')} />} />
               </Field>
-              <ContentFields form={form} />
+              <ContentFields form={form} pinApproved />
             </div>
           </div>
         </Panel>
