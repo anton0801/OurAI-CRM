@@ -15,3 +15,6 @@ and known limits. The code is the source of truth; these notes point to it.
 | OFM operations | S40–S48 | [ofm.md](ofm.md) |
 | Finance | S55–S60 | [finance.md](finance.md) |
 | Publications, calendar, campaigns, experiments | S31–S35 | [publishing.md](publishing.md) |
+| Production: content pipeline, versions, reviews | S22–S26 | [production.md](production.md) |
+| Insights: metrics, analytics, reports | S49–S52 | [insights.md](insights.md) |
+| Overview, goals, automations | S08, S53, S64, S65 | [overview-goals-automation.md](overview-goals-automation.md) |

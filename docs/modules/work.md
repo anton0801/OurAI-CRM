@@ -12,4 +12,4 @@ Registries: lookup task; link access task; archive (trash drafts); responsibilit
 `time.sheet_approvals`, `time.running_timer`; import `tasks`; export `tasks`, `time_entries`; schedules `work.recurrence`,
 `work.reminders`, `work.timers`. Renders `MY_WORK_SECTIONS`; contributes project/account/member tabs.
 
-Limits: no Timeline view; Time and Workload are reached from Tasks/My Work menus.
+Timeline (S27): bars from start to deadline; a drag or Shift+Arrow only proposes a new deadline — the reschedule preview (dependencies) runs before anything changes. Time and Workload are reached from Tasks/My Work menus.
