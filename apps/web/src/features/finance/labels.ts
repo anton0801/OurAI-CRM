@@ -1,0 +1,52 @@
+import { registerLabels } from '@/lib/labels';
+
+/** English labels for finance enums (spec §18, §31). */
+registerLabels({
+  entryType: { revenue: 'Revenue', expense: 'Expense', adjustment: 'Adjustment', platform_statement: 'Platform Statement' },
+  entryState: { draft: 'Draft', submitted: 'Submitted', posted: 'Posted', rejected: 'Rejected', reversed: 'Reversed' },
+  accountingClass: {
+    revenue: 'Revenue',
+    contra_revenue: 'Refund / Chargeback',
+    fee: 'Fee',
+    operating_expense: 'Operating Expense',
+    compensation_expense: 'Compensation Expense',
+    fx_difference: 'Realized FX Difference',
+  },
+  settlementDirection: { in: 'Incoming', out: 'Outgoing' },
+  settlementState: { draft: 'Draft', confirmed: 'Confirmed', reversed: 'Reversed' },
+  remainderPolicy: { none: 'None', advance: 'Advance', unallocated: 'Unallocated Balance' },
+  budgetScope: { workspace: 'Workspace', direction: 'Direction', project: 'Project', campaign: 'Campaign' },
+  budgetVersionState: { draft: 'Draft', submitted: 'Submitted', approved: 'Approved', superseded: 'Superseded' },
+  commitmentState: { open: 'Open', partially_consumed: 'Partially Consumed', consumed: 'Consumed', cancelled: 'Cancelled' },
+  ruleType: { fixed_period: 'Fixed Period Amount', hourly: 'Hourly', per_approved_unit: 'Per Approved Unit', revenue_share: 'Revenue Share' },
+  ruleState: { draft: 'Draft', approved: 'Approved', ended: 'Ended' },
+  proration: { none: 'None', calendar_days: 'Calendar Days' },
+  hourlySource: { time_entries: 'Approved Time Entries', shift_hours: 'Approved Shift Net Hours' },
+  revenueBasis: { gross: 'Gross', net_after_refunds_and_fees: 'Net After Refunds and Fees' },
+  runState: { draft: 'Draft', calculated: 'Calculated', submitted: 'Submitted', approved: 'Approved', partially_paid: 'Partially Paid', paid: 'Paid', cancelled: 'Cancelled' },
+  adjustmentKind: {
+    manual_bonus: 'Manual Bonus',
+    manual_adjustment: 'Manual Adjustment',
+    refund: 'Refund Adjustment',
+    reallocation: 'Reallocation',
+    reversal: 'Reversal',
+    carry_forward: 'Carry-forward',
+  },
+  compensationSource: {
+    fixed_month: 'Fixed month',
+    time_entry: 'Time entry',
+    shift: 'Shift',
+    content_item: 'Approved content',
+    financial_entry: 'Revenue entry',
+    adjustment: 'Adjustment',
+    carry_forward: 'Carry-forward',
+  },
+  saleCandidateState: { pending: 'Pending Verification', verified: 'Verified', rejected: 'Rejected' },
+  periodIssue: {
+    unreviewed_entries: 'Unreviewed entries',
+    unmatched_settlements: 'Unmatched settlements',
+    unallocated_costs: 'Unallocated costs',
+    compensation_drafts: 'Compensation drafts',
+    missing_fx: 'Missing FX rates',
+  },
+});

@@ -371,6 +371,8 @@ export const ROLE_PRESETS: RolePreset[] = [
       'finance.documents.read',
       'analytics.finance.read',
       'sale-candidates.review',
+      'assets.upload',
+      'assets.download',
       'reports.read',
       'reports.create',
       'imports.create',

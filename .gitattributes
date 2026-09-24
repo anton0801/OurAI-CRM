@@ -10,3 +10,4 @@ apps/web/src/features/project-tabs.ts merge=union
 apps/web/src/features/slots.ts merge=union
 packages/api-contracts/src/links.ts merge=union
 apps/web/src/lib/live-events.ts merge=union
+packages/domain/src/index.ts merge=union

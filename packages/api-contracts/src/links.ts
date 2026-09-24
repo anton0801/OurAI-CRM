@@ -60,6 +60,11 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   user_profile: () => `/settings/profile`,
   sale_candidate: (id) => `/ofm/operations?tab=sales&open=${id}`,
   ofm_assignment: (id) => `/ofm/assignments?open=${id}`,
+  compensation_rule: (id) => `/finance/compensation/rules?open=${id}`,
+  commitment: (id) => `/finance/budgets?tab=commitments&commitment=${id}`,
+  fx_rate: () => `/finance/fx-rates`,
+  period_lock: () => `/finance/periods`,
+  finance_category: () => `/finance/categories`,
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {

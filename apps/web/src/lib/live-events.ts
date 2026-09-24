@@ -64,6 +64,11 @@ const PREFIXES: Record<string, string[]> = {
   role: ['roles.', 'team.'], ownership_transfer: ['ownership.', 'team.', 'roles.'], workspace: ['settings.'], // team, access & settings
   ofm_assignment: ['ofm.', 'myWork.'],
   rubric_version: ['ofm.'],
+  compensation_rule: ['finance.'],
+  commitment: ['finance.'],
+  fx_rate: ['finance.'],
+  period_lock: ['finance.'],
+  finance_category: ['finance.'],
 };
 
 export const useLiveEvents = (workspaceId: string) => {

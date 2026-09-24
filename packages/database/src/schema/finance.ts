@@ -91,6 +91,8 @@ export const financialEntries = pgTable(
     reversedByEntryId: uuid('reversed_by_entry_id'),
     replacementOfEntryId: uuid('replacement_of_entry_id'),
     reversalReason: text('reversal_reason'),
+    /** A refund / chargeback document that relates to an earlier revenue document (compensation adjustments link to it). */
+    refundOfEntryId: uuid('refund_of_entry_id'),
   },
   (t) => [
     tenantUnique('financial_entries', t),
@@ -127,6 +129,10 @@ export const financialEntryLines = pgTable(
     /** Reversal lines negate an original line. */
     reversesLineId: uuid('reverses_line_id'),
     isReversal: boolean('is_reversal').notNull().default(false),
+    /** Direction of a realized FX difference line (fx_difference class only). */
+    fxEffect: text('fx_effect', { enum: ['gain', 'loss'] }),
+    /** Commitment consumed when this expense line is posted (spec §18.5). */
+    commitmentId: uuid('commitment_id'),
   },
   (t) => [
     tenantUnique('financial_entry_lines', t),
@@ -137,6 +143,8 @@ export const financialEntryLines = pgTable(
       .on(t.workspaceId, t.sourceNamespace, t.transactionRef)
       .where(sql`transaction_ref IS NOT NULL AND is_reversal = false`),
     rawCheck('fel_amount_ck', '"amount_minor" >= 0'),
+    rawCheck('fel_fx_effect_ck', `"fx_effect" IS NULL OR "fx_effect" IN ('gain', 'loss')`),
+    index('fel_entry_idx').on(t.workspaceId, t.entryId),
   ],
 );
 
@@ -162,6 +170,7 @@ export const financialAllocations = pgTable(
     tenantUnique('financial_allocations', t),
     tfk('fa_line_fk', t.workspaceId, t.lineId, financialEntryLines),
     index('fa_project_idx').on(t.workspaceId, t.projectId, t.effectiveDate),
+    index('fa_entry_idx').on(t.workspaceId, t.entryId),
   ],
 );
 
@@ -443,6 +452,8 @@ export const compensationRuns = pgTable(
     sourceDigest: text('source_digest'),
     calculatedAt: ts('calculated_at'),
     submittedAt: ts('submitted_at'),
+    /** Maker-checker: the submitter cannot approve the same run (Owner exception with reason). */
+    submittedBy: uuid('submitted_by'),
     approvedAt: ts('approved_at'),
     approvedBy: uuid('approved_by'),
     expenseEntryId: uuid('expense_entry_id'),

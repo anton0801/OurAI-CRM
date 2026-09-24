@@ -8,3 +8,4 @@ import './work';
 import './platform';
 import './team';
 import './ofm';
+import './finance';

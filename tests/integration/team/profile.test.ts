@@ -54,8 +54,8 @@ describe('personal settings (S68)', () => {
   it('anyone can upload their own avatar through the checked media pipeline; colleagues see it, strangers do not', async () => {
     const { ws, owner } = await ownerSetup();
     const params = { workspaceId: ws.workspaceId };
-    // Finance managers cannot upload to the Library, but may set their own avatar.
-    const fin = await addMember(db(), ws, { roleKey: 'finance_manager', name: 'Fay' });
+    // Viewers cannot upload to the Library, but may set their own avatar.
+    const fin = await addMember(db(), ws, { roleKey: 'viewer', name: 'Fay' });
     const fc = await signedIn(fin.userId);
     const lib = await fc.attempt(mediaEndpoints.initiateUpload, { params, body: { filename: 'x.png', mimeType: 'image/png', byteSize: 10, purpose: 'general' } });
     expect(lib.status).toBe(403);

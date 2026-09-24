@@ -6,3 +6,4 @@ import './project-tabs';
 import './knowledge/register-slots';
 import './tasks/register-slots';
 import './ofm/register-slots';
+import './finance/register-slots';

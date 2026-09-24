@@ -15,3 +15,4 @@ export * from './work';
 export * from './platform';
 export * from './team';
 export * from './ofm';
+export * from './finance';

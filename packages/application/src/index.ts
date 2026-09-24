@@ -10,3 +10,4 @@ export * from './partners';
 export * from './work';
 export * from './team';
 export * from './ofm';
+export * from './finance';
