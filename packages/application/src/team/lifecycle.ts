@@ -168,6 +168,10 @@ const deactivationBlock = async (ctx: QueryContext | CommandContext, m: Membersh
   if (m.status === 'deactivated') return 'This member is already deactivated.';
   if (ctx.actor.membershipId === m.id) return 'You cannot deactivate yourself.';
   if (await isWorkspaceOwner(ctx, m.id)) return 'The workspace Owner cannot be deactivated. Transfer ownership first so the workspace always has an Owner.';
+  for (const p of RESPONSIBILITY_PROVIDERS.values()) {
+    const message = p.blocker ? await p.blocker(ctx, m.id) : null;
+    if (message) return message;
+  }
   return null;
 };
 

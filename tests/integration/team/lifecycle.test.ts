@@ -179,6 +179,21 @@ describe('deactivation (F12)', () => {
     expect(await db().select().from(sessions).where(and(eq(sessions.userId, s.manager.userId), isNull(sessions.revokedAt)))).toEqual([]);
   });
 
+  it('a member on a running OFM shift cannot be deactivated until the shift is ended; the preview says so (T019)', async () => {
+    const s = await ofmSetup();
+    const running = await s.schedule(s.manager.membershipId, 30, 36);
+    await db().update(shifts).set({ state: 'active', actualStart: new Date() }).where(eq(shifts.id, running.id));
+    const params = { workspaceId: s.ws.workspaceId, membershipId: s.manager.membershipId };
+    const blocked = await s.owner.call(teamEndpoints.deactivationPreview, { params, body: { resolutions: [] } });
+    expect(blocked.blocked).toMatch(/active OFM shift.*End the shift first/);
+    expect(blocked.impactToken).toBeNull();
+    // Ended by the member or a supervisor: now the preview allows the deactivation.
+    await db().update(shifts).set({ state: 'ended', actualEnd: new Date() }).where(eq(shifts.id, running.id));
+    const ok = await s.owner.call(teamEndpoints.deactivationPreview, { params, body: { resolutions: [] } });
+    expect(ok.blocked).toBeNull();
+    expect(ok.impactToken).toBeTruthy();
+  });
+
   it('restore does not silently bring back sensitive grants (T020)', async () => {
     const { ws, owner } = await ownerSetup();
     const m = await addMember(db(), ws, {

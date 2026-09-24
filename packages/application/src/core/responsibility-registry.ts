@@ -37,6 +37,11 @@ export interface ResponsibilityProvider {
    * preview showed). Providers are otherwise transferred in the order the preview lists them.
    */
   transferAfter?: string[];
+  /**
+   * Work that cannot be handed over while it is in progress (e.g. an OFM shift running right now).
+   * A message here blocks the deactivation preview and the deactivation itself.
+   */
+  blocker?(ctx: QueryContext | CommandContext, membershipId: string): Promise<string | null>;
   list(ctx: QueryContext | CommandContext, membershipId: string): Promise<ResponsibilityItem[]>;
   transfer(ctx: CommandContext, fromMembershipId: string, resolutions: ResponsibilityResolution[]): Promise<void>;
 }
