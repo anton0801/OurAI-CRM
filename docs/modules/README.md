@@ -12,3 +12,5 @@ and known limits. The code is the source of truth; these notes point to it.
 | Tasks, time, workload, My Work, comments | S09, S27–S30 | [work.md](work.md) |
 | Library, files, knowledge | S36–S39 | [library-knowledge.md](library-knowledge.md) |
 | Platform | S10, S11, S54, S66, S69–S72 | [platform.md](platform.md) |
+| OFM operations | S40–S48 | [ofm.md](ofm.md) |
+| Finance | S55–S60 | [finance.md](finance.md) |

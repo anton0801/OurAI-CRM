@@ -38,6 +38,7 @@ import { useUrlState } from '@/lib/url-state';
 import { useCan, useWorkspace, useWsPath } from '@/lib/workspace-context';
 import '@/features/slots';
 import '@/features/accounts/labels';
+import { ApplyTemplateDialog, type TemplateTarget } from '@/features/tasks/apply-template-dialog';
 
 const fmtSeconds = (s: number | null) => (s === null ? '—' : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`);
 
@@ -151,6 +152,8 @@ export const SeriesStructure = ({ projectId, embedded = false }: { projectId: st
 };
 
 const SeasonPanel = ({ season: s, canWrite, first, last, onOpenEpisode }: { season: SeasonView; canWrite: boolean; first: boolean; last: boolean; onOpenEpisode: (id: string) => void }) => {
+  const canCreateTasks = useCan()('tasks.create');
+  const [taskTarget, setTaskTarget] = useState<TemplateTarget | null>(null);
   const { workspace } = useWorkspace();
   const wsPath = useWsPath();
   const move = useApiMutation(seriesEndpoints.moveSeason, { invalidate: ['series.'] });
@@ -211,10 +214,17 @@ const SeasonPanel = ({ season: s, canWrite, first, last, onOpenEpisode }: { seas
                 </span>
               </button>
               {e.archivedAt ? <StatusBadge status="archived" /> : null}
+              {e.contentItem && canCreateTasks && !e.archivedAt ? (
+                <Button size="sm" onClick={() => setTaskTarget({ type: 'content_item', id: e.contentItem!.id, label: `${e.number}. ${e.title}` })}>
+                  Generate Production Tasks
+                </Button>
+              ) : null}
               {e.contentItem ? (
                 <Link href={wsPath(`/content/${e.contentItem.id}`)} className="text-[13px] text-primary hover:underline">
                   Open Content
                 </Link>
+              ) : canWrite && !e.archivedAt ? (
+                <span className="text-[12px] text-fg-2">Link the episode’s content to generate production tasks.</span>
               ) : null}
             </li>
           ))}
@@ -270,6 +280,7 @@ const SeasonPanel = ({ season: s, canWrite, first, last, onOpenEpisode }: { seas
           }
         }}
       />
+      <ApplyTemplateDialog open={!!taskTarget} onOpenChange={(o) => !o && setTaskTarget(null)} projectId={s.projectId} target={taskTarget ?? undefined} />
       {episodeOpen ? <EpisodeFormDialog seasonId={s.id} projectId={s.projectId} onClose={() => setEpisodeOpen(false)} nextNumber={Math.max(0, ...s.episodes.map((e) => e.number)) + 1} /> : null}
     </Panel>
   );

@@ -47,6 +47,7 @@ import { useCan, useWorkspace, useWsPath } from '@/lib/workspace-context';
 import '@/features/slots';
 import '@/features/accounts/labels';
 import { DealForm } from './deal-form';
+import { ApplyTemplateDialog, type TemplateTarget } from '@/features/tasks/apply-template-dialog';
 import { LogInteractionDialog } from './partner-drawer';
 
 const STAGE_ACTION: Record<string, string> = {
@@ -291,6 +292,8 @@ const DeliverablesTable = ({ deal, onEdit }: { deal: DealDetail; onEdit: (r: Del
   const wsPath = useWsPath();
   const [pending, setPending] = useState<{ row: DeliverableRow; target: DeliverableRow['status']; reason?: string; label: string } | null>(null);
   const [reason, setReason] = useState('');
+  const canCreateTasks = useCan()('tasks.create');
+  const [taskTarget, setTaskTarget] = useState<{ target: TemplateTarget; projectId?: string } | null>(null);
   const transition = useApiMutation(dealEndpoints.transitionDeliverable, { invalidate: ['deals.'], successMessage: 'Deliverable updated' });
   const rows = deal.deliverableItems.filter((r) => !r.archivedAt);
   const run = async (row: DeliverableRow, target: DeliverableRow['status'], why?: string) => {
@@ -304,6 +307,12 @@ const DeliverablesTable = ({ deal, onEdit }: { deal: DealDetail; onEdit: (r: Del
   };
   return (
     <>
+      <ApplyTemplateDialog
+        open={!!taskTarget}
+        onOpenChange={(o) => !o && setTaskTarget(null)}
+        projectId={taskTarget?.projectId}
+        target={taskTarget?.target}
+      />
       <DataTable
         caption="Deliverables"
         rows={rows}
@@ -357,6 +366,11 @@ const DeliverablesTable = ({ deal, onEdit }: { deal: DealDetail; onEdit: (r: Del
             cell: (r) => {
               const items: MenuItem[] = [
                 { label: 'Edit', onSelect: () => onEdit(r), hidden: r.status === 'accepted' || r.status === 'cancelled' },
+                {
+                  label: 'Generate Deliverable Tasks',
+                  onSelect: () => setTaskTarget({ target: { type: 'deliverable', id: r.id, label: r.title, accountId: r.account?.id ?? null }, projectId: r.project?.id ?? (deal.projects.length === 1 ? deal.projects[0]!.id : undefined) }),
+                  hidden: !canCreateTasks || r.status === 'accepted' || r.status === 'cancelled',
+                },
                 ...(DELIVERABLE_ACTIONS[r.status] ?? []).map((a) => ({ label: a.label, onSelect: () => (a.reason ? setPending({ row: r, target: a.target, reason: a.reason, label: a.label }) : void run(r, a.target)) })),
               ];
               return items.some((i) => !i.hidden) ? <Menu label={`Actions for ${r.title}`} trigger={<IconButton label={`Actions for ${r.title}`} icon={<DotsThree size={18} weight="bold" />} />} items={items} /> : null;

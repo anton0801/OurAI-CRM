@@ -16,7 +16,27 @@ import { TASK_INVALIDATE } from './task-actions';
  * graph is created exactly once per application key. Unknown owners stay Unassigned and one
  * coordination task asks you to assign them. Templates are managed in Settings → Templates.
  */
-export const ApplyTemplateDialog = ({ open, onOpenChange, projectId: fixedProject, onApplied }: { open: boolean; onOpenChange: (o: boolean) => void; projectId?: string; onApplied?: () => void }) => {
+/** A record the created tasks are linked to (content item of an episode, a deal deliverable…). Defaults to the project. */
+export interface TemplateTarget {
+  type: 'content_item' | 'deal' | 'deliverable' | 'publication' | 'account' | 'shift' | 'operation' | 'article';
+  id: string;
+  label: string;
+  accountId?: string | null;
+}
+
+export const ApplyTemplateDialog = ({
+  open,
+  onOpenChange,
+  projectId: fixedProject,
+  target: linkTarget,
+  onApplied,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  projectId?: string;
+  target?: TemplateTarget;
+  onApplied?: () => void;
+}) => {
   const { workspace, user } = useWorkspace();
   const [versionId, setVersionId] = useState<string | null>(null);
   const [projectId, setProjectId] = useState<string | null>(fixedProject ?? null);
@@ -37,7 +57,19 @@ export const ApplyTemplateDialog = ({ open, onOpenChange, projectId: fixedProjec
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
-  const target = versionId && projectId ? { templateVersionId: versionId, targetType: 'project' as const, targetId: projectId, projectId, startDate, timezone: user.timezone, assignees } : null;
+  const target =
+    versionId && projectId
+      ? {
+          templateVersionId: versionId,
+          targetType: linkTarget?.type ?? ('project' as const),
+          targetId: linkTarget?.id ?? projectId,
+          projectId,
+          accountId: linkTarget?.accountId ?? undefined,
+          startDate,
+          timezone: user.timezone,
+          assignees,
+        }
+      : null;
   // Roles to assign: responsibilities (or task keys) found in the preview.
   const roles = useMemo(() => {
     const out = new Map<string, string>();
@@ -58,8 +90,12 @@ export const ApplyTemplateDialog = ({ open, onOpenChange, projectId: fixedProjec
       open={open}
       onOpenChange={onOpenChange}
       size="wide"
-      title="Apply Template"
-      description="Tasks are created only after you review names, assignments and dates."
+      title={linkTarget ? `Generate Tasks — ${linkTarget.label}` : 'Apply Template'}
+      description={
+        linkTarget
+          ? 'The tasks are linked to this record. Applying the same template again creates nothing new.'
+          : 'Tasks are created only after you review names, assignments and dates.'
+      }
       footer={
         done ? (
           <Button variant="primary" onClick={() => onOpenChange(false)}>

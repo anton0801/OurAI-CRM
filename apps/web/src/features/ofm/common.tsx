@@ -2,7 +2,6 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import type { AnyEndpoint, MemberRef, OfmAccountRef, OfmShiftSummary } from '@castlane/api-contracts';
 import { isApiError } from '@castlane/api-client';
 import { DateTime, runningNetSeconds } from '@castlane/domain';
@@ -42,17 +41,8 @@ export const errorMessage = (e: unknown, fallback = 'The action could not be com
  * extra prefixes after success. `invalidate` in useApiMutation matches whole endpoint ids only.
  */
 export const useOfmMutation = <EP extends AnyEndpoint>(ep: EP, opts: Omit<MutationOptions<EP>, 'invalidate'> & { also?: string[] } = {}) => {
-  const qc = useQueryClient();
   const { also, ...rest } = opts;
-  return useApiMutation(ep, {
-    silentErrors: true,
-    ...rest,
-    onSuccess: async (data, input) => {
-      const prefixes = ['ofm.', ...(also ?? [])];
-      await qc.invalidateQueries({ predicate: (q) => prefixes.some((p) => String(q.queryKey[0] ?? '').startsWith(p)) });
-      await rest.onSuccess?.(data, input);
-    },
-  });
+  return useApiMutation(ep, { silentErrors: true, ...rest, invalidate: ['ofm.', ...(also ?? [])] });
 };
 
 // ——— Section navigation ———

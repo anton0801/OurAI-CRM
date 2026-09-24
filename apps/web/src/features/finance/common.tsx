@@ -3,7 +3,6 @@ import { CaretLeft, CaretRight } from '@phosphor-icons/react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { authEndpoints, type AnyEndpoint } from '@castlane/api-contracts';
 import { isApiError } from '@castlane/api-client';
 import { DateTime, SUPPORTED_CURRENCIES, formatMinor, tryParseAmountToMinor, zonedDateTimeToUtc } from '@castlane/domain';
@@ -374,17 +373,8 @@ export const isConflict = (e: unknown) => isApiError(e) && e.code === 'VERSION_C
  * useApiMutation whose `invalidate` entries are endpoint-id prefixes ('finance.' refreshes every
  * finance read model after a change), matched with a predicate on the query key.
  */
-export const useFinanceMutation = <E extends AnyEndpoint>(ep: E, opts: MutationOptions<E> = {}) => {
-  const qc = useQueryClient();
-  const { invalidate, onSuccess, ...rest } = opts;
-  return useApiMutation(ep, {
-    ...rest,
-    onSuccess: async (data, input) => {
-      if (invalidate?.length) await qc.invalidateQueries({ predicate: (q) => invalidate.some((p) => String(q.queryKey[0] ?? '').startsWith(p)) });
-      await onSuccess?.(data, input);
-    },
-  });
-};
+/** Finance mutations: the shared hook refreshes every query whose endpoint id starts with an `invalidate` prefix. */
+export const useFinanceMutation = <E extends AnyEndpoint>(ep: E, opts: MutationOptions<E> = {}) => useApiMutation(ep, opts);
 
 /** datetime-local value in the member's time zone → UTC ISO string (and back). */
 export const localInputToIso = (value: string, zone: string): string | null => {
