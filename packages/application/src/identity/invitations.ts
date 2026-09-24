@@ -20,6 +20,7 @@ import { emit } from '../core/events';
 import { enqueueJob } from '../core/jobs';
 import { notify } from '../core/notify';
 import { stamp } from '../core/rows';
+import { indexSearchDocument } from '../core/search';
 import { completePasswordStep, type AuthRequestMeta, type SignInOutcome } from './auth';
 import { validateGrants } from './grants';
 import { hashPassword, validateNewPassword, verifyPassword } from './passwords';
@@ -219,7 +220,22 @@ export const acceptInvitation = async (
         createdAt: at,
         updatedAt: at,
       });
-      await tx.insert(userPreferences).values({ userId: id }).onConflictDoNothing();
+      // New people start with the workspace's notification defaults (Workspace Settings); they can change them later.
+      const [wsRow] = await tx.select({ settings: workspaces.settings }).from(workspaces).where(eq(workspaces.id, inv.workspaceId));
+      const nd = wsRow?.settings?.notificationDefaults;
+      await tx
+        .insert(userPreferences)
+        .values(
+          nd
+            ? {
+                userId: id,
+                notifications: { mentions: nd.mentions, assignments: nd.assignments, reviewRequests: nd.reviewRequests, dueReminders: nd.dueReminders, emailImmediate: nd.emailImmediate, dailyDigest: nd.dailyDigest },
+                quietHoursStart: nd.quietHoursStart,
+                quietHoursEnd: nd.quietHoursEnd,
+              }
+            : { userId: id },
+        )
+        .onConflictDoNothing();
       [user] = await tx.select().from(users).where(eq(users.id, id));
     }
     if (!user) throw new AppError('INTERNAL', 'Account could not be created.');
@@ -263,6 +279,18 @@ export const acceptInvitation = async (
         .update(invitations)
         .set({ status: 'accepted', acceptedAt: at, acceptedMembershipId: membershipId, updatedAt: at, rowVersion: sql`${invitations.rowVersion} + 1` })
         .where(eq(invitations.id, inv.id));
+      // Members are searchable by people with members.read (Team module).
+      await indexSearchDocument(tx, {
+        workspaceId: inv.workspaceId,
+        entityType: 'member',
+        entityId: membershipId!,
+        title: user.displayName,
+        body: user.displayEmail,
+        permission: 'members.read',
+        ownerMembershipId: membershipId!,
+        status: 'active',
+        at,
+      });
       await auditRaw(tx, {
         action: 'invitation.accepted',
         workspaceId: inv.workspaceId,

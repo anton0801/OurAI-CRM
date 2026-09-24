@@ -70,6 +70,7 @@ export const userRequiresMfa = async (db: DbOrTx, userId: string, at: Date): Pro
   return rows.some(
     (r) =>
       r.settings?.mfaPolicy?.requiredForAll ||
+      (!!r.key && !!r.settings?.mfaPolicy?.requiredRoleKeys?.includes(r.key)) ||
       r.key === 'owner' ||
       r.key === 'admin' ||
       (r.permissions ?? []).some((p) => approverPerms.includes(p)),

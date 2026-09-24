@@ -137,6 +137,8 @@ export const emailChangeRequests = pgTable('email_change_requests', {
   tokenHash: text('token_hash').notNull().unique('email_change_token_uq'),
   expiresAt: ts('expires_at').notNull(),
   confirmedAt: ts('confirmed_at'),
+  /** Superseded by a newer request or cancelled by the user; the token stops working. */
+  cancelledAt: ts('cancelled_at'),
   createdAt: ts('created_at').notNull().defaultNow(),
 });
 
@@ -159,7 +161,8 @@ export interface WorkspaceSettings {
     ofmArchivedNotesDays: number;
     exportDays: number;
   };
-  mfaPolicy?: { requiredForAll: boolean };
+  /** MFA is always required for Owner/Admin/finance approvers; the policy can require it for more roles or everyone. */
+  mfaPolicy?: { requiredForAll: boolean; requiredRoleKeys?: string[] };
   moduleVisibility?: Record<string, boolean>;
   sessionIdleHours?: number;
   sessionAbsoluteDays?: number;
@@ -167,6 +170,19 @@ export interface WorkspaceSettings {
   maxShiftAccounts?: number;
   reviewPolicy?: { releaseApproval: boolean; contentQuality: boolean; selfReviewAllowed: boolean };
   smtp?: { configured: boolean; lastTestAt?: string; lastTestResult?: string };
+  /** Standard working hours (local workspace time) used for capacity templates and scheduling hints. */
+  workingHours?: { start: string; end: string };
+  /** Notification preferences applied to people who join the workspace (personal settings override them). */
+  notificationDefaults?: {
+    mentions: boolean;
+    assignments: boolean;
+    reviewRequests: boolean;
+    dueReminders: boolean;
+    emailImmediate: boolean;
+    dailyDigest: boolean;
+    quietHoursStart: string;
+    quietHoursEnd: string;
+  };
 }
 
 export const workspaces = pgTable(
@@ -244,7 +260,12 @@ export const roles = pgTable(
     basedOnKey: text('based_on_key'),
     archivedAt: ts('archived_at'),
   },
-  (t) => [tenantUnique('roles', t), uniqueIndex('roles_ws_key_uq').on(t.workspaceId, t.key)],
+  (t) => [
+    tenantUnique('roles', t),
+    uniqueIndex('roles_ws_key_uq').on(t.workspaceId, t.key),
+    // Role names are unique (case-insensitive) among the workspace's active roles.
+    uniqueIndex('roles_ws_active_name_uq').on(t.workspaceId, sql`lower(${t.name})`).where(sql`archived_at IS NULL`),
+  ],
 );
 
 export const roleAssignments = pgTable(

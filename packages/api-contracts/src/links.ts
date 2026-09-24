@@ -52,6 +52,12 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   personal_reminder: () => `/my-work`,
   custom_field_definition: (id) => `/settings/templates?tab=fields&open=${id}`,
   audit_event: (id) => `/settings/audit?event=${id}`,
+  role: (id) => `/settings/access?role=${id}`,
+  role_assignment: () => `/settings/access?tab=grants`,
+  ownership_transfer: () => `/settings/access?tab=ownership`,
+  invitation_request: () => `/team?tab=invitations`,
+  workspace: () => `/settings/workspace`,
+  user_profile: () => `/settings/profile`,
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {

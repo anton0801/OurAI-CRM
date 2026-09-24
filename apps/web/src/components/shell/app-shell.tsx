@@ -67,7 +67,7 @@ const Sidebar = ({ collapsed, onToggle, mobileOpen, onClose }: { collapsed: bool
     setGroupState(next);
     writePref('castlane.nav.groups', JSON.stringify(next));
   };
-  const visible = (i: NavItem) => i.anyOf.length === 0 || can(i.anyOf);
+  const visible = (i: NavItem) => !ws.hiddenModules?.includes(i.key) && (i.anyOf.length === 0 || can(i.anyOf));
   const isActive = (href: string) => pathname === `/w/${ws.workspace.id}${href}` || pathname.startsWith(`/w/${ws.workspace.id}${href}/`);
   const body = (isMobile: boolean) => (
     <div className="flex h-full flex-col">

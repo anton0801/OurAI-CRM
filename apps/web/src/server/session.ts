@@ -4,6 +4,7 @@ import { redirect, notFound } from 'next/navigation';
 import { and, eq } from 'drizzle-orm';
 import { ALL_PERMISSIONS, effectivePermissionKeys } from '@castlane/authorization';
 import {
+  checkSessionPolicy,
   getAppServices,
   resolveSession,
   resolveWorkspaceActor,
@@ -21,7 +22,8 @@ export const currentPath = async (): Promise<string> => (await headers()).get('x
 export const requireSession = async (returnTo?: string): Promise<SessionRow> => {
   const app = getAppServices();
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  const session = token ? await resolveSession(app.db, token, app.clock.now()) : null;
+  const found = token ? await resolveSession(app.db, token, app.clock.now()) : null;
+  const session = found && (await checkSessionPolicy(app.db, found, app.clock.now())) === 'ok' ? found : null;
   if (!session) redirect(`/auth/sign-in${returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : ''}`);
   return session;
 };
@@ -29,7 +31,8 @@ export const requireSession = async (returnTo?: string): Promise<SessionRow> => 
 export const optionalSession = async (): Promise<SessionRow | null> => {
   const app = getAppServices();
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
-  return token ? resolveSession(app.db, token, app.clock.now()) : null;
+  const found = token ? await resolveSession(app.db, token, app.clock.now()) : null;
+  return found && (await checkSessionPolicy(app.db, found, app.clock.now())) === 'ok' ? found : null;
 };
 
 export interface WorkspacePageSession {
@@ -43,6 +46,7 @@ export interface WorkspacePageSession {
     permissions: string[];
     workspaces: { id: string; name: string }[];
     csrfToken: string;
+    hiddenModules: string[];
   };
 }
 
@@ -97,6 +101,10 @@ export const requireWorkspaceSession = async (workspaceId: string, path: string)
       permissions: effectivePermissionKeys(actor.access, ALL_PERMISSIONS),
       workspaces: others,
       csrfToken: sessionCsrfToken(app, session),
+      // Workspace Settings → module visibility (navigation only; data and permissions unchanged).
+      hiddenModules: Object.entries(ws.settings?.moduleVisibility ?? {})
+        .filter(([, visible]) => visible === false)
+        .map(([key]) => key),
     },
   };
 };

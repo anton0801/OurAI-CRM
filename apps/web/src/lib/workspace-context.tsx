@@ -11,6 +11,8 @@ export interface WorkspaceSession {
   permissions: string[];
   workspaces: { id: string; name: string }[];
   csrfToken: string;
+  /** Navigation keys hidden by Workspace Settings (module visibility). */
+  hiddenModules?: string[];
 }
 
 const Ctx = createContext<WorkspaceSession | null>(null);

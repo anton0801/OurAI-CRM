@@ -6,3 +6,4 @@ import './platform';
 import './media';
 import './work';
 import './platform';
+import './team';

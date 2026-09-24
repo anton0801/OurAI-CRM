@@ -46,7 +46,11 @@ export const useApiMutation = <E extends AnyEndpoint>(ep: E, opts: MutationOptio
     },
     onSuccess: async (data, vars) => {
       keyRef.current = null;
-      if (opts.invalidate?.length) await Promise.all(opts.invalidate.map((id) => qc.invalidateQueries({ queryKey: [id] })));
+      // Endpoint ids or id prefixes ('team.' refreshes every team.* query).
+      if (opts.invalidate?.length) {
+        const prefixes = opts.invalidate;
+        await qc.invalidateQueries({ predicate: (q) => prefixes.some((p) => String(q.queryKey[0] ?? '').startsWith(p)) });
+      }
       const msg = typeof opts.successMessage === 'function' ? opts.successMessage(data) : opts.successMessage;
       if (msg) toast.success(msg);
       await opts.onSuccess?.(data, vars.input);
@@ -54,6 +58,11 @@ export const useApiMutation = <E extends AnyEndpoint>(ep: E, opts: MutationOptio
     onError: (err) => {
       // Keep the key when the request may have reached the server; drop it for definite rejections.
       if (!err.network && err.status !== 409 && err.status < 500) keyRef.current = null;
+      // A version conflict means cached data is stale: refresh it (forms keep the user's input).
+      if (err.code === 'VERSION_CONFLICT' && opts.invalidate?.length) {
+        const prefixes = opts.invalidate;
+        void qc.invalidateQueries({ predicate: (q) => prefixes.some((p) => String(q.queryKey[0] ?? '').startsWith(p)) });
+      }
       opts.onError?.(err);
       if (!opts.silentErrors) {
         if (err.network) toast.error('You are offline', 'Changes are not being saved. Retry when the connection is back.');

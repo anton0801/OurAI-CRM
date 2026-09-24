@@ -61,6 +61,7 @@ const PREFIXES: Record<string, string[]> = {
   custom_field_definition: ['customFields.'],
   custom_field_values: ['customFields.'],
   saved_view: ['savedViews.'],
+  role: ['roles.', 'team.'], ownership_transfer: ['ownership.', 'team.', 'roles.'], workspace: ['settings.'], // team, access & settings
 };
 
 export const useLiveEvents = (workspaceId: string) => {

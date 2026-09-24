@@ -7,6 +7,7 @@ import {
   type ErrorCode,
 } from '@castlane/domain';
 import {
+  checkSessionPolicy,
   executeCommand,
   getAppServices,
   hmac,
@@ -158,7 +159,9 @@ export const dispatch = async (req: Request, path: string): Promise<Response> =>
 
     // Session
     const token = cookies.get(SESSION_COOKIE);
-    const session = token ? await resolveSession(app.db, token, at) : null;
+    let session = token ? await resolveSession(app.db, token, at) : null;
+    // Workspace security policies may be stricter than the global 12 h idle / 7 d absolute limits.
+    if (session && (await checkSessionPolicy(app.db, session, at)) !== 'ok') session = null;
     if (ep.auth !== 'public' && !session) {
       if (token) res.cookies.push({ name: SESSION_COOKIE, value: '', expire: true });
       throw new AppError('UNAUTHENTICATED', 'Your session has ended. Sign in again.');

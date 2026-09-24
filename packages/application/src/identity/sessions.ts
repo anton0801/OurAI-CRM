@@ -44,15 +44,19 @@ export const createSession = async (
 
 export type SessionRow = typeof sessions.$inferSelect;
 
+/** A resolved session; `previousSeenAt` is the last activity before this request (workspace idle policies). */
+export type ResolvedSession = SessionRow & { previousSeenAt: Date };
+
 /** Resolve a session token; expired or revoked sessions resolve to null. Extends the idle window. */
-export const resolveSession = async (db: DbOrTx, token: string, at: Date): Promise<SessionRow | null> => {
+export const resolveSession = async (db: DbOrTx, token: string, at: Date): Promise<ResolvedSession | null> => {
   if (!token || token.length > 200) return null;
-  const [s] = await db
+  const [found] = await db
     .select()
     .from(sessions)
     .where(and(eq(sessions.tokenHash, sha256(token)), isNull(sessions.revokedAt)))
     .limit(1);
-  if (!s) return null;
+  if (!found) return null;
+  const s: ResolvedSession = { ...found, previousSeenAt: found.lastSeenAt };
   if (s.idleExpiresAt <= at || s.absoluteExpiresAt <= at) return null;
   // Touch at most once per minute to avoid write amplification.
   if (at.getTime() - s.lastSeenAt.getTime() > 60_000) {

@@ -12,3 +12,4 @@ import './creative';
 import './partners';
 import './work';
 import './platform';
+import './team';
