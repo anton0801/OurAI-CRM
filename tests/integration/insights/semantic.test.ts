@@ -257,9 +257,9 @@ describe('semantic layer: comparison, scope and finance', () => {
 
   it('shows an empty workspace without fake numbers or charts (T169)', async () => {
     const f = await insightsFixture();
-    for (const tab of ['production', 'accounts', 'content', 'team', 'finance'] as const) {
+    for (const tab of ['production', 'accounts', 'content', 'ofm', 'team', 'finance'] as const) {
       const d = await f.owner.call(A.dashboard, { params: { ...f.p, tab }, query: { preset: 'last_30_days' } });
-      expect(d.empty).toBe(true);
+      expect(d.empty, tab).toBe(true);
       for (const k of d.kpis) {
         const v = k.value;
         expect(v.value === null || (Number(v.value) === 0 && (v.sampleSize ?? 0) === 0)).toBe(true);

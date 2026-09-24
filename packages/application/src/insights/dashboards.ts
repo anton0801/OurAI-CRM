@@ -400,11 +400,15 @@ const sourcesTable = async (ctx: Ctx, q: InsightQuery): Promise<AnalyticsTable |
       { key: 'state', label: 'Source state', kind: 'text' },
       { key: 'count', label: 'Sale candidates', kind: 'metric' },
     ],
-    rows: ['verified', 'pending', 'rejected'].map((k) => ({
-      key: k,
-      href: `/ofm/operations?tab=sales&state=${k}`,
-      cells: { state: { text: label[k]! }, count: { value: { status: 'known', value: String(rows.find((r) => r.state === k)?.n ?? 0), unit: 'count' } } },
-    })),
+    rows: ['verified', 'pending', 'rejected'].map((k) => {
+      // The count is its own sample: zero candidates is an empty sample, not recorded data (T169).
+      const n = rows.find((r) => r.state === k)?.n ?? 0;
+      return {
+        key: k,
+        href: `/ofm/operations?tab=sales&state=${k}`,
+        cells: { state: { text: label[k]! }, count: { value: { status: 'known', value: String(n), unit: 'count', sampleSize: n } } },
+      };
+    }),
     note: null,
   };
 };
