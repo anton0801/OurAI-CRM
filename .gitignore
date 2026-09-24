@@ -16,3 +16,6 @@ tests/e2e/.auth/
 *.log
 infra/.env.compose
 infra/seaweedfs/s3.json
+
+# Local agent worktrees and tool state
+.claude/
