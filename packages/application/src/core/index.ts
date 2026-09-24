@@ -20,3 +20,4 @@ export * from './lookup-registry';
 export * from './responsibility-registry';
 export * from './import-registry';
 export * from './export-registry';
+export * from './metric-registry';

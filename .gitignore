@@ -14,3 +14,5 @@ coverage/
 tests/e2e/.auth/
 .DS_Store
 *.log
+infra/.env.compose
+infra/seaweedfs/s3.json

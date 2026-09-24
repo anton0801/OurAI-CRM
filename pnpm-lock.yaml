@@ -184,10 +184,16 @@ importers:
       drizzle-orm:
         specifier: 0.45.3
         version: 0.45.3(@types/pg@8.23.1)(pg@8.23.0)
+      luxon:
+        specifier: 3.7.2
+        version: 3.7.2
     devDependencies:
       '@types/big.js':
         specifier: 7.0.0
         version: 7.0.0
+      '@types/luxon':
+        specifier: 3.7.5
+        version: 3.7.5
 
   packages/api-client:
     dependencies:

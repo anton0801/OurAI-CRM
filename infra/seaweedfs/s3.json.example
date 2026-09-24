@@ -1,0 +1,9 @@
+{
+  "identities": [
+    {
+      "name": "castlane",
+      "credentials": [{ "accessKey": "replace-me-storage-user", "secretKey": "replace-me-storage-secret-min-8" }],
+      "actions": ["Read", "Write", "List", "Tagging", "Admin"]
+    }
+  ]
+}

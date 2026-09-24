@@ -1,0 +1,152 @@
+# Reference single-host deployment of Castlane CRM (also usable as a production-like local stack).
+# Usage (from the repository root):
+#   cp infra/.env.compose.example infra/.env.compose   # fill every secret
+#   docker compose -f infra/docker-compose.yml --env-file infra/.env.compose up -d --build
+#   (add `--profile local-s3` to run a bundled S3-compatible store instead of a managed S3 service)
+#   docker compose -f infra/docker-compose.yml --env-file infra/.env.compose run --rm migrate
+#   docker compose -f infra/docker-compose.yml --env-file infra/.env.compose run --rm worker node dist/cli/bootstrap-owner.js --email you@company.example --name "Your Name"
+# Put a TLS-terminating reverse proxy in front of `web` (see docs/runbooks/deploy.md).
+name: castlane
+
+x-app-env: &app-env
+  NODE_ENV: production
+  APP_ORIGIN: ${APP_ORIGIN:?set APP_ORIGIN}
+  DATABASE_URL: postgres://castlane_app:${POSTGRES_APP_PASSWORD:?}@postgres:5432/castlane
+  DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+  SESSION_SECRET: ${SESSION_SECRET:?}
+  MFA_ENCRYPTION_KEY: ${MFA_ENCRYPTION_KEY:?}
+  PASSWORD_PEPPER: ${PASSWORD_PEPPER:-}
+  STORAGE_DRIVER: s3
+  STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:?set STORAGE_ENDPOINT (http://s3:8333 with the local-s3 profile)}
+  STORAGE_REGION: ${STORAGE_REGION:-us-east-1}
+  STORAGE_BUCKET_PRIVATE: ${STORAGE_BUCKET_PRIVATE:-castlane-private}
+  STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:?}
+  STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:?}
+  STORAGE_FORCE_PATH_STYLE: ${STORAGE_FORCE_PATH_STYLE:-true}
+  MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-5368709120}
+  SCANNER_MODE: clamd
+  CLAMD_HOST: clamav
+  CLAMD_PORT: 3310
+  MAIL_TRANSPORT: smtp
+  SMTP_HOST: ${SMTP_HOST:?}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_SECURE: ${SMTP_SECURE:-false}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_FROM: ${SMTP_FROM:?}
+  JOB_CONCURRENCY: ${JOB_CONCURRENCY:-4}
+  MEDIA_JOB_CONCURRENCY: ${MEDIA_JOB_CONCURRENCY:-1}
+  TRUST_PROXY: ${TRUST_PROXY:-true}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: castlane
+      POSTGRES_USER: castlane_owner
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?}
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=test ! -f /wal-archive/%f && cp %p /wal-archive/%f
+      - -c
+      - max_connections=200
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - walarchive:/wal-archive
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U castlane_owner -d castlane"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Optional local S3-compatible storage (profile "local-s3"). Production should use a managed
+  # S3 service with a private, versioned bucket (see docs/runbooks/deploy.md).
+  s3:
+    image: chrislusf/seaweedfs:4.47
+    profiles: ["local-s3"]
+    restart: unless-stopped
+    command: server -dir=/data -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    volumes:
+      - objects:/data
+      - ./seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+
+  s3-init:
+    image: amazon/aws-cli:2.37.1
+    profiles: ["local-s3"]
+    depends_on: [s3]
+    restart: on-failure
+    environment:
+      AWS_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:?}
+      AWS_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:?}
+      AWS_DEFAULT_REGION: ${STORAGE_REGION:-us-east-1}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        aws --endpoint-url http://s3:8333 s3api head-bucket --bucket "${STORAGE_BUCKET_PRIVATE:-castlane-private}" 2>/dev/null ||
+        aws --endpoint-url http://s3:8333 s3api create-bucket --bucket "${STORAGE_BUCKET_PRIVATE:-castlane-private}";
+        aws --endpoint-url http://s3:8333 s3api put-bucket-versioning --bucket "${STORAGE_BUCKET_PRIVATE:-castlane-private}" --versioning-configuration Status=Enabled || true
+
+  clamav:
+    image: clamav/clamav:1.4
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 60s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: infra/docker/worker.Dockerfile
+    image: castlane-worker:${CASTLANE_VERSION:-local}
+    profiles: ["tools"]
+    command: ["node", "dist/cli/migrate.js"]
+    environment:
+      <<: *app-env
+      # Migrations run as the schema owner; the application role only gets DML privileges.
+      DATABASE_URL: postgres://castlane_owner:${POSTGRES_OWNER_PASSWORD:?}@postgres:5432/castlane
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ..
+      dockerfile: infra/docker/web.Dockerfile
+    image: castlane-web:${CASTLANE_VERSION:-local}
+    restart: unless-stopped
+    environment: *app-env
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/docker/worker.Dockerfile
+    image: castlane-worker:${CASTLANE_VERSION:-local}
+    restart: unless-stopped
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  walarchive:
+  objects:

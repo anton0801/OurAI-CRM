@@ -7,8 +7,10 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { seedSystemCatalog } from './seed-system';
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const MIGRATIONS_DIR = join(here, '..', 'migrations');
-const SQL_DIR = join(here, '..', 'sql');
+/** Bundled deployments (worker image) point this at a folder containing `migrations/` and `sql/`. */
+const root = process.env.CASTLANE_DB_ASSETS_DIR ?? join(here, '..');
+export const MIGRATIONS_DIR = join(root, 'migrations');
+const SQL_DIR = join(root, 'sql');
 
 const runSqlDir = async (client: pg.PoolClient, dir: string) => {
   let files: string[] = [];
