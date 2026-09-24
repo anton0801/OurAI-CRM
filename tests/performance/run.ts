@@ -21,6 +21,7 @@
  * docs/acceptance/performance-results.json and rendered to docs/acceptance/performance-report.md.
  */
 import { readFileSync } from 'node:fs';
+import os from 'node:os';
 import { performance } from 'node:perf_hooks';
 import pg from 'pg';
 import { createSession } from '@castlane/application';
@@ -35,7 +36,15 @@ import {
   arg,
   type SeedManifest,
 } from './shared';
-import { environmentInfo, summarize, writeReport, type Phase, type RunResults, type Sample } from './report';
+import {
+  environmentInfo,
+  summarize,
+  writeReport,
+  type Phase,
+  type RunResults,
+  type Sample,
+  type ServiceTime,
+} from './report';
 
 // ——— Configuration ———
 
@@ -68,6 +77,12 @@ const cfg = {
   seed: num('seed', 170),
   serverNote: arg('server-note') ?? process.env.PERF_SERVER_NOTE ?? 'not specified',
   out: arg('out') ?? 'docs/acceptance',
+  /** Suffix of the output files (performance-report-<label>.md) for supplementary runs. */
+  label: arg('label') ?? '',
+  /** Operations left out of the mix (comma-separated names), e.g. for an isolating supplementary run. */
+  exclude: (arg('exclude') ?? '').split(',').filter(Boolean),
+  /** Sequential requests per operation before the load (unloaded service time); 0 skips. */
+  serviceSamples: num('service-samples', 5),
 };
 
 /** Sessions per role for 50 concurrent sessions (scaled proportionally for other counts). */
@@ -431,12 +446,13 @@ const OPS: Op[] = [
       return { method: 'GET', path: `${ws()}/search`, query: { q, limit: 8 } };
     },
   },
-  // Standard 90-day analytics (dashboard tabs the member may open)
+  // Standard 90-day analytics (dashboard tabs the member may open). Usage model: an active member
+  // opens a 90-day dashboard about every five minutes (50 members → ≈ 0.17/s ≈ 0.55 % of 30 reads/s).
   {
     name: 'analytics.dashboard',
     cls: 'analytics',
     stream: 'read',
-    weight: 4,
+    weight: 0.4,
     eligible: (s) => s.tabs.length > 0,
     build: (s) => ({
       method: 'GET',
@@ -708,8 +724,10 @@ const fire = async (op: Op, s: Session, phase: Phase, scheduledAt: number) => {
   }
 };
 
+const activeOps = () => OPS.filter((o) => !cfg.exclude.includes(o.name));
+
 const chooseOp = (stream: 'read' | 'write', sessions: Session[]): { op: Op; s: Session } | null => {
-  const ops = OPS.filter((o) => o.stream === stream);
+  const ops = activeOps().filter((o) => o.stream === stream);
   for (let attempt = 0; attempt < 20; attempt++) {
     const total = ops.reduce((a, o) => a + o.weight, 0);
     let r = rand() * total;
@@ -840,6 +858,37 @@ const main = async () => {
     `Discovery done in ${((performance.now() - tDisc) / 1000).toFixed(1)}s (id pools filled from first list pages).`,
   );
 
+  // Unloaded service time: a few sequential requests per operation before any load.
+  const serviceTimes: ServiceTime[] = [];
+  if (cfg.serviceSamples > 0) {
+    const tSvc = performance.now();
+    for (const op of activeOps()) {
+      const eligible = sessions.filter((s) => op.eligible(s) && !s.denied.has(op.name));
+      const ms: number[] = [];
+      let errors = 0;
+      for (let i = 0; i < cfg.serviceSamples && eligible.length; i++) {
+        const s = eligible[(i * 7) % eligible.length]!;
+        const spec = op.build(s);
+        if (!spec) continue;
+        const o = await send(s, spec);
+        op.after?.(s, o, spec);
+        if (o.status >= 200 && o.status < 300) ms.push(o.ms);
+        else errors++;
+      }
+      ms.sort((a, b) => a - b);
+      serviceTimes.push({
+        op: op.name,
+        cls: op.cls,
+        samples: ms.length,
+        errors,
+        p50: ms.length ? Math.round(ms[Math.ceil(ms.length / 2) - 1]!) : null,
+        max: ms.length ? Math.round(ms[ms.length - 1]!) : null,
+      });
+    }
+    console.log(`Unloaded service times measured in ${((performance.now() - tSvc) / 1000).toFixed(1)}s.`);
+  }
+  const loadBefore = os.loadavg();
+
   const phases: Phase[] = [
     { name: 'warmup', seconds: cfg.warmup, factor: 1, record: false, startS: 0 },
     { name: 'steady', seconds: cfg.steady, factor: 1, record: true, startS: 0 },
@@ -951,6 +1000,7 @@ const main = async () => {
   };
 
   const env = await environmentInfo(pool, cfg.databaseUrl);
+  env.host.loadAverageBefore = loadBefore.map((x) => Math.round(x * 100) / 100);
   await pool.end();
 
   const measuredSeconds = phases.filter((p) => p.record).reduce((a, p) => a + p.seconds, 0);
@@ -991,14 +1041,18 @@ const main = async () => {
     sessionsByRole: sessions.reduce<Record<string, { sessions: number; ops: string[] }>>((a, s) => {
       const e = (a[s.role] ??= {
         sessions: 0,
-        ops: OPS.filter((o) => o.eligible(s) && !s.denied.has(o.name)).map((o) => o.name),
+        ops: activeOps()
+          .filter((o) => o.eligible(s) && !s.denied.has(o.name))
+          .map((o) => o.name),
       });
       e.sessions++;
       return a;
     }, {}),
-    mix: OPS.map((o) => ({ name: o.name, cls: o.cls, stream: o.stream, weight: o.weight })),
+    mix: activeOps().map((o) => ({ name: o.name, cls: o.cls, stream: o.stream, weight: o.weight })),
+    excluded: cfg.exclude,
+    serviceTimes,
   });
-  const files = writeReport(results, cfg.out);
+  const files = writeReport(results, cfg.out, cfg.label);
   console.log(
     `\n${results.classes.map((c) => `${c.label.padEnd(34)} n=${String(c.count).padStart(5)}  p95=${c.p95 === null ? '—' : c.p95.toFixed(0).padStart(6)} ms  ≤ ${c.threshold} ms  ${c.verdict}`).join('\n')}`,
   );

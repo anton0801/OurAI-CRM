@@ -433,8 +433,9 @@ const seedTasks = async (workspaceId: string) => {
     V.tasks,
     50000,
     `WITH g AS (SELECT t, ((t - 1) % ${P}) + 1 AS p, (t - 1) / ${P} AS k, perf_seed.rnd(t, 50) AS r FROM generate_series($1::int, $2::int) t),
-          s AS (SELECT g.*, CASE WHEN r < 0.50 THEN 'done' WHEN r < 0.54 THEN 'cancelled' WHEN r < 0.59 THEN 'draft' WHEN r < 0.71 THEN 'backlog'
-                                 WHEN r < 0.83 THEN 'ready' WHEN r < 0.95 THEN 'in_progress' ELSE 'in_review' END AS status FROM g),
+          -- Two years of history: 78 % done, 7 % cancelled, 15 % open (open work is recent, see created below).
+          s AS (SELECT g.*, CASE WHEN r < 0.78 THEN 'done' WHEN r < 0.85 THEN 'cancelled' WHEN r < 0.87 THEN 'draft' WHEN r < 0.91 THEN 'backlog'
+                                 WHEN r < 0.94 THEN 'ready' WHEN r < 0.98 THEN 'in_progress' ELSE 'in_review' END AS status FROM g),
           d AS (SELECT s.*,
                        CASE WHEN status IN ('done','cancelled') THEN ${T0} - make_interval(secs => (30 + perf_seed.rnd(t, 51) * ${HISTORY_DAYS - 30}) * 86400)
                             ELSE ${T0} - make_interval(secs => perf_seed.rnd(t, 51) * 120 * 86400) END AS created,

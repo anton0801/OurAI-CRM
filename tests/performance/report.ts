@@ -27,6 +27,15 @@ export interface Phase {
   startS: number;
 }
 
+export interface ServiceTime {
+  op: string;
+  cls: string;
+  samples: number;
+  errors: number;
+  p50: number | null;
+  max: number | null;
+}
+
 export interface Sample {
   t: number;
   phase: string;
@@ -67,7 +76,15 @@ interface Stats {
 export interface Environment {
   generatedAt: string;
   commit: string;
-  host: { cpuModel: string; cpus: number; memoryGiB: number; os: string; loadAverage: number[] };
+  host: {
+    cpuModel: string;
+    cpus: number;
+    memoryGiB: number;
+    os: string;
+    /** 1/5/15-minute load average when the load started and when the run ended. */
+    loadAverageBefore?: number[];
+    loadAverage: number[];
+  };
   node: string;
   postgres: { version: string; settings: Record<string, string>; databaseBytes: number };
 }
@@ -93,7 +110,11 @@ export interface RunResults {
     skipped: Record<string, number>;
     sessionsByRole: Record<string, { sessions: number; ops: string[] }>;
     mix: { name: string; cls: string; stream: string; weight: number }[];
+    /** Operations left out of this run's mix. */
+    excluded?: string[];
   };
+  /** Sequential requests per operation before the load (no concurrency). */
+  serviceTimes?: ServiceTime[];
   classes: (Stats & {
     cls: string;
     label: string;
@@ -183,6 +204,8 @@ export const summarize = (input: {
   queue: Omit<RunResults['queue'], 'samples' | 'byPhase'>;
   sessionsByRole: RunResults['profile']['sessionsByRole'];
   mix: RunResults['profile']['mix'];
+  excluded: string[];
+  serviceTimes: ServiceTime[];
 }): RunResults => {
   const { records, phases } = input;
   const measured = phases.filter((p) => p.record);
@@ -258,7 +281,9 @@ export const summarize = (input: {
       skipped: input.skipped,
       sessionsByRole: input.sessionsByRole,
       mix: input.mix,
+      excluded: input.excluded,
     },
+    serviceTimes: input.serviceTimes,
     classes,
     ops: ops.sort((a, b) => a.cls.localeCompare(b.cls) || a.op.localeCompare(b.op)),
     queue: { samples: input.samples.length, byPhase, ...input.queue },
@@ -317,7 +342,7 @@ const s1 = (v: number | null) => (v === null ? '—' : `${v.toFixed(1)} s`);
 const n = (v: number) => v.toLocaleString('en');
 const pctOf = (v: number) => `${(v * 100).toFixed(2)} %`;
 
-export const renderReport = (r: RunResults): string => {
+export const renderReport = (r: RunResults, label = ''): string => {
   const e = r.environment;
   const c = r.config as Record<string, string | number>;
   const measured = r.profile.phases.filter((p) => p.record);
@@ -330,8 +355,15 @@ export const renderReport = (r: RunResults): string => {
     '# Performance report: staging load profile (T170)',
     '',
     `Generated ${r.generatedAt} from commit \`${e.commit}\` by \`pnpm perf:run\` (tests/performance). Raw numbers: ` +
-      '[`performance-results.json`](performance-results.json).',
+      `[\`${fileBase('performance-results', label)}.json\`](${fileBase('performance-results', label)}.json).`,
     '',
+    ...(r.profile.excluded?.length
+      ? [
+          `> **Supplementary run:** \`${r.profile.excluded.join('`, `')}\` left out of the mix to isolate the other classes. The acceptance`,
+          '> verdict comes from the full profile in `performance-report.md`.',
+          '',
+        ]
+      : []),
     '> **Where this was measured.** This run used the development container described under Environment, not the fixed staging',
     '> hardware that spec §28.3 names. PostgreSQL, the web server, the worker and the load generator shared the same',
     `> ${e.host.cpus} CPUs. The numbers show how this build behaves under the §28.3 profile with §28.3 data volumes on this`,
@@ -362,6 +394,22 @@ export const renderReport = (r: RunResults): string => {
   for (const x of r.classes)
     push(`| ${x.label} | ${measured.map((p) => ms(x.byPhase[p.name] ?? null)).join(' | ')} |`);
   push('');
+
+  if (r.serviceTimes?.length) {
+    push(
+      '## Unloaded service time',
+      '',
+      'Before the load: a few sequential requests per operation, one at a time, from sessions of different roles. This is the',
+      'latency floor of each endpoint on this data volume without any queueing.',
+      '',
+      '| Endpoint | Class | Samples | p50 | max | Errors |',
+      '|---|---|---|---|---|---|',
+      ...r.serviceTimes.map(
+        (t) => `| \`${t.op}\` | ${t.cls} | ${t.samples} | ${ms(t.p50)} | ${ms(t.max)} | ${t.errors} |`,
+      ),
+      '',
+    );
+  }
 
   push(
     '## Queue lag',
@@ -472,7 +520,8 @@ export const renderReport = (r: RunResults): string => {
   push(
     '## Environment',
     '',
-    `- Host: ${e.host.cpuModel}, ${e.host.cpus} CPUs, ${e.host.memoryGiB} GiB RAM, ${e.host.os}; load average at the end ${e.host.loadAverage.join(' / ')}`,
+    `- Host: ${e.host.cpuModel}, ${e.host.cpus} CPUs, ${e.host.memoryGiB} GiB RAM, ${e.host.os}`,
+    `- Host load average (1 / 5 / 15 min): ${e.host.loadAverageBefore ? `${e.host.loadAverageBefore.join(' / ')} when the load started, ` : ''}${e.host.loadAverage.join(' / ')} when the run ended (the run itself contributes to it)`,
     `- Node.js ${e.node}; ${e.postgres.version.split(' on ')[0]}; settings ${Object.entries(
       e.postgres.settings,
     )
@@ -484,7 +533,7 @@ export const renderReport = (r: RunResults): string => {
     '',
   );
 
-  if (existsSync(ANALYSIS_FILE)) push(readFileSync(ANALYSIS_FILE, 'utf8').trim(), '');
+  if (!label && existsSync(ANALYSIS_FILE)) push(readFileSync(ANALYSIS_FILE, 'utf8').trim(), '');
 
   push(
     '## Re-running on staging',
@@ -509,13 +558,15 @@ export const renderReport = (r: RunResults): string => {
   return lines.join('\n');
 };
 
-export const writeReport = (r: RunResults, outDir: string): string[] => {
+const fileBase = (base: string, label: string) => (label ? `${base}-${label}` : base);
+
+export const writeReport = (r: RunResults, outDir: string, label = ''): string[] => {
   const dir = resolve(root, outDir);
   mkdirSync(dir, { recursive: true });
-  const json = join(dir, 'performance-results.json');
-  const md = join(dir, 'performance-report.md');
+  const json = join(dir, `${fileBase('performance-results', label)}.json`);
+  const md = join(dir, `${fileBase('performance-report', label)}.md`);
   writeFileSync(json, `${JSON.stringify(r, null, 2)}\n`);
-  writeFileSync(md, renderReport(r));
+  writeFileSync(md, renderReport(r, label));
   return [json, md].map((f) => f.replace(`${root}/`, ''));
 };
 
@@ -523,6 +574,6 @@ export const writeReport = (r: RunResults, outDir: string): string[] => {
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const input = resolve(root, arg('in') ?? 'docs/acceptance/performance-results.json');
   const r = JSON.parse(readFileSync(input, 'utf8')) as RunResults;
-  const files = writeReport(r, arg('out') ?? 'docs/acceptance');
+  const files = writeReport(r, arg('out') ?? 'docs/acceptance', arg('label') ?? '');
   console.log(`Wrote ${files.join(', ')}`);
 }

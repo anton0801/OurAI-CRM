@@ -35,8 +35,8 @@ Stop it with Ctrl-C.
   Producer and Creator (assigned projects), Publisher (assigned accounts), Analyst, Finance Manager and Viewer. Each
   project has a lead, a producer and two creators. Each account has one publisher. Scoped lists therefore return
   realistic subsets.
-- **History:** two years of activity. Most historical content is approved and published, and open work sits in the
-  last four months. Publications carry 24-hour checkpoint observations (six values). Some also carry 7-day
+- **History:** two years of activity. 78 % of tasks are done, 7 % are cancelled and 15 % are open. Most historical
+  content is approved and published, and open work sits in the last four months. Publications carry 24-hour checkpoint observations (six values). Some also carry 7-day
   observations, and accounts carry weekly follower snapshots, so the 90-day analytics have real data to read.
 - **Generation:** every row is produced in PostgreSQL with `INSERT … SELECT generate_series(…)` in batches.
   Deterministic helper functions in a scratch schema derive UUIDs and pseudo-random values from row indexes, so
@@ -67,11 +67,14 @@ Options: `--scale <0..1>` (default 1), `--database <name>` (default `castlane_pe
     to the next page.
   - Detail views of records the session saw in its lists.
   - Global search: single words, word pairs, project names and 4-letter prefixes.
-  - 90-day analytics dashboards (production, content, accounts, with comparison).
+  - 90-day analytics dashboards (production, content, accounts, with comparison). The usage model: each active member
+    opens a dashboard about every five minutes, which is ≈ 0.17/s or 0.55 % of reads.
   - Critical writes: create task, status transition with `If-Match`, comment, time entry.
   - A heavy request: a CSV export of one project's tasks, which returns 202 with a job.
   - Writes send `Origin`, `X-CSRF-Token`, `Idempotency-Key` and `If-Match` like the browser client. Media transfer is
     excluded, as §28.3 requires.
+- **Unloaded service time:** before the load, the runner sends a few sequential requests per operation
+  (`--service-samples`, default 5). The report lists them as each endpoint's latency without queueing.
 - **Queue lag:** every 2 s the runner samples the age of the oldest due queued job and of the oldest undispatched
   outbox event, the backlog sizes and the host CPU. After the load it waits for the queues to drain, then reads the
   completion latency of every job, outbox event and export created in the measured window.
@@ -87,8 +90,9 @@ Options: `--scale <0..1>` (default 1), `--database <name>` (default `castlane_pe
 Options: `--base-url` (default `http://127.0.0.1:3200`), `--origin` (the server's `APP_ORIGIN`, default
 `https://perf.castlane.invalid`), `--database-url` (the load database, used for sessions and queue sampling),
 `--sessions`, `--reads`, `--writes`, `--burst-factor`, `--warmup`, `--steady`, `--burst`, `--cooldown` (seconds),
-`--max-in-flight`, `--timeout-ms`, `--drain`, `--seed` (request sequence), `--server-note` (free text for the report)
-and `--out` (default `docs/acceptance`). The analysis section of the report comes from
+`--max-in-flight`, `--timeout-ms`, `--drain`, `--seed` (request sequence), `--service-samples`, `--server-note` (free
+text for the report) and `--out` (default `docs/acceptance`). For a supplementary run, `--exclude <op,…>` leaves
+operations out of the mix and `--label <name>` writes `performance-report-<name>.md` instead of the main report. The analysis section of the report comes from
 `tests/performance/analysis.md`, if that file is present.
 
 ## Production configuration of the local stack
