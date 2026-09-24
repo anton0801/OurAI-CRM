@@ -37502,6 +37502,14 @@
               "type": "string",
               "maxLength": 10
             }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {
@@ -37933,6 +37941,39 @@
                               "finance"
                             ]
                           }
+                        },
+                        "snapshot": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "computedAt": {
+                                  "$ref": "#/components/schemas/AuthReauthenticateRecentAuthAt"
+                                },
+                                "ageSeconds": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "refreshPending": {
+                                  "type": "boolean"
+                                },
+                                "live": {
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": [
+                                "computedAt",
+                                "ageSeconds",
+                                "refreshPending",
+                                "live"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
