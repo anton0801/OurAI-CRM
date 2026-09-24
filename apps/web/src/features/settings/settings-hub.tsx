@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { Archive, Buildings, ClockCounterClockwise, Compass, Gauge, ListChecks, ShieldCheck, UserCircle, UsersThree, type Icon } from '@phosphor-icons/react';
+import { Archive, Buildings, ClockCounterClockwise, Compass, DownloadSimple, Gauge, ListChecks, ShieldCheck, UploadSimple, UserCircle, UsersThree, type Icon } from '@phosphor-icons/react';
 import { PageHeader } from '@castlane/ui';
 import { useCan, useWsPath } from '@/lib/workspace-context';
 
@@ -21,6 +21,8 @@ const ENTRIES: Entry[] = [
   { href: '/directions', title: 'Directions', description: 'Business directions, their leads and order.', icon: Compass, anyOf: ['directions.read'] },
   { href: '/settings/audit', title: 'Audit Log', description: 'History of important changes with masked field differences.', icon: ClockCounterClockwise, anyOf: ['audit.read'] },
   { href: '/settings/templates', title: 'Templates and Custom Fields', description: 'Reusable task, content and checklist templates; custom fields.', icon: ListChecks, anyOf: ['templates.manage', 'custom-fields.manage'] },
+  { href: '/imports', title: 'Import Center', description: 'Upload CSV or XLSX files, map columns, validate and confirm imports.', icon: UploadSimple, anyOf: ['imports.create'] },
+  { href: '/exports', title: 'Export Center', description: 'Request CSV or XLSX exports of records you may see; downloads expire after 7 days.', icon: DownloadSimple, anyOf: ['exports.create'] },
   { href: '/archive', title: 'Archive and Trash', description: 'Archived and recently deleted records.', icon: Archive, anyOf: [] },
   { href: '/operations/health', title: 'System Health', description: 'Incidents, jobs, mail delivery and backup status.', icon: Gauge, anyOf: ['incidents.read', 'system.jobs.read', 'backups.status.read'] },
 ];

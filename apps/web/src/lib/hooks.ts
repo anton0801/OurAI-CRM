@@ -66,7 +66,7 @@ export const useApiMutation = <E extends AnyEndpoint>(ep: E, opts: MutationOptio
       opts.onError?.(err);
       if (!opts.silentErrors) {
         if (err.network) toast.error('You are offline', 'Changes are not being saved. Retry when the connection is back.');
-        else if (err.code !== 'VALIDATION_FAILED' && err.code !== 'VERSION_CONFLICT') toast.error(err.message);
+        else if (err.code !== 'VALIDATION_FAILED' && err.code !== 'VERSION_CONFLICT') toast.error(err.message, err.requestId && err.status >= 500 ? `Request ID ${err.requestId}` : undefined);
       }
     },
   });

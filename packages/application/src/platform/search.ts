@@ -1,10 +1,11 @@
-import { and, count, eq, ilike, inArray, or, sql, type SQL } from 'drizzle-orm';
+import { and, count, eq, ilike, inArray, isNull, or, sql, type SQL } from 'drizzle-orm';
 import { entityHref } from '@castlane/api-contracts';
 import { listFilter } from '@castlane/authorization';
 import { searchDocuments } from '@castlane/database';
 import { isUuid } from '@castlane/domain';
 import { filterToSql } from '../core/access';
 import type { QueryContext } from '../core/context';
+import { audienceOf } from '../knowledge/access';
 
 /** Read permissions whose documents appear in global search (contacts, finance and audit are separate datasets). */
 export const SEARCHABLE_PERMISSIONS = [
@@ -43,6 +44,21 @@ export interface SearchInput {
 export const searchPermissionPredicate = (ctx: QueryContext): SQL | null => {
   const perms: SQL[] = [];
   for (const p of SEARCHABLE_PERMISSIONS) {
+    if (p === 'knowledge.read') {
+      // Knowledge articles have their own audience (§14): workspace-wide articles are read by anyone
+      // holding knowledge.read anywhere; direction articles by members covering the direction.
+      const aud = audienceOf(ctx.actor.access, p, 'read');
+      if (aud.none) continue;
+      const scope = aud.all
+        ? sql`true`
+        : or(
+            and(isNull(searchDocuments.projectId), isNull(searchDocuments.directionId)),
+            aud.projectIds.length ? inArray(searchDocuments.projectId, aud.projectIds) : undefined,
+            aud.directionIds.length ? and(isNull(searchDocuments.projectId), inArray(searchDocuments.directionId, aud.directionIds)) : undefined,
+          )!;
+      perms.push(and(eq(searchDocuments.permission, p), scope)!);
+      continue;
+    }
     const f = listFilter(ctx.actor.access, p);
     if (f.kind === 'none') continue;
     const pred = filterToSql(f, {

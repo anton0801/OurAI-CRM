@@ -34,7 +34,12 @@ export const QueryState = ({
   if (query.error) {
     if (query.error.status === 403) return <PermissionDenied />;
     if (query.error.status === 404) return <NotFoundState onBack={() => router.back()} />;
-    return <ErrorState description={query.error.network ? 'You appear to be offline.' : query.error.message} onRetry={() => void query.refetch()} />;
+    return (
+      <ErrorState
+        description={query.error.network ? 'You appear to be offline.' : `${query.error.message}${query.error.requestId ? ` (Request ID ${query.error.requestId})` : ''}`}
+        onRetry={() => void query.refetch()}
+      />
+    );
   }
   return <>{children}</>;
 };
