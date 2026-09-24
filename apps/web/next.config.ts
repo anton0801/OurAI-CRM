@@ -30,6 +30,8 @@ const nextConfig: NextConfig = {
   // Do not generate AGENTS.md / CLAUDE.md into the app directory.
   agentRules: false,
   poweredByHeader: false,
+  // A separate build directory lets the e2e server run next to a development server.
+  distDir: process.env.NEXT_DIST_DIR || '.next',
   output: 'standalone',
   outputFileTracingRoot: root,
   turbopack: { root },

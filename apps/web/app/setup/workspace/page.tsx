@@ -3,7 +3,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { setupEndpoints } from '@castlane/api-contracts';
 import { SUPPORTED_CURRENCIES } from '@castlane/domain';
-import { Button, Field, Input, Panel, Select } from '@castlane/ui';
+import { Button, Field, Input, Panel, Select, Skeleton } from '@castlane/ui';
 import { FormError } from '@/components/auth/auth-card';
 import { SetupStepHeader } from '@/components/setup/setup-frame';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
@@ -28,11 +28,14 @@ const WorkspaceStep = () => {
   const [weekStartsOn, setWeek] = useState<'monday' | 'sunday'>('monday');
   const suggested = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
   const loaded = useRef(false);
+  // The form renders only after the saved progress is applied, so nothing typed is overwritten.
+  const [ready, setReady] = useState(false);
   useEffect(() => {
     const d = progress.data?.workspace;
     // Initialise the form once; later refetches must not overwrite what the Owner is typing.
     if (!d || loaded.current) return;
     loaded.current = true;
+    setReady(true);
     setName(d.name === 'Castlane Workspace' ? '' : d.name);
     setTimezone(d.timezone === 'UTC' && suggested ? suggested : d.timezone);
     setCurrency(d.baseCurrency);
@@ -41,6 +44,23 @@ const WorkspaceStep = () => {
   const save = useApiMutation(setupEndpoints.saveWorkspace, { silentErrors: true });
   const tzOptions = useMemo(() => zones().map((z) => ({ value: z, label: z })), []);
   if (!w) return <FormError message="Missing workspace. Open the setup link from your sign-in page." />;
+  if (progress.isError) return <FormError message={progress.error.message} />;
+  if (!ready)
+    return (
+      <>
+        <SetupStepHeader step={1} title="Set up your workspace" description="Name, time zone and base currency. Nothing financial is created by choosing a currency." />
+        <Panel>
+          <div aria-busy="true" aria-label="Loading" className="flex flex-col gap-4">
+            {[0, 1, 2, 3].map((i) => (
+              <div key={i} className="flex flex-col gap-1.5">
+                <Skeleton className="h-[18px] w-28" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            ))}
+          </div>
+        </Panel>
+      </>
+    );
   return (
     <>
       <SetupStepHeader step={1} title="Set up your workspace" description="Name, time zone and base currency. Nothing financial is created by choosing a currency." />

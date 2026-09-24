@@ -3,7 +3,7 @@ import { Plus, Trash } from '@phosphor-icons/react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import { setupEndpoints } from '@castlane/api-contracts';
-import { Button, Field, IconButton, Input, Panel, Select } from '@castlane/ui';
+import { Button, Field, IconButton, Input, Panel, Select, Skeleton } from '@castlane/ui';
 import { FormError } from '@/components/auth/auth-card';
 import { SetupStepHeader } from '@/components/setup/setup-frame';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
@@ -28,10 +28,13 @@ const DirectionsStep = () => {
   const progress = useApiQuery(setupEndpoints.progress, { params: { workspaceId: w } }, { enabled: !!w });
   const [rows, setRows] = useState<Row[]>(DEFAULTS);
   const loaded = useRef(false);
+  // The form renders only after the saved progress is applied, so nothing typed is overwritten.
+  const [ready, setReady] = useState(false);
   useEffect(() => {
     const d = progress.data?.directions;
     if (!d || loaded.current) return;
     loaded.current = true;
+    setReady(true);
     if (d.length) setRows(d.map((x) => ({ key: x.id, id: x.id, name: x.name, leadMembershipId: x.leadMembershipId, presetKind: (x.presetKind as Row['presetKind']) ?? null })));
   }, [progress.data]);
   const save = useApiMutation(setupEndpoints.saveDirections, { silentErrors: true });
@@ -39,6 +42,17 @@ const DirectionsStep = () => {
   const dup = names.some((n, i) => n && names.indexOf(n) !== i);
   const invalid = rows.length === 0 || rows.some((r) => r.name.trim().length < 2) || dup;
   const members = (progress.data?.members ?? []).map((m) => ({ value: m.id, label: m.displayName }));
+  if (progress.isError) return <FormError message={progress.error.message} />;
+  if (!ready)
+    return (
+      <Panel>
+        <div aria-busy="true" aria-label="Loading" className="flex flex-col gap-3">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
+        </div>
+      </Panel>
+    );
   return (
     <>
       <SetupStepHeader

@@ -28,6 +28,12 @@ export const createDatabase = (url: string, opts: { max?: number; applicationNam
     idleTimeoutMillis: 30_000,
     statement_timeout: 30_000,
   });
+  // An idle client can be terminated by the server (restart, failover, admin command). Without a
+  // listener the 'error' event would crash the process; the pool discards the client and the next
+  // query opens a fresh connection.
+  pool.on('error', (err) => {
+    process.stderr.write(`${JSON.stringify({ t: new Date().toISOString(), level: 'warn', msg: 'db_idle_client_error', errorCode: (err as { code?: string }).code ?? null })}\n`);
+  });
   const db = drizzle(pool, { schema });
   return { db, pool, close: () => pool.end() };
 };

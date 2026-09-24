@@ -7,11 +7,29 @@ import type { AppServices, Logger } from './context';
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 } as const;
 
 /** Structured JSON logger. Callers must never pass secrets, raw contact notes or signed URLs. */
+/** Keys whose values never reach logs (T171): credentials, MFA, tokens, signed URLs, private notes. */
+const SENSITIVE_KEY = /pass(word|phrase)?|secret|token|otp|totp|recovery|cookie|authorization|signature|signed|credential|private|notes?$|^body$|excerpt|^code$|^(mfa|totp|recovery)Code$/i;
+const SIGNED_QUERY = /([?&](?:sig|signature|token|x-amz-signature|x-amz-credential|x-amz-security-token)=)[^&\s"]+/gi;
+
+/** Redact sensitive fields recursively and strip signatures from URLs in string values. */
+export const redactForLog = (value: unknown, depth = 0): unknown => {
+  if (depth > 6) return '[truncated]';
+  if (typeof value === 'string') return value.replace(SIGNED_QUERY, '$1[redacted]');
+  if (Array.isArray(value)) return value.slice(0, 50).map((v) => redactForLog(v, depth + 1));
+  if (value instanceof Error) return { name: value.name, message: redactForLog(value.message, depth + 1) };
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = SENSITIVE_KEY.test(k) ? '[redacted]' : redactForLog(v, depth + 1);
+    return out;
+  }
+  return value;
+};
+
 export const createLogger = (level: keyof typeof LEVELS = 'info', base: Record<string, unknown> = {}): Logger => {
   const min = LEVELS[level];
   const write = (lvl: keyof typeof LEVELS, msg: string, meta?: Record<string, unknown>) => {
     if (LEVELS[lvl] < min) return;
-    const line = JSON.stringify({ t: new Date().toISOString(), level: lvl, msg, ...base, ...meta });
+    const line = JSON.stringify({ t: new Date().toISOString(), level: lvl, msg, ...base, ...(meta ? (redactForLog(meta) as Record<string, unknown>) : {}) });
     if (lvl === 'error' || lvl === 'warn') process.stderr.write(`${line}\n`);
     else process.stdout.write(`${line}\n`);
   };

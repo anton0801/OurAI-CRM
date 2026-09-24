@@ -162,7 +162,7 @@ export const ProjectsScreen = () => {
           ) : (
             <EmptyState
               icon={<Briefcase size={28} />}
-              title="No projects yet"
+              title="Start your first project"
               description="No projects yet. Create a project to organize its team, accounts, and content."
               action={can('projects.create') ? <Button variant="primary" onClick={() => router.push(wsPath('/projects/new'))}>New Project</Button> : undefined}
             />
