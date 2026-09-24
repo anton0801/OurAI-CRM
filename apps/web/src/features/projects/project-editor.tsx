@@ -85,9 +85,21 @@ export const ProjectEditor = ({ project }: { project?: ProjectDetail }) => {
     };
     try {
       if (project) {
-        const { directionId: _ignored, ...patch } = body;
-        void _ignored;
-        const r = await update.run({ params: { workspaceId: workspace.id, projectId: project.id }, body: { ...patch, type: v.type } }, { ifMatch: project.rowVersion });
+        // Send only what this member changed: after a version conflict ("Keep Editing") the save
+        // must not write back stale values of fields someone else updated meanwhile (T162).
+        // Compared with the values the form was opened with (the edit form never resets them).
+        const initial = form.formState.defaultValues ?? {};
+        const dirty = (k: keyof FormValues) => v[k] !== initial[k];
+        const patch: Record<string, unknown> = {};
+        for (const k of ['name', 'ownerMembershipId', 'briefSummary', 'description', 'language', 'targetMarkets', 'audience', 'tags', 'startDate'] as const)
+          if (dirty(k)) patch[k] = body[k];
+        if (dirty('type')) patch.type = v.type;
+        if (dirty('type') || dirty('ofmEnabled')) patch.ofmEnabled = body.ofmEnabled;
+        if (Object.keys(patch).length === 0) {
+          router.push(wsPath(`/projects/${project.id}`));
+          return;
+        }
+        const r = await update.run({ params: { workspaceId: workspace.id, projectId: project.id }, body: patch }, { ifMatch: project.rowVersion });
         router.push(wsPath(`/projects/${r.id}`));
       } else {
         const r = await create.run({ params: { workspaceId: workspace.id }, body: { ...body, type: v.type, activate: v.activate && !!body.briefSummary } });
