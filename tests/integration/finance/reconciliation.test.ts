@@ -106,8 +106,8 @@ describe('deals and campaign panels (T138, T016)', () => {
   });
 });
 
-describe('import and export datasets (T148)', () => {
-  it('financial import creates drafts only, validates references and duplicates, undo removes untouched drafts', async () => {
+describe('import and export datasets', () => {
+  it('financial import creates drafts only — never posted — validates references and duplicates, undo removes untouched drafts (T148)', async () => {
     const { ws, fm, fmc, owner, project, p } = await financeSetup();
     const app = getAppServices();
     const ctx = (await memberJobContext(app, ws.workspaceId, fm.membershipId, { source: 'import' }))!;
@@ -120,6 +120,9 @@ describe('import and export datasets (T148)', () => {
     const e = await fmc.call(F.entriesGet, { params: { ...p, entryId: id } });
     expect(e.state).toBe('draft');
     expect(e.projects.map((x) => x.id)).toEqual([project.id]);
+    // Nothing was posted: no posted row, no ledger effect.
+    expect((await db().select().from(financialEntries).where(eq(financialEntries.workspaceId, ws.workspaceId))).map((r) => [r.id, r.state, r.postedAt])).toEqual([[id, 'draft', null]]);
+    expect((await owner.call(F.overview, { params: p, query: { periodStart: '2024-03-01', periodEnd: '2024-03-31' } })).accrual.operatingExpenses.amount).toBe('0.00');
     // Ambiguous decimals / unknown references / duplicates are blocking errors.
     const bad = await ds.validate(ctx, { ...row, amount: '1,234', project: 'Nope', source_external_id: 'B-2' }, { duplicatePolicy: 'error', rowNo: 2 });
     expect(bad.errors.map((x) => x.field).sort()).toEqual(['amount', 'project']);
@@ -146,7 +149,6 @@ describe('import and export datasets (T148)', () => {
     expect(fxDup.errors.map((x) => x.code)).toEqual(['DUPLICATE']);
     const fxBad = await fx.validate(ctx, { from_currency: 'EUR', to_currency: 'EUR', rate: '0,9', effective_date: '1.3.2024', source: 'x' }, { duplicatePolicy: 'error', rowNo: 3 });
     expect(fxBad.errors.length).toBeGreaterThanOrEqual(3);
-    void owner;
   });
 
   it('ledger export is finance-classified and scope-filtered; compensation export needs workspace access', async () => {
