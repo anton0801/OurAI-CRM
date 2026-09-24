@@ -54,11 +54,12 @@ export const insertContent = async (
       createdAt: now,
       updatedAt: now,
     });
-  // v1 approved (unless approved=false), v2 submitted and still awaiting review.
+  // v1 approved (unless approved=false), v2 submitted and still awaiting review. v1 is submitted after its
+  // file is attached (the DB refuses files on a submitted version).
   await db()
     .insert(contentVersions)
     .values([
-      { id: approvedVersionId, workspaceId: ws.workspaceId, contentItemId: id, versionNo: 1, submittedAt: now, approvedAt: input.approved === false ? null : now, createdAt: now, updatedAt: now },
+      { id: approvedVersionId, workspaceId: ws.workspaceId, contentItemId: id, versionNo: 1, approvedAt: input.approved === false ? null : now, createdAt: now, updatedAt: now },
       { id: draftVersionId, workspaceId: ws.workspaceId, contentItemId: id, versionNo: 2, submittedAt: now, createdAt: now, updatedAt: now },
     ]);
   if (input.approved !== false)
@@ -74,6 +75,7 @@ export const insertContent = async (
     await db().update(assets).set({ currentVersionId: assetVersionId }).where(eq(assets.id, assetId));
     await db().insert(contentVersionAssets).values({ id: newId(), workspaceId: ws.workspaceId, contentVersionId: approvedVersionId, slot: 'main_video', assetVersionId, createdAt: now, updatedAt: now });
   }
+  await db().update(contentVersions).set({ submittedAt: now }).where(eq(contentVersions.id, approvedVersionId));
   return { id, approvedVersionId: input.approved === false ? null : approvedVersionId, pendingVersionId: draftVersionId, unapprovedVersionId: input.approved === false ? approvedVersionId : draftVersionId, assetId };
 };
 

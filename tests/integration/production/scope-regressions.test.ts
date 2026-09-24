@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
-import { accountAssignments, projects, publications } from '@castlane/database';
+import { accountAssignments, contentVersionAssets, contentVersions, projects, publications } from '@castlane/database';
 import { newId } from '@castlane/domain';
 import { createAccount } from '../../support';
-import { C, R, contentInReview, db, getContent, member, newContent, prodFixture, review, setPolicy } from './helpers';
+import { C, R, V, contentInReview, db, getContent, member, newContent, prodFixture, review, setPolicy, uploadPng } from './helpers';
 
 type Client = Awaited<ReturnType<typeof member>>['client'];
 type Fixture = Awaited<ReturnType<typeof prodFixture>>;
@@ -12,6 +12,15 @@ const approve = async (c: Client, f: Fixture, reviewId: string, versionId: strin
   c.attempt(R.approve, { params: { ...f.params, reviewId }, body: { versionId } }, { ifMatch: (await review(c, f, reviewId)).rowVersion });
 const requestChanges = async (c: Client, f: Fixture, reviewId: string, versionId: string) =>
   c.attempt(R.requestChanges, { params: { ...f.params, reviewId }, body: { versionId, summary: 'Needs work', explanation: 'Brighten the shadows.' } }, { ifMatch: (await review(c, f, reviewId)).rowVersion });
+/** The database error behind a failed query (drizzle wraps it). */
+const dbError = async (q: PromiseLike<unknown>) => {
+  try {
+    await q;
+    return null;
+  } catch (e) {
+    return String((e as { cause?: { message?: string } }).cause?.message ?? (e as Error).message);
+  }
+};
 const queueRow = async (c: Client, f: Fixture, reviewId: string) => (await c.call(R.list, { params: f.params, query: { scope: 'all' } })).items.find((i) => i.id === reviewId);
 
 describe('production scope regressions', () => {
@@ -98,5 +107,30 @@ describe('review decisions regressions', () => {
     expect((await review(lead2.client, f, step2.id)).permissions.approve).toBe(true);
     expect((await approve(lead2.client, f, step2.id, r.versionId)).status).toBe(200);
     expect((await getContent(f.owner, f, r.contentId)).stage).toBe('approved');
+  });
+});
+
+describe('version immutability in the database', () => {
+  it('a submitted version takes no new files and keeps its checklist and note; approval columns still change', async () => {
+    const f = await prodFixture();
+    const lead = await member(f, 'project_lead', { projects: [f.projectId] });
+    const r = await contentInReview(f.owner, f, { ownerMembershipId: f.ws.owner.membershipId, reviewerMembershipId: lead.membershipId });
+    const extra = await uploadPng(f.owner, f);
+    const now = new Date();
+    // Adding a file behind the application's back is refused by the trigger.
+    expect(
+      await dbError(db().insert(contentVersionAssets).values({ id: newId(), workspaceId: f.ws.workspaceId, contentVersionId: r.versionId, slot: 'cover', assetVersionId: extra.assetVersionId, createdAt: now, updatedAt: now })),
+    ).toMatch(/immutable/);
+    expect(await dbError(db().update(contentVersions).set({ checklist: [] }).where(eq(contentVersions.id, r.versionId)))).toMatch(/immutable/);
+    expect(await dbError(db().update(contentVersions).set({ note: 'rewritten' }).where(eq(contentVersions.id, r.versionId)))).toMatch(/immutable/);
+    // A file cannot be moved from a draft into the submitted version either.
+    const draft = await f.owner.call(V.create, { params: { ...f.params, contentId: r.contentId }, body: {} });
+    await f.owner.call(V.attachFile, { params: { ...f.params, contentId: r.contentId, versionId: draft.id }, body: { slot: 'main_image', assetVersionId: extra.assetVersionId } });
+    expect(await dbError(db().update(contentVersionAssets).set({ contentVersionId: r.versionId }).where(eq(contentVersionAssets.contentVersionId, draft.id)))).toMatch(/immutable/);
+    // Draft versions stay editable; the approval columns of the submitted one too.
+    await db().update(contentVersions).set({ note: 'draft note' }).where(eq(contentVersions.id, draft.id));
+    await db().update(contentVersions).set({ approvedAt: now }).where(eq(contentVersions.id, r.versionId));
+    const files = await db().select().from(contentVersionAssets).where(eq(contentVersionAssets.contentVersionId, r.versionId));
+    expect(files.map((x) => x.slot)).toEqual(['main_image']);
   });
 });
