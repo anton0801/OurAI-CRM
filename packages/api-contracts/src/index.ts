@@ -7,3 +7,4 @@ export * from './lookup';
 export * from './organization';
 export * from './media';
 export * from './registry';
+export * from './knowledge';

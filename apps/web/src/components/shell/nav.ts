@@ -112,4 +112,6 @@ export const QUICK_CREATE: QuickCreateItem[] = [
   { label: 'Add Metrics', href: '/metrics/new', anyOf: ['metrics.write'] },
   { label: 'Add Reference', href: '/references?create=1', anyOf: ['references.write'] },
   { label: 'New Financial Entry', href: '/finance/entries/new', anyOf: ['finance.create'] },
+  { label: 'Upload Files', href: '/library?upload=1', anyOf: ['assets.upload'] },
+  { label: 'New Article', href: '/knowledge/new', anyOf: ['knowledge.write'] },
 ];

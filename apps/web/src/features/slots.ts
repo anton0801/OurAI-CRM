@@ -3,3 +3,4 @@
  * Modules add one import line each.
  */
 import './project-tabs';
+import './knowledge/register-slots';

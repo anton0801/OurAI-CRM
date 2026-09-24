@@ -15,6 +15,13 @@
       "when": 1790207764947,
       "tag": "0001_serious_brood",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790209549791,
+      "tag": "0002_classy_nebula",
+      "breakpoints": true
     }
   ]
 }

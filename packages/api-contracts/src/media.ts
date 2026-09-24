@@ -1,13 +1,30 @@
 import { z } from 'zod';
 import { ASSET_KINDS, ASSET_VERSION_STATUSES, SENSITIVITIES } from '@castlane/domain';
 import { endpoint } from './core';
-import { boolQuery, csv, httpsUrl, isoDateTime, memberRef, okResponse, page, pageQuery, shortName, tags, uuid, wsId, safeUrl } from './common';
+import {
+  boolQuery,
+  csv,
+  impactItem,
+  isoDateTime,
+  memberRef,
+  okResponse,
+  page,
+  pageQuery,
+  shortName,
+  tag,
+  tags,
+  uuid,
+  wsId,
+  safeUrl,
+} from './common';
 
 export const uploadTarget = z.object({
   entityType: z.string().max(60),
   entityId: uuid,
   role: z.string().max(40).optional(),
 });
+
+export const UPLOAD_PURPOSES = ['content', 'avatar', 'logo', 'cover', 'reference', 'evidence', 'document', 'import', 'general'] as const;
 
 export const assetVersionView = z.object({
   id: uuid,
@@ -26,37 +43,164 @@ export const assetVersionView = z.object({
   createdAt: isoDateTime,
   createdBy: memberRef.nullable(),
   previewAvailable: z.boolean(),
+  /** Deleted versions stay listed for history; their file is no longer available. */
+  deletedAt: isoDateTime.nullable().optional(),
+  isCurrent: z.boolean().optional(),
 });
+export type AssetVersionView = z.infer<typeof assetVersionView>;
 
 export const assetView = z.object({
   id: uuid,
   name: z.string(),
   kind: z.enum(ASSET_KINDS),
   projectId: uuid.nullable(),
+  /** Project name when the member can read the project; null otherwise. */
+  projectName: z.string().nullable().optional(),
   folderId: uuid.nullable(),
   sensitivity: z.enum(SENSITIVITIES),
   tags: z.array(z.string()),
   description: z.string().nullable(),
+  /** External link (metadata only — never fetched or previewed by the server). */
   externalUrl: z.string().nullable(),
   currentVersion: assetVersionView.nullable(),
+  /** Newest version while it is still uploading, being checked, processed, or was rejected (shown separately from the current file). */
+  pendingVersion: assetVersionView.nullable().optional(),
+  owner: memberRef.nullable().optional(),
+  /** Active usage links (counted; names of links the member cannot read are never shown). */
+  usageCount: z.number().int().optional(),
   archivedAt: isoDateTime.nullable(),
+  createdAt: isoDateTime.optional(),
   updatedAt: isoDateTime,
   rowVersion: z.number().int(),
   /** Thumbnail URL (authorised endpoint, never a public object URL). Null when no derivative exists or media is restricted. */
   thumbnailUrl: z.string().nullable(),
   canDownload: z.boolean(),
+  /** Restricted media is shown as a neutral placeholder by default. */
   restrictedHidden: z.boolean(),
+  /** The member may reveal restricted media (explicit action, assets.restricted.read). */
+  canReveal: z.boolean().optional(),
 });
 export type AssetView = z.infer<typeof assetView>;
 
+export const usageLink = z.object({
+  id: uuid,
+  entityType: z.string(),
+  entityId: uuid,
+  role: z.string(),
+  label: z.string().nullable(),
+  href: z.string().nullable(),
+  versionId: uuid.nullable().optional(),
+  versionNo: z.number().int().nullable().optional(),
+  /** Holding links (approved content, published placement, finance evidence, article version) cannot be removed. */
+  holding: z.boolean().optional(),
+  createdAt: isoDateTime.optional(),
+});
+
 export const assetDetail = assetView.extend({
   versions: z.array(assetVersionView),
-  usage: z.array(z.object({ id: uuid, entityType: z.string(), entityId: uuid, role: z.string(), label: z.string().nullable(), href: z.string().nullable() })),
+  usage: z.array(usageLink),
   hiddenUsageCount: z.number().int(),
-  permissions: z.object({ update: z.boolean(), upload: z.boolean(), archive: z.boolean(), link: z.boolean() }),
+  folderPath: z.array(z.object({ id: uuid, name: z.string() })).optional(),
+  retention: z
+    .object({
+      /** Days a deleted version stays recoverable before its file is purged. */
+      trashDays: z.number().int(),
+      heldByReferences: z.boolean(),
+    })
+    .optional(),
+  permissions: z.object({
+    update: z.boolean(),
+    upload: z.boolean(),
+    archive: z.boolean(),
+    link: z.boolean(),
+    download: z.boolean().optional(),
+    changeSensitivity: z.boolean().optional(),
+    restore: z.boolean().optional(),
+    deleteVersion: z.boolean().optional(),
+  }),
+});
+export type AssetDetail = z.infer<typeof assetDetail>;
+
+export const folderView = z.object({
+  id: uuid,
+  name: z.string(),
+  parentId: uuid.nullable(),
+  projectId: uuid.nullable(),
+  projectName: z.string().nullable(),
+  depth: z.number().int(),
+  archivedAt: isoDateTime.nullable(),
+  updatedAt: isoDateTime,
+  rowVersion: z.number().int(),
+  permissions: z.object({ create: z.boolean(), update: z.boolean(), archive: z.boolean() }),
+});
+export type FolderView = z.infer<typeof folderView>;
+
+export const folderDetail = folderView.extend({
+  path: z.array(z.object({ id: uuid, name: z.string() })),
+  counts: z.object({ subfolders: z.number().int(), assets: z.number().int() }),
 });
 
 const partUrl = z.object({ partNumber: z.number().int(), url: z.string(), method: z.literal('PUT'), headers: z.record(z.string(), z.string()) });
+
+export const ASSET_SORTS = ['updatedAt', 'createdAt', 'name'] as const;
+export const ASSET_STATUS_FILTERS = [...ASSET_VERSION_STATUSES, 'external'] as const;
+
+/** Typed Library filter (also used as the bulk "Select All Matching" snapshot — never SQL). */
+export const assetFilter = z.object({
+  q: z.string().trim().max(120).optional(),
+  projectId: uuid.optional(),
+  folderId: uuid.optional(),
+  rootOnly: boolQuery.optional(),
+  kind: csv(z.enum(ASSET_KINDS)).optional(),
+  tag: csv(z.string().max(40)).optional(),
+  sensitivity: z.enum(SENSITIVITIES).optional(),
+  status: csv(z.enum(ASSET_STATUS_FILTERS)).optional(),
+  uploaderMembershipId: uuid.optional(),
+  accountId: uuid.optional(),
+  updatedFrom: isoDateTime.optional(),
+  updatedTo: isoDateTime.optional(),
+  archived: z.enum(['exclude', 'include', 'only']).optional(),
+  includeArchived: boolQuery.optional(),
+});
+export type AssetFilter = z.infer<typeof assetFilter>;
+
+export const BULK_ASSET_ACTIONS = ['move', 'tag', 'untag', 'archive'] as const;
+
+export const bulkPreviewItem = z.object({
+  id: uuid,
+  name: z.string(),
+  outcome: z.enum(['apply', 'skip', 'denied', 'conflict']),
+  reason: z.string().nullable(),
+  /** Moving into a folder of another project changes who can see the file. */
+  scopeChange: z.object({ fromProjectId: uuid.nullable(), toProjectId: uuid.nullable(), fromProjectName: z.string().nullable(), toProjectName: z.string().nullable() }).nullable(),
+});
+
+export const bulkPreviewResult = z.object({
+  token: uuid,
+  expiresAt: isoDateTime,
+  action: z.enum(BULK_ASSET_ACTIONS),
+  items: z.array(bulkPreviewItem),
+  counts: z.object({ apply: z.number().int(), skip: z.number().int(), denied: z.number().int(), conflict: z.number().int() }),
+  /** Items beyond the preview limit are not included and not changed. */
+  truncated: z.boolean(),
+});
+
+export const bulkApplyResult = z.object({
+  applied: z.array(uuid),
+  failed: z.array(z.object({ id: uuid, reason: z.string() })),
+  skipped: z.number().int(),
+});
+
+export const versionDeletePreview = z.object({
+  versionId: uuid,
+  versionNo: z.number().int(),
+  isCurrent: z.boolean(),
+  deletable: z.boolean(),
+  byteSize: z.number().int().nullable(),
+  items: z.array(impactItem),
+  /** Suggested alternative when references hold the version. */
+  suggestion: z.string().nullable(),
+});
 
 export const mediaEndpoints = {
   initiateUpload: endpoint({
@@ -78,7 +222,7 @@ export const mediaEndpoints = {
       projectId: uuid.nullable().optional(),
       folderId: uuid.nullable().optional(),
       sensitivity: z.enum(SENSITIVITIES).optional(),
-      purpose: z.enum(['content', 'avatar', 'logo', 'cover', 'reference', 'evidence', 'document', 'import', 'general']).default('general'),
+      purpose: z.enum(UPLOAD_PURPOSES).default('general'),
       target: uploadTarget.optional(),
       note: z.string().max(500).optional(),
     }),
@@ -109,6 +253,30 @@ export const mediaEndpoints = {
       expiresAt: isoDateTime,
     }),
   }),
+  listOpenUploads: endpoint({
+    id: 'uploads.listOpen',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/uploads',
+    summary: 'The member’s own unfinished upload sessions (resumable until they expire).',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.upload',
+    params: wsId({}),
+    response: z.array(
+      z.object({
+        uploadId: uuid,
+        assetId: uuid.nullable(),
+        assetVersionId: uuid.nullable(),
+        filename: z.string(),
+        byteSize: z.number().int(),
+        state: z.string(),
+        folderId: uuid.nullable(),
+        projectId: uuid.nullable(),
+        createdAt: isoDateTime,
+        expiresAt: isoDateTime,
+      }),
+    ),
+  }),
   completeUpload: endpoint({
     id: 'uploads.complete',
     method: 'POST',
@@ -135,6 +303,29 @@ export const mediaEndpoints = {
     body: z.object({ reason: z.string().max(500).optional() }),
     response: okResponse,
   }),
+  storageUsage: endpoint({
+    id: 'assets.storageUsage',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/storage/usage',
+    summary: 'Workspace storage quota, used bytes and in-flight reservations.',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.upload',
+    params: wsId({}),
+    response: z.object({ usedBytes: z.string(), reservedBytes: z.string(), quotaBytes: z.string(), full: z.boolean() }),
+  }),
+  duplicates: endpoint({
+    id: 'assets.duplicates',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/assets/duplicates',
+    summary: 'Readable files with the same SHA-256 (reuse instead of uploading again). Files the member cannot read are never disclosed.',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.read',
+    params: wsId({}),
+    query: z.object({ checksum: z.string().regex(/^[0-9a-f]{64}$/) }),
+    response: z.array(z.object({ assetId: uuid, versionId: uuid, name: z.string(), versionNo: z.number().int(), projectId: uuid.nullable() })),
+  }),
   externalLink: endpoint({
     id: 'assets.externalLink',
     method: 'POST',
@@ -145,7 +336,15 @@ export const mediaEndpoints = {
     permission: 'assets.upload',
     idempotent: true,
     params: wsId({}),
-    body: z.object({ url: safeUrl, title: shortName, projectId: uuid.nullable().optional(), folderId: uuid.nullable().optional(), target: uploadTarget.optional() }),
+    body: z.object({
+      url: safeUrl,
+      title: shortName,
+      projectId: uuid.nullable().optional(),
+      folderId: uuid.nullable().optional(),
+      target: uploadTarget.optional(),
+      description: z.string().max(2000).nullable().optional(),
+      tags: tags.optional(),
+    }),
     response: assetView,
     successStatus: 201,
   }),
@@ -153,19 +352,14 @@ export const mediaEndpoints = {
     id: 'assets.list',
     method: 'GET',
     path: '/workspaces/{workspaceId}/assets',
-    summary: 'Library listing within the actor’s scope.',
+    summary: 'Library listing within the actor’s scope (restricted media only with restricted-media access).',
     tags: ['Media'],
     auth: 'workspace',
     permission: 'assets.read',
     params: wsId({}),
-    query: pageQuery.extend({
-      q: z.string().max(120).optional(),
-      projectId: uuid.optional(),
-      folderId: uuid.optional(),
-      rootOnly: boolQuery.optional(),
-      kind: csv(z.enum(ASSET_KINDS)).optional(),
-      tag: z.string().max(40).optional(),
-      includeArchived: boolQuery.optional(),
+    query: pageQuery.extend(assetFilter.shape).extend({
+      sort: z.enum(ASSET_SORTS).default('updatedAt'),
+      direction: z.enum(['asc', 'desc']).default('desc'),
     }),
     response: page(assetView),
   }),
@@ -180,6 +374,27 @@ export const mediaEndpoints = {
     params: wsId({ assetId: uuid }),
     response: assetDetail,
   }),
+  activity: endpoint({
+    id: 'assets.activity',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/assets/{assetId}/activity',
+    summary: 'History of the file (uploads, versions, links, metadata changes).',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.read',
+    params: wsId({ assetId: uuid }),
+    query: pageQuery,
+    response: page(
+      z.object({
+        id: uuid,
+        action: z.string(),
+        actorName: z.string().nullable(),
+        occurredAt: isoDateTime,
+        reason: z.string().nullable(),
+        changes: z.array(z.object({ field: z.string(), from: z.unknown().optional(), to: z.unknown().optional() })),
+      }),
+    ),
+  }),
   update: endpoint({
     id: 'assets.update',
     method: 'PATCH',
@@ -190,7 +405,14 @@ export const mediaEndpoints = {
     permission: 'assets.upload',
     ifMatch: true,
     params: wsId({ assetId: uuid }),
-    body: z.object({ name: shortName.optional(), tags: tags.optional(), description: z.string().max(2000).nullable().optional(), sensitivity: z.enum(SENSITIVITIES).optional(), folderId: uuid.nullable().optional() }),
+    body: z.object({
+      name: shortName.optional(),
+      tags: tags.optional(),
+      description: z.string().max(2000).nullable().optional(),
+      sensitivity: z.enum(SENSITIVITIES).optional(),
+      folderId: uuid.nullable().optional(),
+      externalUrl: safeUrl.optional(),
+    }),
     response: assetView,
   }),
   download: endpoint({
@@ -203,8 +425,19 @@ export const mediaEndpoints = {
     permission: 'assets.download',
     rateLimit: 'download',
     params: wsId({ assetId: uuid }),
-    body: z.object({ versionId: uuid.optional() }),
+    body: z.object({ versionId: uuid.optional(), disposition: z.enum(['attachment', 'inline']).optional() }),
     response: z.object({ url: z.string(), expiresAt: isoDateTime, mode: z.enum(['presigned', 'proxy']) }),
+  }),
+  linkTargets: endpoint({
+    id: 'assets.linkTargets',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/asset-link-targets',
+    summary: 'Entity types files can be linked to.',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.read',
+    params: wsId({}),
+    response: z.array(z.string()),
   }),
   link: endpoint({
     id: 'assets.link',
@@ -232,6 +465,16 @@ export const mediaEndpoints = {
     body: z.object({ reason: z.string().max(500).optional() }),
     response: okResponse,
   }),
+  entityFiles: endpoint({
+    id: 'assets.entityFiles',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/entity-files/{entityType}/{entityId}',
+    summary: 'Files linked to one entity the member can read (attachments panel of other modules).',
+    tags: ['Media'],
+    auth: 'workspace',
+    params: wsId({ entityType: z.string().max(60), entityId: uuid }),
+    response: z.array(assetView.extend({ linkId: uuid, role: z.string(), holding: z.boolean() })),
+  }),
   thumbnail: endpoint({
     id: 'assets.thumbnail',
     method: 'GET',
@@ -258,6 +501,17 @@ export const mediaEndpoints = {
     query: z.object({ token: z.string().max(400), disposition: z.enum(['inline', 'attachment']).default('inline') }),
     response: z.any(),
   }),
+  archivePreview: endpoint({
+    id: 'assets.archivePreview',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/assets/{assetId}/archive-preview',
+    summary: 'Usage and references kept when the file is archived.',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.archive',
+    params: wsId({ assetId: uuid }),
+    response: z.object({ title: z.string(), rowVersion: z.number().int(), items: z.array(impactItem) }),
+  }),
   archive: endpoint({
     id: 'assets.archive',
     method: 'POST',
@@ -271,5 +525,186 @@ export const mediaEndpoints = {
     params: wsId({ assetId: uuid }),
     body: z.object({ reason: z.string().max(500).optional() }),
     response: assetView,
+  }),
+  restore: endpoint({
+    id: 'assets.restore',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/assets/{assetId}/restore',
+    summary: 'Return an archived file to the Library.',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.archive',
+    idempotent: true,
+    ifMatch: true,
+    params: wsId({ assetId: uuid }),
+    body: z.object({}),
+    response: assetView,
+  }),
+  versionDeletePreview: endpoint({
+    id: 'assets.versionDeletePreview',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/assets/{assetId}/versions/{versionId}/delete-preview',
+    summary: 'References that hold a version (approved content, placements, evidence, article versions) and block deletion.',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.archive',
+    params: wsId({ assetId: uuid, versionId: uuid }),
+    response: versionDeletePreview,
+  }),
+  deleteVersion: endpoint({
+    id: 'assets.deleteVersion',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/assets/{assetId}/versions/{versionId}/delete',
+    summary: 'Delete an unreferenced version (its file is purged after the trash period). Referenced versions are refused — archive instead.',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.archive',
+    idempotent: true,
+    ifMatch: true,
+    params: wsId({ assetId: uuid, versionId: uuid }),
+    body: z.object({ reason: z.string().trim().min(3).max(500) }),
+    response: assetDetail,
+  }),
+  bulkPreview: endpoint({
+    id: 'assets.bulkPreview',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/assets/bulk-preview',
+    summary: 'Dry run of a bulk Move / Tag / Archive: available, denied and conflicting files, scope changes. Token valid 10 minutes.',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.read',
+    params: wsId({}),
+    body: z
+      .object({
+        action: z.enum(BULK_ASSET_ACTIONS),
+        assetIds: z.array(uuid).min(1).max(200).optional(),
+        /** Select All Matching: the typed Library filter and the count the member saw. */
+        filter: assetFilter.optional(),
+        expectedCount: z.number().int().min(0).optional(),
+        folderId: uuid.nullable().optional(),
+        tags: z.array(tag).min(1).max(30).optional(),
+        reason: z.string().max(500).optional(),
+      })
+      .refine((v) => !!v.assetIds?.length !== !!v.filter, { message: 'Send either selected ids or a filter.', path: ['assetIds'] }),
+    response: bulkPreviewResult,
+  }),
+  bulkApply: endpoint({
+    id: 'assets.bulkApply',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/assets/bulk-apply',
+    summary: 'Apply a previewed bulk action; permissions and versions are re-checked per file (failures can be retried).',
+    tags: ['Media'],
+    auth: 'workspace',
+    permission: 'assets.read',
+    idempotent: true,
+    params: wsId({}),
+    body: z.object({ token: uuid, onlyIds: z.array(uuid).max(1000).optional() }),
+    response: bulkApplyResult,
+  }),
+};
+
+export const folderEndpoints = {
+  list: endpoint({
+    id: 'folders.list',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/folders',
+    summary: 'Folder tree visible to the member (logical folders; access follows each file’s own scope).',
+    tags: ['Library'],
+    auth: 'workspace',
+    permission: 'assets.read',
+    params: wsId({}),
+    query: z.object({ includeArchived: boolQuery.optional(), projectId: uuid.optional() }),
+    response: z.array(folderView),
+  }),
+  get: endpoint({
+    id: 'folders.get',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/folders/{folderId}',
+    summary: 'Folder with its path and content counts.',
+    tags: ['Library'],
+    auth: 'workspace',
+    permission: 'assets.read',
+    params: wsId({ folderId: uuid }),
+    response: folderDetail,
+  }),
+  create: endpoint({
+    id: 'folders.create',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/folders',
+    summary: 'Create a folder (subfolders share the parent’s project scope; at most 6 levels).',
+    tags: ['Library'],
+    auth: 'workspace',
+    permission: 'assets.upload',
+    idempotent: true,
+    params: wsId({}),
+    body: z.object({ name: shortName, parentId: uuid.nullable().optional(), projectId: uuid.nullable().optional() }),
+    response: folderDetail,
+    successStatus: 201,
+  }),
+  update: endpoint({
+    id: 'folders.update',
+    method: 'PATCH',
+    path: '/workspaces/{workspaceId}/folders/{folderId}',
+    summary: 'Rename a folder.',
+    tags: ['Library'],
+    auth: 'workspace',
+    permission: 'assets.upload',
+    ifMatch: true,
+    params: wsId({ folderId: uuid }),
+    body: z.object({ name: shortName }),
+    response: folderDetail,
+  }),
+  move: endpoint({
+    id: 'folders.move',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/folders/{folderId}/move',
+    summary: 'Move a folder within its scope (no cycles, depth ≤ 6).',
+    tags: ['Library'],
+    auth: 'workspace',
+    permission: 'assets.upload',
+    idempotent: true,
+    ifMatch: true,
+    params: wsId({ folderId: uuid }),
+    body: z.object({ parentId: uuid.nullable() }),
+    response: folderDetail,
+  }),
+  archivePreview: endpoint({
+    id: 'folders.archivePreview',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/folders/{folderId}/archive-preview',
+    summary: 'Contents that must be moved or archived first.',
+    tags: ['Library'],
+    auth: 'workspace',
+    permission: 'assets.archive',
+    params: wsId({ folderId: uuid }),
+    response: z.object({ title: z.string(), rowVersion: z.number().int(), items: z.array(impactItem) }),
+  }),
+  archive: endpoint({
+    id: 'folders.archive',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/folders/{folderId}/archive',
+    summary: 'Archive an empty folder.',
+    tags: ['Library'],
+    auth: 'workspace',
+    permission: 'assets.archive',
+    idempotent: true,
+    ifMatch: true,
+    params: wsId({ folderId: uuid }),
+    body: z.object({ reason: z.string().max(500).optional() }),
+    response: folderDetail,
+  }),
+  restore: endpoint({
+    id: 'folders.restore',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/folders/{folderId}/restore',
+    summary: 'Restore an archived folder (its parent must be active and the name free).',
+    tags: ['Library'],
+    auth: 'workspace',
+    permission: 'assets.archive',
+    idempotent: true,
+    ifMatch: true,
+    params: wsId({ folderId: uuid }),
+    body: z.object({}),
+    response: folderDetail,
   }),
 };

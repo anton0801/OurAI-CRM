@@ -1,5 +1,5 @@
-import { and, eq, sql } from 'drizzle-orm';
-import { assets, assetVersions, uploadSessions, workspaces } from '@castlane/database';
+import { and, desc, eq, gt, sql } from 'drizzle-orm';
+import { assets, assetVersions, folders, uploadSessions, workspaces } from '@castlane/database';
 import { AppError, newId, notFound } from '@castlane/domain';
 import { allowed, requirePermission } from '../core/access';
 import { audit } from '../core/audit';
@@ -7,8 +7,8 @@ import type { CommandContext, QueryContext } from '../core/context';
 import { emit } from '../core/events';
 import { enqueueJob } from '../core/jobs';
 import { stamp } from '../core/rows';
-import { assetScope, canReadAsset } from './assets';
-import { LINK_ACCESS } from './link-access';
+import { assertFolderFor, assetScope, canReadAsset } from './assets';
+import { LINK_ACCESS, resolveLinkTarget } from './link-access';
 import { isDeclaredAllowed, sizeLimit, type UploadPurpose } from './sniff';
 
 const PART_SIZE = 8 * 1024 * 1024;
@@ -73,11 +73,16 @@ export const initiateUpload = async (ctx: CommandContext, input: InitiateUploadI
 
   let projectId = input.projectId ?? null;
   if (input.target) {
-    const r = LINK_ACCESS.get(input.target.entityType);
-    if (!r) throw new AppError('VALIDATION_FAILED', `Files cannot be attached to ${input.target.entityType}.`);
-    const scope = await r.scope(ctx, input.target.entityId);
-    if (!scope || !allowed(ctx, r.permission, scope)) throw notFound('Target');
+    if (!LINK_ACCESS.has(input.target.entityType)) throw new AppError('VALIDATION_FAILED', `Files cannot be attached to ${input.target.entityType}.`);
+    const scope = await resolveLinkTarget(ctx, input.target.entityType, input.target.entityId);
+    if (!scope) throw notFound('Target');
     projectId = projectId ?? scope.projectId ?? null;
+  }
+  if (input.folderId && !input.assetId) {
+    // A project folder gives its project to new files; workspace folders keep the chosen scope.
+    const [f] = await ctx.tx.select({ projectId: folders.projectId }).from(folders).where(and(eq(folders.workspaceId, ctx.actor.workspaceId), eq(folders.id, input.folderId)));
+    if (f?.projectId && input.projectId === undefined && !input.target) projectId = f.projectId;
+    await assertFolderFor(ctx, input.folderId, projectId);
   }
   if (!allowed(ctx, 'assets.upload', { projectId })) throw new AppError('FORBIDDEN', 'You cannot upload files here.');
   if (input.sensitivity === 'restricted' && !allowed(ctx, 'assets.restricted.read', { projectId }))
@@ -92,6 +97,7 @@ export const initiateUpload = async (ctx: CommandContext, input: InitiateUploadI
     if (!a || !(await canReadAsset(ctx, a))) throw notFound('File');
     if (!allowed(ctx, 'assets.upload', assetScope(a))) throw new AppError('FORBIDDEN', 'You cannot add versions to this file.');
     if (a.kind === 'external_link') throw new AppError('INVALID_STATE', 'External links have no stored versions.');
+    if (a.archivedAt) throw new AppError('INVALID_STATE', 'Restore the file before adding a new version.');
     const [{ max } = { max: 0 }] = await ctx.tx.select({ max: sql<number>`coalesce(max(${assetVersions.versionNo}), 0)` }).from(assetVersions).where(eq(assetVersions.assetId, assetId));
     versionNo = Number(max) + 1;
     projectId = a.projectId;
@@ -224,5 +230,49 @@ export const abortUpload = async (ctx: CommandContext, uploadId: string) => {
   await ctx.tx.update(uploadSessions).set({ state: 'aborted' }).where(eq(uploadSessions.id, locked.id));
   await ctx.tx.update(assetVersions).set({ status: 'failed', rejectionReason: 'Upload cancelled.' }).where(eq(assetVersions.id, locked.assetVersionId!));
   await releaseReservation(ctx.tx, ctx.actor.workspaceId, locked.reservedBytes);
+  await discardEmptyAsset(ctx.tx, locked.assetId!, ctx.app.clock.now(), ctx.actor.userId);
+  await audit(ctx, { action: 'upload.cancelled', entityType: 'asset', entityId: locked.assetId!, projectId: locked.projectId });
+  await emit(ctx, { type: 'upload.cancelled', entityType: 'asset', entityId: locked.assetId! });
   return { ok: true as const };
+};
+
+/**
+ * A new file whose only upload was cancelled or expired never had content: it leaves the Library
+ * (moved to trash) instead of lingering as an empty record. Files with an earlier version stay.
+ */
+export const discardEmptyAsset = async (db: CommandContext['tx'], assetId: string, at: Date, userId: string | null) => {
+  await db.execute(sql`
+    UPDATE assets SET deleted_at = ${at}, deleted_by = ${userId}, updated_at = ${at}, row_version = row_version + 1
+    WHERE id = ${assetId} AND deleted_at IS NULL AND current_version_id IS NULL
+      AND NOT EXISTS (SELECT 1 FROM asset_versions v WHERE v.asset_id = ${assetId} AND v.status NOT IN ('failed'))`);
+};
+
+/** The member's own unfinished uploads (resume after a reload by choosing the same file again). */
+export const listOpenUploads = async (ctx: QueryContext) => {
+  requirePermission(ctx, 'assets.upload');
+  const rows = await ctx.app.db
+    .select()
+    .from(uploadSessions)
+    .where(
+      and(
+        eq(uploadSessions.workspaceId, ctx.actor.workspaceId),
+        eq(uploadSessions.ownerMembershipId, ctx.actor.membershipId!),
+        eq(uploadSessions.state, 'open'),
+        gt(uploadSessions.expiresAt, ctx.app.clock.now()),
+      ),
+    )
+    .orderBy(desc(uploadSessions.createdAt))
+    .limit(100);
+  return rows.map((s) => ({
+    uploadId: s.id,
+    assetId: s.assetId,
+    assetVersionId: s.assetVersionId,
+    filename: s.filename,
+    byteSize: s.declaredSize,
+    state: s.state,
+    folderId: s.folderId,
+    projectId: s.projectId,
+    createdAt: s.createdAt.toISOString(),
+    expiresAt: s.expiresAt.toISOString(),
+  }));
 };
