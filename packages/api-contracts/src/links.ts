@@ -58,6 +58,8 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   invitation_request: () => `/team?tab=invitations`,
   workspace: () => `/settings/workspace`,
   user_profile: () => `/settings/profile`,
+  sale_candidate: (id) => `/ofm/operations?tab=sales&open=${id}`,
+  ofm_assignment: (id) => `/ofm/assignments?open=${id}`,
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {

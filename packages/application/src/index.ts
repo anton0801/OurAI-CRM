@@ -9,3 +9,4 @@ export * from './creative';
 export * from './partners';
 export * from './work';
 export * from './team';
+export * from './ofm';

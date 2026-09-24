@@ -43,6 +43,13 @@
       "when": 1790216862646,
       "tag": "0005_glamorous_maggott",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790217502968,
+      "tag": "0006_sour_psynapse",
+      "breakpoints": true
     }
   ]
 }

@@ -36,13 +36,20 @@ import {
 import { memberships, tenantUnique } from './identity';
 import { projects, socialAccounts } from './organization';
 
+/** Per-model OFM settings; contact stage labels are configurable display names (keys stay canonical). */
+export interface OfmProfileSettings {
+  maxShiftAccounts?: number;
+  handoverRequired?: boolean;
+  contactStageLabels?: Partial<Record<(typeof CONTACT_STAGES)[number], string>>;
+}
+
 export const ofmProfiles = pgTable(
   'ofm_profiles',
   {
     ...tenantBase(),
     projectId: uuid('project_id').notNull(),
     supervisorMembershipId: uuid('supervisor_membership_id'),
-    settings: json<{ maxShiftAccounts?: number; handoverRequired?: boolean }>('settings').notNull().default({}),
+    settings: json<OfmProfileSettings>('settings').notNull().default({}),
     disabledAt: ts('disabled_at'),
   },
   (t) => [
@@ -143,6 +150,7 @@ export const shiftAccounts = pgTable(
     tfk('shift_accounts_shift_fk', t.workspaceId, t.shiftId, shifts),
     tfk('shift_accounts_account_fk', t.workspaceId, t.accountId, socialAccounts),
     uniqueIndex('shift_accounts_uq').on(t.shiftId, t.accountId),
+    index('shift_accounts_account_idx').on(t.workspaceId, t.accountId),
   ],
 );
 
@@ -249,6 +257,7 @@ export const handovers = pgTable(
     tfk('handovers_from_shift_fk', t.workspaceId, t.fromShiftId, shifts),
     tfk('handovers_to_shift_fk', t.workspaceId, t.toShiftId, shifts),
     index('handovers_recipient_idx').on(t.workspaceId, t.recipientMembershipId, t.state),
+    index('handovers_from_shift_idx').on(t.workspaceId, t.fromShiftId),
     enumCheck('handovers_state_ck', 'state', HANDOVER_STATES),
   ],
 );
@@ -270,7 +279,14 @@ export const handoverItems = pgTable(
     resolvedAt: ts('resolved_at'),
     carriedFromItemId: uuid('carried_from_item_id'),
   },
-  (t) => [tenantUnique('handover_items', t), tfk('handover_items_handover_fk', t.workspaceId, t.handoverId, handovers)],
+  (t) => [
+    tenantUnique('handover_items', t),
+    tfk('handover_items_handover_fk', t.workspaceId, t.handoverId, handovers),
+    // One open handover item per task / operation: the matter is referenced by id, never multiplied.
+    uniqueIndex('handover_items_open_task_uq').on(t.taskId).where(sql`state = 'open' AND task_id IS NOT NULL`),
+    uniqueIndex('handover_items_open_operation_uq').on(t.operationId).where(sql`state = 'open' AND operation_id IS NOT NULL`),
+    index('handover_items_handover_idx').on(t.workspaceId, t.handoverId),
+  ],
 );
 
 export const ofmContacts = pgTable(
@@ -297,6 +313,7 @@ export const ofmContacts = pgTable(
     tfk('ofm_contacts_project_fk', t.workspaceId, t.projectId, projects),
     uniqueIndex('ofm_contacts_identity_uq').on(t.accountId, t.externalIdentifier),
     index('ofm_contacts_list_idx').on(t.workspaceId, t.accountId, t.stage),
+    index('ofm_contacts_manager_idx').on(t.workspaceId, t.managerMembershipId),
     enumCheck('ofm_contacts_stage_ck', 'stage', CONTACT_STAGES),
   ],
 );
@@ -369,6 +386,8 @@ export const operations = pgTable(
     tfk('operations_contact_fk', t.workspaceId, t.contactId, ofmContacts),
     tfk('operations_owner_fk', t.workspaceId, t.ownerMembershipId, memberships),
     index('operations_queue_idx').on(t.workspaceId, t.status, t.dueAt),
+    index('operations_contact_idx').on(t.workspaceId, t.contactId),
+    index('operations_shift_idx').on(t.workspaceId, t.shiftId),
     enumCheck('operations_type_ck', 'type', OPERATION_TYPES),
     enumCheck('operations_status_ck', 'status', OPERATION_STATUSES),
   ],
@@ -407,6 +426,8 @@ export const saleCandidates = pgTable(
     tenantUnique('sale_candidates', t),
     tfk('sale_candidates_account_fk', t.workspaceId, t.accountId, socialAccounts),
     uniqueIndex('sale_candidates_source_uq').on(t.workspaceId, t.sourceNamespace, t.sourceTransactionId),
+    index('sale_candidates_state_idx').on(t.workspaceId, t.state, t.occurredAt),
+    index('sale_candidates_shift_idx').on(t.workspaceId, t.shiftId),
     enumCheck('sale_candidates_state_ck', 'state', SALE_CANDIDATE_STATES),
   ],
 );
@@ -466,6 +487,7 @@ export const qualityReviews = pgTable(
     tenantUnique('quality_reviews', t),
     tfk('quality_reviews_rubric_fk', t.workspaceId, t.rubricVersionId, rubricVersions),
     rawCheck('quality_reviews_self_ck', '"subject_membership_id" <> "reviewer_membership_id"'),
+    index('quality_reviews_subject_idx').on(t.workspaceId, t.subjectMembershipId, t.state),
     enumCheck('quality_reviews_state_ck', 'state', QUALITY_REVIEW_STATES),
   ],
 );
@@ -484,7 +506,11 @@ export const qualityDisputes = pgTable(
     resolvedAt: ts('resolved_at'),
     replacementReviewId: uuid('replacement_review_id'),
   },
-  (t) => [tenantUnique('quality_disputes', t), tfk('quality_disputes_review_fk', t.workspaceId, t.qualityReviewId, qualityReviews)],
+  (t) => [
+    tenantUnique('quality_disputes', t),
+    tfk('quality_disputes_review_fk', t.workspaceId, t.qualityReviewId, qualityReviews),
+    uniqueIndex('quality_disputes_one_open_uq').on(t.qualityReviewId).where(sql`state = 'open'`),
+  ],
 );
 
 export const shiftSwapRequests = pgTable(
@@ -501,7 +527,12 @@ export const shiftSwapRequests = pgTable(
     decidedBy: uuid('decided_by'),
     decisionNote: text('decision_note'),
   },
-  (t) => [tenantUnique('shift_swap_requests', t), tfk('ssr_shift_fk', t.workspaceId, t.shiftId, shifts)],
+  (t) => [
+    tenantUnique('shift_swap_requests', t),
+    tfk('ssr_shift_fk', t.workspaceId, t.shiftId, shifts),
+    // At most one open swap request per shift.
+    uniqueIndex('ssr_one_open_uq').on(t.shiftId).where(sql`state IN ('pending_acceptance', 'pending_approval')`),
+  ],
 );
 
 export const erasureRequests = pgTable(
@@ -516,5 +547,9 @@ export const erasureRequests = pgTable(
     result: json<Record<string, unknown>>('result'),
     completedAt: ts('completed_at'),
   },
-  (t) => [tenantUnique('erasure_requests', t)],
+  (t) => [
+    tenantUnique('erasure_requests', t),
+    index('erasure_requests_entity_idx').on(t.workspaceId, t.entityType, t.entityId),
+    uniqueIndex('erasure_requests_open_uq').on(t.entityType, t.entityId).where(sql`state IN ('queued', 'running')`),
+  ],
 );

@@ -12,6 +12,7 @@ import { dealEndpoints, partnerEndpoints } from './partners';
 import { workEndpointGroups } from './work';
 import { PLATFORM_ENDPOINT_GROUPS } from './platform';
 import { directionAdminEndpoints, ownershipEndpoints, roleEndpoints, settingsEndpoints, teamEndpoints } from './team';
+import { ofmEndpoints } from './ofm';
 
 /**
  * Every endpoint group, used by the OpenAPI generator and contract tests.
@@ -37,6 +38,7 @@ export const ENDPOINT_GROUPS: Record<string, Record<string, AnyEndpoint>> = {
   ...workEndpointGroups,
   ...PLATFORM_ENDPOINT_GROUPS,
   team: teamEndpoints, roles: roleEndpoints, ownership: ownershipEndpoints, directionAdmin: directionAdminEndpoints, settings: settingsEndpoints,
+  ofm: ofmEndpoints,
 };
 
 export const allEndpoints = (): AnyEndpoint[] => Object.values(ENDPOINT_GROUPS).flatMap((g) => Object.values(g));
