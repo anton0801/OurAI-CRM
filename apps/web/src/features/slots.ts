@@ -4,3 +4,4 @@
  */
 import './project-tabs';
 import './knowledge/register-slots';
+import './tasks/register-slots';

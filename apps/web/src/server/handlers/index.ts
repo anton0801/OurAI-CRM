@@ -10,3 +10,4 @@ import './knowledge';
 import './accounts';
 import './creative';
 import './partners';
+import './work';

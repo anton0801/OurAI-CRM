@@ -4,3 +4,4 @@
  */
 import './platform';
 import './media';
+import './work';

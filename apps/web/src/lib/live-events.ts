@@ -52,6 +52,11 @@ const PREFIXES: Record<string, string[]> = {
   notification: ['notifications.', 'inbox.'],
   folder: ['folders.', 'assets.'],
   article_category: ['knowledge.'],
+  time_sheet: ['time.', 'myWork.'],
+  absence: ['workload.', 'myWork.'],
+  capacity: ['workload.'],
+  recurrence_rule: ['recurrences.', 'tasks.'],
+  personal_reminder: ['reminders.', 'myWork.', 'tasks.'],
 };
 
 export const useLiveEvents = (workspaceId: string) => {

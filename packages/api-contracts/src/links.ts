@@ -45,6 +45,11 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   season: (_id, c) => (c?.projectId ? `/projects/${c.projectId}/series` : `/projects`),
   episode: (id, c) => (c?.projectId ? `/projects/${c.projectId}/series?episode=${id}` : `/projects`),
   scene: (_id, c) => (c?.projectId ? `/projects/${c.projectId}/series` : `/projects`),
+  time_entry: (id) => `/time?entry=${id}`,
+  time_sheet: (id) => `/time?tab=approvals&sheet=${id}`,
+  recurrence_rule: (id) => `/tasks?view=recurring&rule=${id}`,
+  absence: (id) => `/team/workload?absence=${id}`,
+  personal_reminder: () => `/my-work`,
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {

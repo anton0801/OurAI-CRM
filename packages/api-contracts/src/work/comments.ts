@@ -1,0 +1,151 @@
+import { z } from 'zod';
+import { COMMENT_SEVERITIES, COMMENT_STATES, LIMITS } from '@castlane/domain';
+import { endpoint } from '../core';
+import { boolQuery, isoDateTime, memberRef, reason, uuid, wsId } from '../common';
+
+/** Parent types are registered by modules with `defineCommentParent` (tasks, content, reviews, articles…). */
+export const commentParentType = z.string().regex(/^[a-z_]{2,40}$/);
+
+const point = z.string().regex(/^(0(\.\d{1,5})?|1(\.0{1,5})?)$/, 'Use a value between 0 and 1.');
+
+export const commentView = z.object({
+  id: uuid,
+  parentType: z.string(),
+  parentId: uuid,
+  threadRootId: uuid.nullable(),
+  replyToId: uuid.nullable(),
+  depth: z.number().int(),
+  author: memberRef,
+  /** Null when the comment was removed (the fact of removal stays visible). */
+  body: z.string().nullable(),
+  removed: z.boolean(),
+  severity: z.enum(COMMENT_SEVERITIES),
+  state: z.enum(COMMENT_STATES),
+  targetVersionId: uuid.nullable(),
+  assetVersionId: uuid.nullable(),
+  timecodeMs: z.number().int().nullable(),
+  pointX: z.string().nullable(),
+  pointY: z.string().nullable(),
+  resolvedAt: isoDateTime.nullable(),
+  resolvedBy: memberRef.nullable(),
+  resolutionNote: z.string().nullable(),
+  editedAt: isoDateTime.nullable(),
+  mentions: z.array(memberRef),
+  createdAt: isoDateTime,
+  rowVersion: z.number().int(),
+  permissions: z.object({ edit: z.boolean(), remove: z.boolean(), resolve: z.boolean(), reopen: z.boolean(), reply: z.boolean() }),
+});
+export type CommentView = z.infer<typeof commentView>;
+
+export const commentThread = commentView.extend({ replies: z.array(commentView) });
+export type CommentThread = z.infer<typeof commentThread>;
+
+export const commentEndpoints = {
+  list: endpoint({
+    id: 'comments.list',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/comments',
+    summary: 'Threads on a record you can read (replies nested, depth ≤ 2).',
+    tags: ['Comments'],
+    auth: 'workspace',
+    params: wsId({}),
+    query: z.object({ parentType: commentParentType, parentId: uuid, targetVersionId: uuid.optional(), includeResolved: boolQuery.optional() }),
+    response: z.object({ threads: z.array(commentThread), total: z.number().int(), openBlocking: z.number().int(), canComment: z.boolean(), mentionPermission: z.string().nullable(), projectId: uuid.nullable() }),
+  }),
+  get: endpoint({
+    id: 'comments.get',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/comments/{commentId}',
+    summary: 'One comment.',
+    tags: ['Comments'],
+    auth: 'workspace',
+    params: wsId({ commentId: uuid }),
+    response: commentView,
+  }),
+  create: endpoint({
+    id: 'comments.create',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/comments',
+    summary: 'Comment or reply; mentioned members are notified only when they can read the record.',
+    tags: ['Comments'],
+    auth: 'workspace',
+    idempotent: true,
+    params: wsId({}),
+    body: z.object({
+      parentType: commentParentType,
+      parentId: uuid,
+      body: z.string().trim().min(1).max(LIMITS.commentMax),
+      replyToId: uuid.optional(),
+      severity: z.enum(COMMENT_SEVERITIES).optional(),
+      mentions: z.array(uuid).max(30).optional(),
+      targetVersionId: uuid.optional(),
+      assetVersionId: uuid.optional(),
+      timecodeMs: z.number().int().min(0).optional(),
+      pointX: point.optional(),
+      pointY: point.optional(),
+    }),
+    response: commentView,
+    successStatus: 201,
+  }),
+  update: endpoint({
+    id: 'comments.update',
+    method: 'PATCH',
+    path: '/workspaces/{workspaceId}/comments/{commentId}',
+    summary: 'Edit your own comment; the previous text is kept as an append-only revision and the comment shows Edited.',
+    tags: ['Comments'],
+    auth: 'workspace',
+    ifMatch: true,
+    params: wsId({ commentId: uuid }),
+    body: z.object({ body: z.string().trim().min(1).max(LIMITS.commentMax), mentions: z.array(uuid).max(30).optional() }),
+    response: commentView,
+  }),
+  resolve: endpoint({
+    id: 'comments.resolve',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/comments/{commentId}/resolve',
+    summary: 'Resolve a thread (records who claimed it fixed).',
+    tags: ['Comments'],
+    auth: 'workspace',
+    idempotent: true,
+    ifMatch: true,
+    params: wsId({ commentId: uuid }),
+    body: z.object({ resolutionNote: z.string().trim().max(LIMITS.reasonMax).optional() }),
+    response: commentView,
+  }),
+  reopen: endpoint({
+    id: 'comments.reopen',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/comments/{commentId}/reopen',
+    summary: 'Reopen a resolved thread with a reason (a blocking comment blocks again).',
+    tags: ['Comments'],
+    auth: 'workspace',
+    idempotent: true,
+    ifMatch: true,
+    params: wsId({ commentId: uuid }),
+    body: z.object({ reason }),
+    response: commentView,
+  }),
+  remove: endpoint({
+    id: 'comments.remove',
+    method: 'POST',
+    path: '/workspaces/{workspaceId}/comments/{commentId}/remove',
+    summary: 'Remove a comment (soft delete: the text is hidden, the fact and history stay).',
+    tags: ['Comments'],
+    auth: 'workspace',
+    idempotent: true,
+    ifMatch: true,
+    params: wsId({ commentId: uuid }),
+    body: z.object({ reason: z.string().trim().max(LIMITS.reasonMax).optional() }),
+    response: commentView,
+  }),
+  revisions: endpoint({
+    id: 'comments.revisions',
+    method: 'GET',
+    path: '/workspaces/{workspaceId}/comments/{commentId}/revisions',
+    summary: 'Previous texts of an edited comment.',
+    tags: ['Comments'],
+    auth: 'workspace',
+    params: wsId({ commentId: uuid }),
+    response: z.array(z.object({ id: uuid, previousBody: z.string(), replacedAt: isoDateTime, replacedBy: memberRef.nullable() })),
+  }),
+};

@@ -300,8 +300,16 @@ export const timeSheetSubmissions = pgTable(
     decidedAt: ts('decided_at'),
     decidedBy: uuid('decided_by'),
     reason: text('reason'),
+    /** Designated approver (the member's manager when they may approve); null = any approver in scope. */
+    approverMembershipId: uuid('approver_membership_id'),
   },
-  (t) => [tenantUnique('time_sheet_submissions', t), tfk('tss_member_fk', t.workspaceId, t.membershipId, memberships)],
+  (t) => [
+    tenantUnique('time_sheet_submissions', t),
+    tfk('tss_member_fk', t.workspaceId, t.membershipId, memberships),
+    tfk('tss_approver_fk', t.workspaceId, t.approverMembershipId, memberships),
+    /** One pending (submitted) sheet per member and week; approved and returned sheets stay as history. */
+    uniqueIndex('tss_member_week_pending_uq').on(t.membershipId, t.weekStart).where(sql`state = 'submitted'`),
+  ],
 );
 
 export type WeekdayMinutes = Record<'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday', number>;
@@ -371,6 +379,21 @@ export const personalReminders = pgTable(
     snoozedUntil: ts('snoozed_until'),
     dismissedAt: ts('dismissed_at'),
     note: text('note'),
+    /** manual = "Remind Me"; due = generated from a task deadline revision (24 h / 1 h / overdue). */
+    source: text('source', { enum: ['manual', 'due'] }).notNull().default('manual'),
+    threshold: text('threshold'),
+    /** Deadline revision a due reminder belongs to; a rescheduled deadline makes it stale. */
+    deadlineRevision: integer('deadline_revision'),
+    /** Last delivery (in-app notification); a later snooze time fires again. */
+    firedAt: ts('fired_at'),
+    dismissedReason: text('dismissed_reason'),
   },
-  (t) => [tenantUnique('personal_reminders', t), tfk('personal_reminders_member_fk', t.workspaceId, t.membershipId, memberships)],
+  (t) => [
+    tenantUnique('personal_reminders', t),
+    tfk('personal_reminders_member_fk', t.workspaceId, t.membershipId, memberships),
+    index('personal_reminders_member_idx').on(t.workspaceId, t.membershipId, t.dismissedAt),
+    uniqueIndex('personal_reminders_due_uq')
+      .on(t.membershipId, t.entityType, t.entityId, t.threshold, t.deadlineRevision)
+      .where(sql`source = 'due'`),
+  ],
 );

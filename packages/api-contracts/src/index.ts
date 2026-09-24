@@ -11,3 +11,4 @@ export * from './knowledge';
 export * from './accounts';
 export * from './creative';
 export * from './partners';
+export * from './work';

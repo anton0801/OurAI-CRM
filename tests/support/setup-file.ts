@@ -43,5 +43,16 @@ afterAll(async () => {
   await handle?.close();
   setSharedDatabase(undefined);
   setAppServices(undefined);
-  if (testState.dbName) await adminQuery(`DROP DATABASE IF EXISTS "${testState.dbName}" WITH (FORCE)`);
+  // Dropping can race with a backend the test role may not terminate (e.g. autovacuum); retry and
+  // leave anything left over to the global teardown, which removes every database of this run.
+  if (testState.dbName)
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        await adminQuery(`DROP DATABASE IF EXISTS "${testState.dbName}" WITH (FORCE)`);
+        break;
+      } catch (e) {
+        if (attempt === 4) console.warn(`could not drop ${testState.dbName}: ${(e as Error).message}`);
+        else await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
+      }
+    }
 });
