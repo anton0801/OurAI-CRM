@@ -13,15 +13,18 @@ workspace week start.
   a Task) with no KPIs.
 - KPIs: M01 Published, M07 On-Time Rate and M08 Overdue Tasks come from `evaluateMetric`. A KPI is hidden without permission and
   becomes Not Measured on error. Each is compared with the previous period, or the same elapsed time for a running period.
-  Pending Reviews counts pending review rows now.
+  Pending Reviews counts pending reviews now as the Review Queue shows them (`visibleReviewPredicate`: content reviews in the
+  content's read scope, profile reviews through `characters.read`); the same rule feeds "reviews waiting".
 - Trend: M01 and M02 by day (≤ 31 days), week (≤ 190) or month.
 - Needs Attention (5 items per kind, 25 in total, danger first): overdue and blocked tasks; reviews waiting > 48 h or past due;
   scheduled placements whose version is missing, unapproved or revoked; pending checkpoints past their window; shifts still
   running after the scheduled end + grace; budgets with remaining < 0.
-- Projects table: ≤ 50 non-archived projects. Freshness (`metrics.read` + `accounts.read`): an account is stale after 7 days
+- Projects table: ≤ 50 non-archived projects. Open/overdue task counts (not archived) are narrowed by `tasks.read`, the last
+  publication by `publications.read`. Freshness (`metrics.read` + `accounts.read`): an account is stale after 7 days
   without an observation; coverage comes from M40 or a checkpoint count.
 - The finance row appears only with `finance.read` and not under a direction-only filter. Finance errors are swallowed.
-- Export: dataset `overview_projects` (`projects.read`).
+- Export: dataset `overview_projects` (`projects.read`): the same per-project counts as the screen, plus pending reviews per
+  project, all in the requester's scope.
 
 ## Goals (S53)
 
@@ -90,8 +93,6 @@ workspace week start.
   `automation.run`, `automation.tick` (schedule 60 s), `automation.revalidate`; consumer `automation.dispatch`.
 
 Known limits:
-- Overview per-project open/overdue task counts and the export's counts are not narrowed by `tasks.read`. The export also counts
-  archived tasks.
 - Automations cannot approve, post finance, change roles, delete or send external messages. There are no user-defined triggers or
   fields.
 - Dry run needs only `automations.read` and accepts an unsaved config.

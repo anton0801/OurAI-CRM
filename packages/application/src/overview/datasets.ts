@@ -3,6 +3,8 @@ import { directions, projectMilestones, projects, publications, reviews, tasks }
 import { scopePredicate } from '../core/access';
 import { defineExportDataset } from '../core/export-registry';
 import { loadMemberRefs } from '../core/members';
+import { visibleReviewPredicate } from '../production/reviews';
+import { publicationVisibility } from '../publishing/scope';
 
 const OPEN = ['draft', 'backlog', 'ready', 'in_progress', 'in_review'] as const;
 
@@ -60,16 +62,30 @@ defineExportDataset({
         .limit(200);
       if (!page.length) return;
       const ids = page.map((r) => r.p.id);
+      // Same counts as the Overview screen, in the requester's scope: open (not archived) tasks by tasks.read,
+      // pending reviews as the Review Queue shows them, publications by publications.read.
+      const openTasks = and(
+        eq(tasks.workspaceId, ws),
+        inArray(tasks.projectId, ids),
+        inArray(tasks.status, [...OPEN]),
+        isNull(tasks.deletedAt),
+        isNull(tasks.archivedAt),
+        scopePredicate(ctx, 'tasks.read', { projectId: tasks.projectId, accountId: tasks.accountId, assigned: [tasks.assigneeMembershipId, tasks.reviewerMembershipId] }),
+      );
       const [open, overdue, pending, milestones, lastPub, refs] = [
-        await db.select({ id: tasks.projectId, n: count() }).from(tasks).where(and(eq(tasks.workspaceId, ws), inArray(tasks.projectId, ids), inArray(tasks.status, [...OPEN]), isNull(tasks.deletedAt))).groupBy(tasks.projectId),
-        await db.select({ id: tasks.projectId, n: count() }).from(tasks).where(and(eq(tasks.workspaceId, ws), inArray(tasks.projectId, ids), inArray(tasks.status, [...OPEN]), isNull(tasks.deletedAt), lt(tasks.dueAt, now))).groupBy(tasks.projectId),
-        await db.select({ id: reviews.projectId, n: count() }).from(reviews).where(and(eq(reviews.workspaceId, ws), inArray(reviews.projectId, ids), eq(reviews.status, 'pending'))).groupBy(reviews.projectId),
+        await db.select({ id: tasks.projectId, n: count() }).from(tasks).where(openTasks).groupBy(tasks.projectId),
+        await db.select({ id: tasks.projectId, n: count() }).from(tasks).where(and(openTasks, lt(tasks.dueAt, now))).groupBy(tasks.projectId),
+        await db.select({ id: reviews.projectId, n: count() }).from(reviews).where(and(eq(reviews.workspaceId, ws), inArray(reviews.projectId, ids), eq(reviews.status, 'pending'), visibleReviewPredicate(ctx))).groupBy(reviews.projectId),
         await db
           .selectDistinctOn([projectMilestones.projectId], { id: projectMilestones.projectId, title: projectMilestones.title, dueDate: projectMilestones.dueDate })
           .from(projectMilestones)
           .where(and(eq(projectMilestones.workspaceId, ws), inArray(projectMilestones.projectId, ids), isNull(projectMilestones.completedAt), isNull(projectMilestones.archivedAt)))
           .orderBy(projectMilestones.projectId, sql`${projectMilestones.dueDate} ASC NULLS LAST`),
-        await db.select({ id: publications.projectId, last: max(publications.actualPublishedAt) }).from(publications).where(and(eq(publications.workspaceId, ws), inArray(publications.projectId, ids), eq(publications.status, 'published'))).groupBy(publications.projectId),
+        await db
+          .select({ id: publications.projectId, last: max(publications.actualPublishedAt) })
+          .from(publications)
+          .where(and(eq(publications.workspaceId, ws), inArray(publications.projectId, ids), eq(publications.status, 'published'), isNull(publications.deletedAt), publicationVisibility(ctx)))
+          .groupBy(publications.projectId),
         await loadMemberRefs(db, ws, page.map((r) => r.p.ownerMembershipId)),
       ];
       for (const { p, directionName } of page) {

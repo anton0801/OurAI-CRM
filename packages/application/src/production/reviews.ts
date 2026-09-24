@@ -91,6 +91,23 @@ const reviewVisibility = (ctx: QueryContext): SQL => {
   )!;
 };
 
+/**
+ * The queue's visibility rule as a predicate on `reviews` alone, for counts outside the queue (the
+ * Overview's Pending Reviews and waiting reviews): content reviews through the content's read scope,
+ * character-profile reviews through characters.read. A count never includes a review its queue link hides.
+ */
+export const visibleReviewPredicate = (ctx: QueryContext): SQL => {
+  const content = contentVisibility(ctx);
+  const chars = filterToSql(listFilter(ctx.actor.access, 'characters.read'), { projectId: reviews.projectId });
+  return or(
+    and(
+      eq(reviews.targetType, 'content_version'),
+      sql`EXISTS (SELECT 1 FROM ${contentItems} WHERE ${contentItems.workspaceId} = ${reviews.workspaceId} AND ${contentItems.id} = ${reviews.subjectId} AND ${contentItems.deletedAt} IS NULL${content ? sql` AND ${content}` : sql``})`,
+    ),
+    and(eq(reviews.targetType, 'character_version'), chars),
+  )!;
+};
+
 export interface ReviewQueueInput {
   scope: 'assigned' | 'all';
   status?: ReviewRow['status'][];
