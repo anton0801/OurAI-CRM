@@ -141,6 +141,8 @@ interface Session {
     publications: string[];
   };
   myTasks: TaskRef[];
+  /** Load-balancer affinity cookie (Caddy lb_policy cookie), kept like a browser does. */
+  lbCookie: string | null;
   cursors: Map<string, string>;
   /** Ops that answered 403/404 for this member during discovery (not offered again). */
   denied: Set<string>;
@@ -183,7 +185,7 @@ const send = async (s: Session, spec: Spec): Promise<Outcome> => {
   const url = `${cfg.baseUrls[s.idx % cfg.baseUrls.length]}/api/v1${spec.path}${qs.size ? `?${qs}` : ''}`;
   const headers: Record<string, string> = {
     accept: 'application/json',
-    cookie: `castlane_session=${encodeURIComponent(s.token)}`,
+    cookie: `castlane_session=${encodeURIComponent(s.token)}${s.lbCookie ? `; ${s.lbCookie}` : ''}`,
     'user-agent': 'castlane-perf-runner',
   };
   if (spec.method !== 'GET') {
@@ -203,6 +205,8 @@ const send = async (s: Session, spec: Spec): Promise<Outcome> => {
     });
     const text = await res.text();
     const ms = performance.now() - t0;
+    const affinity = res.headers.getSetCookie().find((c) => c.startsWith('castlane_upstream='));
+    if (affinity) s.lbCookie = affinity.split(';')[0]!;
     let json: unknown = null;
     try {
       json = text ? JSON.parse(text) : null;
@@ -639,6 +643,7 @@ const mintSessions = async (pool: pg.Pool): Promise<Session[]> => {
         perms: PERMS.get(role) ?? new Set(),
         pools: { tasks: [], projects: [], accounts: [], content: [], publications: [] },
         myTasks: [],
+        lbCookie: null,
         cursors: new Map(),
         denied: new Set(),
         tabs: [],
@@ -805,9 +810,13 @@ const pidTicks = (pids: number[]) => {
   return out;
 };
 
-const readStack = (): { webPids?: number[]; workerPid?: number } => {
+const readStack = (): { webPids?: number[]; workerPid?: number; proxyPid?: number | null } => {
   try {
-    return JSON.parse(readFileSync(cfg.stackFile, 'utf8')) as { webPids?: number[]; workerPid?: number };
+    return JSON.parse(readFileSync(cfg.stackFile, 'utf8')) as {
+      webPids?: number[];
+      workerPid?: number;
+      proxyPid?: number | null;
+    };
   } catch {
     return {};
   }
@@ -828,6 +837,7 @@ const startSampler = async (pool: pg.Pool, phaseOf: () => Phase, t0: number) => 
       at: performance.now(),
       web: stack.webPids?.length ? sumOrNull(stack.webPids.map((pid) => treeTicks(pid))) : null,
       worker: stack.workerPid ? treeTicks(stack.workerPid) : null,
+      proxy: stack.proxyPid ? treeTicks(stack.proxyPid) : null,
       pg: pidTicks(backends),
       runner: (self.user + self.system) / 10_000,
     };
@@ -861,6 +871,7 @@ const startSampler = async (pool: pg.Pool, phaseOf: () => Phase, t0: number) => 
       const procCpu = {
         webPct: pctOf(proc.web, lastProc.web),
         workerPct: pctOf(proc.worker, lastProc.worker),
+        proxyPct: pctOf(proc.proxy, lastProc.proxy),
         pgPct: pctOf(pgDelta, 0),
         runnerPct: pctOf(proc.runner, lastProc.runner),
       };
@@ -959,6 +970,33 @@ const main = async () => {
   console.log(
     `Discovery done in ${((performance.now() - tDisc) / 1000).toFixed(1)}s (id pools filled from first list pages).`,
   );
+
+  // Warm the analytics read model (§28.3: "after warmed read models"): every session opens each of
+  // its dashboard tabs once, as a member would before the measured period. Two at a time.
+  const readModelWarmup = { requests: 0, computedLive: 0, errors: 0, seconds: 0, maxMs: 0 };
+  if (!cfg.exclude.includes('analytics.dashboard')) {
+    const tWarm = performance.now();
+    const jobs = sessions.flatMap((s) => s.tabs.map((tab) => ({ s, tab })));
+    const next = async (): Promise<void> => {
+      const j = jobs.shift();
+      if (!j) return;
+      const o = await send(j.s, {
+        method: 'GET',
+        path: `${ws()}/analytics/dashboards/${j.tab}`,
+        query: { preset: 'last_90_days', compare: true },
+      });
+      readModelWarmup.requests++;
+      readModelWarmup.maxMs = Math.max(readModelWarmup.maxMs, Math.round(o.ms));
+      if (o.status !== 200) readModelWarmup.errors++;
+      else if (dataOf<{ snapshot?: { live?: boolean } }>(o)?.snapshot?.live) readModelWarmup.computedLive++;
+      return next();
+    };
+    await Promise.all([next(), next()]);
+    readModelWarmup.seconds = Math.round((performance.now() - tWarm) / 100) / 10;
+    console.log(
+      `Read model warmed: ${readModelWarmup.requests} dashboard views, ${readModelWarmup.computedLive} computed live, ${readModelWarmup.errors} errors, ${readModelWarmup.seconds}s.`,
+    );
+  }
 
   // Unloaded service time: a few sequential requests per operation before any load.
   const serviceTimes: ServiceTime[] = [];
@@ -1153,6 +1191,7 @@ const main = async () => {
     mix: activeOps().map((o) => ({ name: o.name, cls: o.cls, stream: o.stream, weight: o.weight })),
     excluded: cfg.exclude,
     serviceTimes,
+    readModelWarmup,
   });
   const files = writeReport(results, cfg.out, cfg.label);
   console.log(

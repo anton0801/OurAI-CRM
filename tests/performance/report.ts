@@ -49,6 +49,8 @@ export interface Sample {
   /** CPU of the web process tree, the worker process tree, the load database's PostgreSQL backends and the runner (100 % = one core). */
   webPct?: number | null;
   workerPct?: number | null;
+  /** Load balancer (Caddy) in front of several web processes. */
+  proxyPct?: number | null;
   pgPct?: number | null;
   runnerPct?: number | null;
   inFlight: number;
@@ -120,6 +122,14 @@ export interface RunResults {
   };
   /** Sequential requests per operation before the load (no concurrency). */
   serviceTimes?: ServiceTime[];
+  /** Dashboard views before the load that fill the analytics read model. */
+  readModelWarmup?: {
+    requests: number;
+    computedLive: number;
+    errors: number;
+    seconds: number;
+    maxMs: number;
+  };
   classes: (Stats & {
     cls: string;
     label: string;
@@ -144,6 +154,7 @@ export interface RunResults {
         webCpuAvgPct?: number | null;
         webCpuMaxPct?: number | null;
         workerCpuAvgPct?: number | null;
+        proxyCpuAvgPct?: number | null;
         pgCpuAvgPct?: number | null;
         runnerCpuAvgPct?: number | null;
       }
@@ -226,6 +237,7 @@ export const summarize = (input: {
   mix: RunResults['profile']['mix'];
   excluded: string[];
   serviceTimes: ServiceTime[];
+  readModelWarmup?: RunResults['readModelWarmup'];
 }): RunResults => {
   const { records, phases } = input;
   const measured = phases.filter((p) => p.record);
@@ -271,6 +283,7 @@ export const summarize = (input: {
       webCpuAvgPct: avgOf(ss.map((x) => x.webPct)),
       webCpuMaxPct: maxOf(ss.map((x) => x.webPct)),
       workerCpuAvgPct: avgOf(ss.map((x) => x.workerPct)),
+      proxyCpuAvgPct: avgOf(ss.map((x) => x.proxyPct)),
       pgCpuAvgPct: avgOf(ss.map((x) => x.pgPct)),
       runnerCpuAvgPct: avgOf(ss.map((x) => x.runnerPct)),
     };
@@ -309,6 +322,7 @@ export const summarize = (input: {
       excluded: input.excluded,
     },
     serviceTimes: input.serviceTimes,
+    readModelWarmup: input.readModelWarmup,
     classes,
     ops: ops.sort((a, b) => a.cls.localeCompare(b.cls) || a.op.localeCompare(b.op)),
     queue: { samples: input.samples.length, byPhase, ...input.queue },
@@ -424,6 +438,16 @@ export const renderReport = (
     push(`| ${x.label} | ${measured.map((p) => ms(x.byPhase[p.name] ?? null)).join(' | ')} |`);
   push('');
 
+  if (r.readModelWarmup?.requests) {
+    const w = r.readModelWarmup;
+    push(
+      '## Analytics read model warm-up',
+      '',
+      `Before the measured load every session opened each of its dashboard tabs once (spec §28.3: analytics are measured "after warmed read models"): ${w.requests} dashboard views in ${w.seconds} s, ${w.computedLive} of them computed live because no snapshot existed for that access scope yet (slowest ${ms(w.maxMs)}), ${w.errors} errors. Members with the same effective access share one snapshot per tab. During the load the dashboards were served from the read model, while the worker refreshed stale snapshots in the background.`,
+      '',
+    );
+  }
+
   if (r.serviceTimes?.length) {
     push(
       '## Unloaded service time',
@@ -459,11 +483,11 @@ export const renderReport = (
       '',
       'CPU by process during the run (100 % = one core; sampled every 2 s from /proc):',
       '',
-      '| Phase | Web server(s) avg / max | Worker avg | PostgreSQL (load DB backends) avg | Load generator avg | Whole host avg |',
-      '|---|---|---|---|---|---|',
+      '| Phase | Web server(s) avg / max | Load balancer avg | Worker avg | PostgreSQL (load DB backends) avg | Load generator avg | Whole host avg |',
+      '|---|---|---|---|---|---|---|',
       ...Object.entries(r.queue.byPhase).map(
         ([ph, q]) =>
-          `| ${ph} | ${q.webCpuAvgPct ?? '—'} % / ${q.webCpuMaxPct ?? '—'} % | ${q.workerCpuAvgPct ?? '—'} % | ${q.pgCpuAvgPct ?? '—'} % | ${q.runnerCpuAvgPct ?? '—'} % | ${q.cpuAvgPct ?? '—'} % of ${r.environment.host.cpus} cores |`,
+          `| ${ph} | ${q.webCpuAvgPct ?? '—'} % / ${q.webCpuMaxPct ?? '—'} % | ${q.proxyCpuAvgPct ?? '—'} % | ${q.workerCpuAvgPct ?? '—'} % | ${q.pgCpuAvgPct ?? '—'} % | ${q.runnerCpuAvgPct ?? '—'} % | ${q.cpuAvgPct ?? '—'} % of ${r.environment.host.cpus} cores |`,
       ),
     );
   }
