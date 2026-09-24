@@ -13,10 +13,33 @@ import type { AnyEndpoint } from '../core';
 
 type JsonSchema = Record<string, unknown>;
 
+/** Recursive schemas (zod emits them as local $defs) live in components.schemas, shared by content. */
+const recursiveDefs = new Map<string, { name: string; schema: JsonSchema }>();
+
+const rewriteRefs = (node: unknown, map: Map<string, string>): unknown => {
+  if (Array.isArray(node)) return node.map((x) => rewriteRefs(x, map));
+  if (!node || typeof node !== 'object') return node;
+  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, k === '$ref' && typeof v === 'string' && map.has(v) ? map.get(v) : rewriteRefs(v, map)]));
+};
+
 const toSchema = (s: z.ZodTypeAny, io: 'input' | 'output'): JsonSchema => {
   const out = z.toJSONSchema(s, { io, unrepresentable: 'any', target: 'draft-2020-12' }) as JsonSchema;
   delete out.$schema;
-  return out;
+  const defs = out.$defs as Record<string, JsonSchema> | undefined;
+  if (!defs) return out;
+  delete out.$defs;
+  const map = new Map<string, string>();
+  for (const [local, def] of Object.entries(defs)) {
+    const key = `${io}:${JSON.stringify(def)}`;
+    let entry = recursiveDefs.get(key);
+    if (!entry) {
+      entry = { name: `Recursive${recursiveDefs.size + 1}`, schema: def };
+      recursiveDefs.set(key, entry);
+    }
+    map.set(`#/$defs/${local}`, `#/components/schemas/${entry.name}`);
+  }
+  for (const e of recursiveDefs.values()) e.schema = rewriteRefs(e.schema, map) as JsonSchema;
+  return rewriteRefs(out, map) as JsonSchema;
 };
 
 const objectProperties = (s: z.ZodTypeAny) => {
@@ -104,6 +127,73 @@ const operation = (e: AnyEndpoint) => {
   };
 };
 
+const isSchemaNode = (v: unknown): v is JsonSchema =>
+  !!v && typeof v === 'object' && !Array.isArray(v) && (typeof (v as JsonSchema).type === 'string' || Array.isArray((v as JsonSchema).type) || 'anyOf' in v || 'oneOf' in v || 'allOf' in v || 'enum' in v);
+
+const pascal = (s: string) =>
+  s
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((w) => w[0]!.toUpperCase() + w.slice(1))
+    .join('');
+
+/**
+ * Repeated sub-schemas (member references, money, value envelopes, list items …) move to
+ * components.schemas and are referenced with $ref, named after their first use
+ * (operation + property path). Keeps the document readable instead of inlining every copy.
+ */
+const hoistSharedSchemas = (paths: Record<string, Record<string, unknown>>) => {
+  const MIN_SIZE = 160;
+  const counts = new Map<string, number>();
+  const firstUse = new Map<string, string>();
+  const count = (node: unknown, where: string) => {
+    if (Array.isArray(node)) return node.forEach((x) => count(x, where));
+    if (!node || typeof node !== 'object') return;
+    for (const [k, v] of Object.entries(node)) count(v, k === 'properties' || k === 'items' || k === 'anyOf' || k === 'oneOf' || k === 'allOf' || k === 'additionalProperties' ? where : `${where} ${k}`);
+    if (isSchemaNode(node)) {
+      const key = JSON.stringify(node);
+      if (key.length < MIN_SIZE) return;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (!firstUse.has(key)) firstUse.set(key, where);
+    }
+  };
+  for (const ops of Object.values(paths)) for (const op of Object.values(ops)) count(op, (op as { operationId: string }).operationId);
+
+  const schemas: Record<string, JsonSchema> = {};
+  const names = new Map<string, string>();
+  const used = new Set<string>();
+  const nameFor = (key: string) => {
+    let name = names.get(key);
+    if (name) return name;
+    const words = firstUse.get(key)!.split(' ');
+    const base = pascal([words[0]!, ...words.slice(1).filter((w) => !['requestBody', 'responses', 'content', 'application/json', 'schema', 'data', 'parameters'].includes(w) && !/^\d+$/.test(w)).slice(-2)].join(' ')) || 'Schema';
+    name = base;
+    for (let i = 2; used.has(name); i++) name = `${base}${i}`;
+    used.add(name);
+    names.set(key, name);
+    return name;
+  };
+  const replace = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(replace);
+    if (!node || typeof node !== 'object') return node;
+    if (isSchemaNode(node)) {
+      const key = JSON.stringify(node);
+      if ((counts.get(key) ?? 0) >= 2) {
+        const name = nameFor(key);
+        if (!schemas[name]) {
+          schemas[name] = {};
+          schemas[name] = Object.fromEntries(Object.entries(node).map(([k, v]) => [k, replace(v)])) as JsonSchema;
+        }
+        return { $ref: `#/components/schemas/${name}` };
+      }
+    }
+    return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, replace(v)]));
+  };
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [path, ops] of Object.entries(paths)) out[path] = replace(ops) as Record<string, unknown>;
+  return { paths: out, schemas: Object.fromEntries(Object.entries(schemas).sort(([a], [b]) => a.localeCompare(b))) };
+};
+
 export const buildOpenApi = () => {
   const paths: Record<string, Record<string, unknown>> = {};
   const seen = new Set<string>();
@@ -116,10 +206,12 @@ export const buildOpenApi = () => {
       if (paths[e.path]![method]) throw new Error(`Duplicate route ${e.method} ${e.path}`);
       paths[e.path]![method] = operation(e);
     }
+  const hoisted = hoistSharedSchemas(Object.fromEntries(Object.entries(paths).sort(([a], [b]) => a.localeCompare(b))));
   return {
     openapi: '3.1.0',
     info: {
       title: 'Castlane CRM API',
+      license: { name: 'Proprietary, internal use only' },
       version: '1.0.0',
       description:
         'Internal REST API of Castlane CRM. All paths are relative to /api/v1. Session cookie authentication; state-changing requests need the X-CSRF-Token header and a same-origin Origin. Responses use the {data, meta} envelope; errors use {error}.',
@@ -128,8 +220,9 @@ export const buildOpenApi = () => {
     components: {
       securitySchemes: { session: { type: 'apiKey', in: 'cookie', name: 'castlane_session' } },
       responses: { Error: errorResponse },
+      schemas: { ...hoisted.schemas, ...Object.fromEntries([...recursiveDefs.values()].map((d) => [d.name, d.schema])) },
     },
-    paths: Object.fromEntries(Object.entries(paths).sort(([a], [b]) => a.localeCompare(b))),
+    paths: hoisted.paths,
   };
 };
 
