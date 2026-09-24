@@ -64,13 +64,15 @@ workspace week start.
   create checkpoint (never records values), notify, request internal approval (a task; nothing is approved automatically),
   create incident. `templates.ts` holds seven starter rules.
 - Principal (`principal.ts`): a run acts as `rulePrincipal`, an `automation` actor with the owner's identity and the owner's
-  current rights narrowed to the rule scope (`narrowAccess` drops assigned-object and own-record grants and clears `isOwner` for
-  non-workspace scopes). Enabling needs an active owner holding every required permission over the whole scope and on fixed
+  current rights narrowed to the rule scope (`narrowAccess` drops assigned-object and own-record grants and always clears
+  `isOwner`: a workspace rule keeps the owner's grants but never Owner-only exceptions). Enabling needs an active owner holding every required permission over the whole scope and on fixed
   projects (`authorityGaps`: the trigger's read permission plus each action's permissions); the enabling member must hold them too.
 - Runtime (`runtime.ts`): event triggers go through the outbox consumer `automation.dispatch`, which creates one run per
   `event:{eventId}:{versionId}` (unique `automation_runs_operation_uq`) and queues job `automation.run`. Deadline and schedule
   triggers come from `automation.tick` (every 60 s): deadline keys include the deadline revision, a scan creates ≤ 200 runs per
-  rule, and only the latest missed schedule slot runs. A run executes the version stored on it (`run.ruleVersionId`).
+  rule, and only the latest missed schedule slot runs. A run executes the version stored on it (`run.ruleVersionId`), and only
+  while that version is still the enabled one: after another version is enabled, a queued run is skipped as `VERSION_CHANGED`
+  (never replayed with the old or a different config) and cannot be retried.
 - Before actions: the rule must still be enabled. A missing owner means skipped + `paused_needs_owner`; permission gaps or an
   unreadable record mean failed + `paused_requires_attention`. Loop protection (`automationChainVerdict`): depth > 5 is
   `DEPTH_LIMIT`, the same rule already in the chain is `RECURSION`, and > 50 tasks/notifications per root event is
@@ -84,7 +86,9 @@ workspace week start.
   reason, rule enabled) reuses the operation and effect keys. Access and deactivation events queue `automation.revalidate`, which
   pauses rules whose owner no longer covers the scope.
 - Dry run (`dryRunAutomationRule`) evaluates the conditions, then runs the real action use cases as the principal in a
-  transaction that is always rolled back. It writes no run or effect rows and sends no mail.
+  transaction that is always rolled back. It writes no run or effect rows and sends no mail. Readers (`automations.read`) dry-run
+  the saved version; an unsaved config needs `automations.edit`, passes `validateRuleDraft`, and the requester must hold every
+  permission it uses in the rule scope.
 - Run records (`automation_runs`) have states pending, throttled, running, succeeded, failed, skipped and dead, plus per-action
   results and an error code/message.
 - Used elsewhere: `accountLabelOf` (overview, goals). Insights labels `automation:` checkpoint keys.
@@ -95,4 +99,3 @@ workspace week start.
 Known limits:
 - Automations cannot approve, post finance, change roles, delete or send external messages. There are no user-defined triggers or
   fields.
-- Dry run needs only `automations.read` and accepts an unsaved config.

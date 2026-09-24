@@ -94,7 +94,9 @@ export const describeGaps = (gaps: AuthorityGap[]) => [...new Set(gaps.map((g) =
  * records) are dropped. Owner status is not inherited — the owner role is narrowed like any grant.
  */
 export const narrowAccess = (s: AccessSnapshot, rule: RuleScopeLike): AccessSnapshot => {
-  if (rule.scopeType === 'workspace' || !rule.scopeId) return s;
+  // A workspace rule keeps every grant (the Owner role grant still carries all permissions), but never
+  // the Owner status itself: Owner-only exceptions are never exercised implicitly by an automation.
+  if (rule.scopeType === 'workspace' || !rule.scopeId) return { ...s, isOwner: false };
   const R = { scopeType: rule.scopeType, scopeId: rule.scopeId } as const;
   const dirOf = (projectId: string | null | undefined) => (projectId ? (s.projectDirection.get(projectId) ?? null) : null);
   const projectOfAccount = (accountId: string) => s.accountProject.get(accountId) ?? null;
