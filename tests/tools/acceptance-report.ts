@@ -72,7 +72,11 @@ if (existsSync(e2eJson)) {
   for (const s of r.suites) walk(s, '');
 }
 
-const manual: Record<string, { evidence: string; status: 'verified' | 'operational' }> = existsSync(manualFile) ? JSON.parse(readFileSync(manualFile, 'utf8')) : {};
+/**
+ * Manual / measured evidence: `verified` (checked by hand), `operational` (a procedure to run in
+ * the target environment), `not_met` (measured, and the expected result was NOT achieved).
+ */
+const manual: Record<string, { evidence: string; status: 'verified' | 'operational' | 'not_met' }> = existsSync(manualFile) ? JSON.parse(readFileSync(manualFile, 'utf8')) : {};
 
 const esc = (s: string) => s.replace(/\|/g, '\\|');
 let covered = 0;
@@ -88,6 +92,9 @@ const rows = scenarios.map((s) => {
   } else if (ev.some((e) => e.status === 'passed')) {
     status = '✅ automated';
     covered++;
+  } else if (m?.status === 'not_met') {
+    status = '❌ measured, not met';
+    failing++;
   } else if (m) {
     status = m.status === 'verified' ? '✅ verified manually' : '📋 operational procedure';
     manualOnly++;
@@ -122,7 +129,7 @@ matched by the T-id in the test name; manual/operational evidence is kept in
 |---|---|
 | Scenarios | ${scenarios.length} |
 | Covered by passing automated tests | ${covered} |
-| Failing automated tests | ${failing} |
+| Failing (automated tests, or measured and not met) | ${failing} |
 | Manual / operational evidence only | ${manualOnly} |
 | Without evidence | ${scenarios.length - covered - failing - manualOnly} |
 | Vitest results (all tests) | ${totals.passed} passed, ${totals.failed} failed, ${totals.skipped} skipped |

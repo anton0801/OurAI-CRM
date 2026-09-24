@@ -32,6 +32,7 @@ import {
   type Column,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { applyFieldErrors, useApiInfinite, useApiQuery } from '@/lib/hooks';
@@ -375,7 +376,8 @@ const AssignmentDetailDrawer = ({ id, onClose }: { id: string; onClose: () => vo
           body={`${a.member.displayName} loses OFM access to ${a.account.label} now. History and past shifts stay. Scheduled shifts after the end must be cancelled or moved first.`}
           confirmLabel="End Assignment"
           destructive
-          onConfirm={(reason) => end.run({ params: { workspaceId: workspace.id, assignmentId: a.id }, body: { reason } }, { ifMatch: a.rowVersion })}
+          record={a}
+          onConfirm={(reason, ifMatch) => end.run({ params: { workspaceId: workspace.id, assignmentId: a.id }, body: { reason } }, { ifMatch })}
         />
       ) : null}
     </Drawer>
@@ -388,7 +390,14 @@ const EditAssignmentDialog = ({ a, onClose }: { a: OfmAssignmentDetail; onClose:
   const [supervisor, setSupervisor] = useState<string | null>(a.supervisor?.membershipId ?? null);
   const [handover, setHandover] = useState(a.handoverRequired);
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // Edits apply to the assignment as the dialog opened; only changed fields are sent (T162).
+  const edit = useEditBase(a, {
+    onReload: (x) => {
+      setValidTo(toLocalInput(x.validTo, user.timezone));
+      setSupervisor(x.supervisor?.membershipId ?? null);
+      setHandover(x.handoverRequired);
+    },
+  });
   const m = useOfmMutation(E.updateAssignment, { successMessage: 'Assignment updated', silentErrors: true });
   return (
     <Dialog
@@ -404,14 +413,14 @@ const EditAssignmentDialog = ({ a, onClose }: { a: OfmAssignmentDetail; onClose:
             onClick={async () => {
               setError(null);
               try {
-                await m.run(
-                  { params: { workspaceId: workspace.id, assignmentId: a.id }, body: { validTo: validTo ? fromLocalInput(validTo, user.timezone) : null, supervisorMembershipId: supervisor, handoverRequired: handover } },
-                  { ifMatch: a.rowVersion },
-                );
+                const s = edit.start ?? a;
+                const body = { validTo: validTo ? fromLocalInput(validTo, user.timezone) : null, supervisorMembershipId: supervisor, handoverRequired: handover };
+                const shownTo = toLocalInput(s.validTo, user.timezone);
+                const before = { validTo: shownTo ? fromLocalInput(shownTo, user.timezone) : null, supervisorMembershipId: s.supervisor?.membershipId ?? null, handoverRequired: s.handoverRequired };
+                await m.run({ params: { workspaceId: workspace.id, assignmentId: a.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
                 onClose();
               } catch (e) {
-                if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-                else setError(errorMessage(e));
+                if (!edit.catchConflict(e)) setError(errorMessage(e));
               }
             }}
           >
@@ -430,7 +439,7 @@ const EditAssignmentDialog = ({ a, onClose }: { a: OfmAssignmentDetail; onClose:
         </Field>
         <Switch label="Handover Required" checked={handover} onCheckedChange={setHandover} />
       </div>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Dialog>
   );
 };
@@ -442,58 +451,63 @@ const TransferDialog = ({ a, onClose }: { a: OfmAssignmentDetail; onClose: () =>
   const [reason, setReason] = useState('');
   const [move, setMove] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(a);
   const m = useOfmMutation(E.transferAssignment, { successMessage: 'Assignment transferred', silentErrors: true });
   const impact = useApiQuery(
     E.assignmentImpact,
     { params: { workspaceId: workspace.id }, query: { membershipId: a.member.membershipId, accountId: a.account.id, assignmentId: a.id, action: 'transfer', validTo: when ? (fromLocalInput(when, user.timezone) ?? undefined) : undefined } },
   );
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Transfer assignment"
-      description="The current assignment ends at the effective time and a new one starts for the successor with the same lane."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!to || reason.trim().length < 3}
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run(
-                  { params: { workspaceId: workspace.id, assignmentId: a.id }, body: { toMembershipId: to!, reason: reason.trim(), effectiveAt: when ? (fromLocalInput(when, user.timezone) ?? undefined) : undefined, moveFutureShifts: move } },
-                  { ifMatch: a.rowVersion },
-                );
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Transfer
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="New member" required>
-          <MemberSelect value={to} onChange={setTo} />
-        </Field>
-        <Field label="Effective at" helper="Leave empty for now.">
-          <DateTimeInput timezone={user.timezone} value={when} onChange={(e) => setWhen(e.target.value)} />
-        </Field>
-        <Switch label="Move future scheduled shifts" description="Each shift is re-checked against the successor’s assignments and schedule." checked={move} onCheckedChange={setMove} />
-        {impact.data?.shiftsOutsideInterval.length ? (
-          <Banner tone="warning">{impact.data.shiftsOutsideInterval.length} scheduled shift(s) are affected.</Banner>
-        ) : null}
-        <Field label="Reason" required>
-          <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Transfer assignment"
+        description="The current assignment ends at the effective time and a new one starts for the successor with the same lane."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={!to || reason.trim().length < 3}
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await m.run(
+                    { params: { workspaceId: workspace.id, assignmentId: a.id }, body: { toMembershipId: to!, reason: reason.trim(), effectiveAt: when ? (fromLocalInput(when, user.timezone) ?? undefined) : undefined, moveFutureShifts: move } },
+                    { ifMatch: edit.version },
+                  );
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Transfer
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="New member" required>
+            <MemberSelect value={to} onChange={setTo} />
+          </Field>
+          <Field label="Effective at" helper="Leave empty for now.">
+            <DateTimeInput timezone={user.timezone} value={when} onChange={(e) => setWhen(e.target.value)} />
+          </Field>
+          <Switch label="Move future scheduled shifts" description="Each shift is re-checked against the successor’s assignments and schedule." checked={move} onCheckedChange={setMove} />
+          {impact.data?.shiftsOutsideInterval.length ? (
+            <Banner tone="warning">{impact.data.shiftsOutsideInterval.length} scheduled shift(s) are affected.</Banner>
+          ) : null}
+          <Field label="Reason" required>
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };

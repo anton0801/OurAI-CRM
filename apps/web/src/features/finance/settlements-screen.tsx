@@ -34,6 +34,7 @@ import {
 } from '@castlane/ui';
 import { QueryState } from '@/components/common/query-state';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { useDebounced } from '@/components/common/use-debounced';
 import { useApiInfinite, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
@@ -207,8 +208,10 @@ export const RegisterSettlementDrawer = ({
   }, [open]);
   useEffect(() => {
     const o = entry.data?.outstanding.find((x) => !isZero(x.amount));
-    if (open && entry.data && o)
+    // Prefill until the member types: a background refresh of the entry never overwrites their input (T162).
+    if (open && entry.data && o && !dirty)
       setF((x) => ({ ...x, direction: o.amount.startsWith('-') ? 'out' : 'in', amount: absAmount(o.amount), currency: o.currency, counterparty: entry.data?.counterparty ?? x.counterparty }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, entry.data]);
   const create = useFinanceMutation(F.settlementsCreate, { invalidate: ['finance.'], silentErrors: true, successMessage: 'Settlement registered' });
   const patch = (p: Partial<RegisterForm>) => {
@@ -425,10 +428,6 @@ const SettlementBody = ({ s, prefillEntryId, refetch }: { s: SettlementDetail; p
         prefillEntryId={prefillEntryId}
         onCancel={() => setMode('view')}
         onDone={() => setMode('view')}
-        onConflict={() => {
-          setMode('view');
-          setConflict(true);
-        }}
       />
     );
   return (
@@ -528,14 +527,12 @@ const AllocationBuilder = ({
   prefillEntryId,
   onCancel,
   onDone,
-  onConflict,
 }: {
   settlement: SettlementDetail;
   mode: 'confirm' | 'match';
   prefillEntryId?: string;
   onCancel: () => void;
   onDone: () => void;
-  onConflict: () => void;
 }) => {
   const params = useFinanceParams();
   const { user } = useWorkspace();
@@ -548,6 +545,8 @@ const AllocationBuilder = ({
   const [policy, setPolicy] = useState<'none' | 'advance' | 'unallocated'>('none');
   const [remainderNote, setRemainderNote] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Allocations are saved against the settlement as the builder opened; a conflict keeps the picks (T162).
+  const edit = useEditBase(s, { onReload: () => setPicks([]) });
   const guard = useGuardedAction();
   const confirm = useFinanceMutation(F.settlementsConfirm, { invalidate: ['finance.'], silentErrors: true });
   const match = useFinanceMutation(F.settlementsMatch, { invalidate: ['finance.'], silentErrors: true });
@@ -590,106 +589,109 @@ const AllocationBuilder = ({
   const submit = () =>
     guard.act(
       async () => {
-        if (mode === 'confirm') await confirm.run({ params: { ...params, settlementId: s.id }, body: { allocationLines: lines, remainderPolicy: remainder > 0n ? policy : 'none', remainderNote: remainderNote.trim() || undefined } }, { ifMatch: s.rowVersion });
-        else await match.run({ params: { ...params, settlementId: s.id }, body: { allocationLines: lines } }, { ifMatch: s.rowVersion });
+        if (mode === 'confirm') await confirm.run({ params: { ...params, settlementId: s.id }, body: { allocationLines: lines, remainderPolicy: remainder > 0n ? policy : 'none', remainderNote: remainderNote.trim() || undefined } }, { ifMatch: edit.version });
+        else await match.run({ params: { ...params, settlementId: s.id }, body: { allocationLines: lines } }, { ifMatch: edit.version });
         toast.success(mode === 'confirm' ? 'Settlement confirmed' : 'Settlement matched');
         onDone();
       },
-      (e) => (isConflict(e) ? onConflict() : setError(apiMessage(e))),
+      (e) => (edit.catchConflict(e) ? undefined : setError(apiMessage(e))),
     );
 
   const pickedKeys = new Set(picks.map((p) => p.key));
   return (
-    <div className="flex flex-col gap-4">
-      <PaymentNotice />
-      {error ? <Banner tone="danger">{error}</Banner> : null}
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-[12px] bg-surface-2 px-4 py-3 text-[13px]">
-        <span>
-          Available <Money value={available} strong />
-        </span>
-        <span>
-          Allocated <Money value={{ amount: decimalOf(allocatedMinor, cur), currency: cur }} />
-        </span>
-        <span className={remainder < 0n ? 'text-danger' : remainder > 0n ? 'text-warning' : ''}>
-          Remainder <Money value={{ amount: decimalOf(remainder, cur), currency: cur }} />
-        </span>
-      </div>
-      <Panel title={s.direction === 'in' ? 'Open Receivables' : 'Open Payables and Compensation'} bodyClassName="flex flex-col gap-3 p-4">
-        <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search open items" aria-label="Search open items" />
-        <QueryState query={items}>
-          {items.data && items.data.length === 0 ? (
-            <p className="text-[13px] text-fg-2">No open items{q ? ' match this search' : ''}.</p>
-          ) : (
-            <ul className="flex max-h-[280px] flex-col divide-y divide-line overflow-y-auto">
-              {(items.data ?? []).map((it) => (
-                <li key={itemKey(it)} className="flex items-center justify-between gap-3 py-2">
-                  <Checkbox checked={pickedKeys.has(itemKey(it))} onCheckedChange={(v) => toggle(it, v)} label={it.title} description={`${it.date}${it.recipient ? ` · ${it.recipient.displayName}` : ''}`} />
-                  <Money value={{ amount: absAmount(it.outstanding.amount), currency: it.outstanding.currency }} />
+    <>
+      <div className="flex flex-col gap-4">
+        <PaymentNotice />
+        {error ? <Banner tone="danger">{error}</Banner> : null}
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[12px] bg-surface-2 px-4 py-3 text-[13px]">
+          <span>
+            Available <Money value={available} strong />
+          </span>
+          <span>
+            Allocated <Money value={{ amount: decimalOf(allocatedMinor, cur), currency: cur }} />
+          </span>
+          <span className={remainder < 0n ? 'text-danger' : remainder > 0n ? 'text-warning' : ''}>
+            Remainder <Money value={{ amount: decimalOf(remainder, cur), currency: cur }} />
+          </span>
+        </div>
+        <Panel title={s.direction === 'in' ? 'Open Receivables' : 'Open Payables and Compensation'} bodyClassName="flex flex-col gap-3 p-4">
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search open items" aria-label="Search open items" />
+          <QueryState query={items}>
+            {items.data && items.data.length === 0 ? (
+              <p className="text-[13px] text-fg-2">No open items{q ? ' match this search' : ''}.</p>
+            ) : (
+              <ul className="flex max-h-[280px] flex-col divide-y divide-line overflow-y-auto">
+                {(items.data ?? []).map((it) => (
+                  <li key={itemKey(it)} className="flex items-center justify-between gap-3 py-2">
+                    <Checkbox checked={pickedKeys.has(itemKey(it))} onCheckedChange={(v) => toggle(it, v)} label={it.title} description={`${it.date}${it.recipient ? ` · ${it.recipient.displayName}` : ''}`} />
+                    <Money value={{ amount: absAmount(it.outstanding.amount), currency: it.outstanding.currency }} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </QueryState>
+        </Panel>
+        {picks.length ? (
+          <Panel title="Split Allocation">
+            <ul className="flex flex-col gap-3">
+              {picks.map((p, i) => (
+                <li key={p.key} className="flex flex-col gap-2 rounded-[8px] border border-line p-3">
+                  <div className="flex items-center justify-between gap-2 text-[13px]">
+                    <span className="font-medium">{p.title}</span>
+                    <span className="text-fg-2">
+                      Outstanding <Money value={p.outstanding} />
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <Field label={`Amount (${cur})`} required>
+                      <AmountInput currency={cur} value={p.amount} onChange={(e) => decimalOk(e.target.value) && setPicks(picks.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))} />
+                    </Field>
+                    {p.outstanding.currency !== cur ? (
+                      <Field label={`Settled in ${p.outstanding.currency}`} required helper="Both amounts are required; the effective rate and any realized FX difference follow from them.">
+                        <AmountInput currency={p.outstanding.currency} value={p.documentAmount} onChange={(e) => decimalOk(e.target.value) && setPicks(picks.map((x, j) => (j === i ? { ...x, documentAmount: e.target.value } : x)))} />
+                      </Field>
+                    ) : null}
+                  </div>
                 </li>
               ))}
             </ul>
-          )}
-        </QueryState>
-      </Panel>
-      {picks.length ? (
-        <Panel title="Split Allocation">
-          <ul className="flex flex-col gap-3">
-            {picks.map((p, i) => (
-              <li key={p.key} className="flex flex-col gap-2 rounded-[8px] border border-line p-3">
-                <div className="flex items-center justify-between gap-2 text-[13px]">
-                  <span className="font-medium">{p.title}</span>
-                  <span className="text-fg-2">
-                    Outstanding <Money value={p.outstanding} />
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  <Field label={`Amount (${cur})`} required>
-                    <AmountInput currency={cur} value={p.amount} onChange={(e) => decimalOk(e.target.value) && setPicks(picks.map((x, j) => (j === i ? { ...x, amount: e.target.value } : x)))} />
-                  </Field>
-                  {p.outstanding.currency !== cur ? (
-                    <Field label={`Settled in ${p.outstanding.currency}`} required helper="Both amounts are required; the effective rate and any realized FX difference follow from them.">
-                      <AmountInput currency={p.outstanding.currency} value={p.documentAmount} onChange={(e) => decimalOk(e.target.value) && setPicks(picks.map((x, j) => (j === i ? { ...x, documentAmount: e.target.value } : x)))} />
-                    </Field>
-                  ) : null}
-                </div>
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      ) : null}
-      {mode === 'confirm' && remainder > 0n ? (
-        <Panel title="Remainder">
-          <div className="flex flex-col gap-3">
-            <p className="text-[13px] text-fg-2">
-              <Money value={{ amount: decimalOf(remainder, cur), currency: cur }} /> is not matched. Record it explicitly — an overpayment never disappears into another document.
-            </p>
-            <RadioGroup
-              label="Remainder"
-              value={policy}
-              onValueChange={setPolicy}
-              options={[
-                { value: 'none', label: 'Match more items', description: 'Required before confirming without a remainder policy' },
-                { value: 'advance', label: 'Advance', description: 'Prepayment to match against future documents' },
-                { value: 'unallocated', label: 'Unallocated Balance', description: 'Keep it visible under Open Unmatched' },
-              ]}
-            />
-            {policy !== 'none' ? (
-              <Field label="Remainder Note">
-                <Textarea value={remainderNote} maxLength={500} onChange={(e) => setRemainderNote(e.target.value)} className="min-h-[64px]" />
-              </Field>
-            ) : null}
-          </div>
-        </Panel>
-      ) : null}
-      {remainder < 0n ? <Banner tone="danger">The allocations exceed the available amount.</Banner> : null}
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button onClick={onCancel}>Back</Button>
-        <Button variant="primary" loading={confirm.isPending || match.isPending} disabled={invalid} onClick={() => void submit()}>
-          {mode === 'confirm' ? 'Confirm Settlement' : 'Match'}
-        </Button>
+          </Panel>
+        ) : null}
+        {mode === 'confirm' && remainder > 0n ? (
+          <Panel title="Remainder">
+            <div className="flex flex-col gap-3">
+              <p className="text-[13px] text-fg-2">
+                <Money value={{ amount: decimalOf(remainder, cur), currency: cur }} /> is not matched. Record it explicitly — an overpayment never disappears into another document.
+              </p>
+              <RadioGroup
+                label="Remainder"
+                value={policy}
+                onValueChange={setPolicy}
+                options={[
+                  { value: 'none', label: 'Match more items', description: 'Required before confirming without a remainder policy' },
+                  { value: 'advance', label: 'Advance', description: 'Prepayment to match against future documents' },
+                  { value: 'unallocated', label: 'Unallocated Balance', description: 'Keep it visible under Open Unmatched' },
+                ]}
+              />
+              {policy !== 'none' ? (
+                <Field label="Remainder Note">
+                  <Textarea value={remainderNote} maxLength={500} onChange={(e) => setRemainderNote(e.target.value)} className="min-h-[64px]" />
+                </Field>
+              ) : null}
+            </div>
+          </Panel>
+        ) : null}
+        {remainder < 0n ? <Banner tone="danger">The allocations exceed the available amount.</Banner> : null}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button onClick={onCancel}>Back</Button>
+          <Button variant="primary" loading={confirm.isPending || match.isPending} disabled={invalid} onClick={() => void submit()}>
+            {mode === 'confirm' ? 'Confirm Settlement' : 'Match'}
+          </Button>
+        </div>
+        <p className="text-[12px] text-fg-2">Paid at {formatDateTime(s.paidAt, user.timezone)}.</p>
+        {guard.dialog}
       </div>
-      <p className="text-[12px] text-fg-2">Paid at {formatDateTime(s.paidAt, user.timezone)}.</p>
-      {guard.dialog}
-    </div>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };

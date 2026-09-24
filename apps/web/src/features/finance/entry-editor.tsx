@@ -23,13 +23,14 @@ import {
   toast,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect } from '@/components/common/entity-select';
 import { useApiQuery } from '@/lib/hooks';
 import { useUnsavedChangesGuard } from '@/lib/unsaved';
 import { label } from '@/lib/labels';
 import { useCan, useWorkspace, useWsPath } from '@/lib/workspace-context';
 import { AllocationEditor, allocationToSpec, emptyAllocation, rowKey, type AllocationForm } from './allocation-editor';
-import { CurrencySelect, apiMessage, decimalOk, isConflict, useFinanceParams, useFinanceMutation } from './common';
+import { CurrencySelect, apiMessage, decimalOk, useFinanceParams, useFinanceMutation } from './common';
 
 type EntryType = (typeof FINANCE_ENTRY_TYPES)[number];
 
@@ -150,12 +151,19 @@ export const EntryEditor = ({ entry, onDone }: { entry?: EntryDetail; onDone?: (
       allocation: projectId ? { mode: 'percent', rows: [{ key: rowKey(), target: 'project', projectId, value: '100' }] } : emptyAllocation(),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entry?.id, entry?.rowVersion]);
+  }, [entry?.id]);
   const [f, setF] = useState<FormState>(initial);
   const [dirty, setDirty] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // The draft is edited against the entry as it was opened (If-Match, changed fields only), so a
+  // background refresh can neither overwrite someone else's change nor reset the typing (T162).
+  const edit = useEditBase(entry, {
+    onReload: (latest) => {
+      setF(fromEntry(latest));
+      setDirty(false);
+    },
+  });
   const [pendingAction, setPendingAction] = useState<'save' | 'submit' | null>(null);
   useUnsavedChangesGuard(dirty);
   const cats = useApiQuery(F.categoriesList, { params, query: {} }, { staleTime: 60_000 });
@@ -212,33 +220,34 @@ export const EntryEditor = ({ entry, onDone }: { entry?: EntryDetail; onDone?: (
     return e;
   };
 
-  const body = () => ({
-    type: f.type,
-    title: f.title.trim(),
-    recognitionDate: f.recognitionDate,
-    counterparty: f.counterparty.trim() || null,
-    sourceNamespace: f.sourceNamespace.trim() || null,
-    sourceExternalId: f.sourceExternalId.trim() || null,
-    accountId: f.accountId,
-    campaignId: f.campaignId,
-    dealId: f.dealId,
-    shiftId: f.shiftId,
-    refundOfEntryId: f.refundOfEntryId,
-    note: f.note.trim() || null,
-    netOnly: statement || f.type === 'revenue' ? f.netOnly : false,
-    controlTotal: statement && f.controlTotal.trim() && singleCurrency ? { amount: f.controlTotal.trim(), currency: singleCurrency } : null,
-    allocation: allocationToSpec(f.allocation),
-    lines: f.lines.map((l) => ({
+  const bodyOf = (x: FormState) => ({
+    type: x.type,
+    title: x.title.trim(),
+    recognitionDate: x.recognitionDate,
+    counterparty: x.counterparty.trim() || null,
+    sourceNamespace: x.sourceNamespace.trim() || null,
+    sourceExternalId: x.sourceExternalId.trim() || null,
+    accountId: x.accountId,
+    campaignId: x.campaignId,
+    dealId: x.dealId,
+    shiftId: x.shiftId,
+    refundOfEntryId: x.refundOfEntryId,
+    note: x.note.trim() || null,
+    netOnly: statement || x.type === 'revenue' ? x.netOnly : false,
+    controlTotal: statement && x.controlTotal.trim() && singleCurrency ? { amount: x.controlTotal.trim(), currency: singleCurrency } : null,
+    allocation: allocationToSpec(x.allocation),
+    lines: x.lines.map((l) => ({
       categoryId: l.categoryId!,
       amount: l.amount.trim(),
       currency: l.currency,
       description: l.description.trim() || null,
       transactionRef: l.transactionRef.trim() || null,
-      commitmentId: f.type === 'expense' ? l.commitmentId : null,
+      commitmentId: x.type === 'expense' ? l.commitmentId : null,
       fxEffect: l.categoryId && catById.get(l.categoryId)?.accountingClass === 'fx_difference' ? l.fxEffect : null,
       allocation: l.ownAllocation ? allocationToSpec(l.ownAllocation) : null,
     })),
   });
+  const body = () => bodyOf(f);
 
   const save = async (andSubmit: boolean) => {
     setFormError(null);
@@ -251,7 +260,10 @@ export const EntryEditor = ({ entry, onDone }: { entry?: EntryDetail; onDone?: (
     setPendingAction(andSubmit ? 'submit' : 'save');
     try {
       const saved = entry
-        ? await update.run({ params: { ...params, entryId: entry.id }, body: body() }, { ifMatch: entry.rowVersion })
+        ? await update.run(
+            { params: { ...params, entryId: entry.id }, body: edit.start ? pickChanged(body(), changedFields(bodyOf(fromEntry(edit.start)), body())) : body() },
+            { ifMatch: edit.version },
+          )
         : await create.run({ params, body: body() });
       setDirty(false);
       if (andSubmit) {
@@ -265,8 +277,8 @@ export const EntryEditor = ({ entry, onDone }: { entry?: EntryDetail; onDone?: (
       if (onDone) onDone();
       else router.push(wsPath(`/finance/entries/${saved.id}`));
     } catch (e) {
-      if (isConflict(e)) setConflict(true);
-      else if (isApiError(e) && e.fieldErrors.length) {
+      if (edit.catchConflict(e)) return;
+      if (isApiError(e) && e.fieldErrors.length) {
         setErrors(Object.fromEntries(e.fieldErrors.map((x) => [x.field.replace(/^body\./, ''), x.message])));
         setFormError(e.message);
       } else setFormError(apiMessage(e, 'The entry could not be saved.'));
@@ -463,7 +475,7 @@ export const EntryEditor = ({ entry, onDone }: { entry?: EntryDetail; onDone?: (
           ) : null}
         </div>
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </div>
   );
 };

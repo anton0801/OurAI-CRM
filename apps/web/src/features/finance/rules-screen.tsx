@@ -32,6 +32,7 @@ import {
 } from '@castlane/ui';
 import { MultiEntitySelect } from '@/components/common/entity-select';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { useDebounced } from '@/components/common/use-debounced';
@@ -458,7 +459,7 @@ const RuleBody = ({ r, refetch }: { r: RuleDetail; refetch: () => void }) => {
           </ul>
         )}
       </Panel>
-      {dialog === 'version' ? <VersionDialog r={r} onClose={() => setDialog(null)} onConflict={() => { setDialog(null); setConflict(true); }} /> : null}
+      {dialog === 'version' ? <VersionDialog r={r} onClose={() => setDialog(null)} /> : null}
       {dialog === 'simulate' ? <SimulateDialog r={r} onClose={() => setDialog(null)} /> : null}
       <ReasonDialog
         open={dialog === 'end' && !!current}
@@ -484,47 +485,52 @@ const RuleBody = ({ r, refetch }: { r: RuleDetail; refetch: () => void }) => {
   );
 };
 
-const VersionDialog = ({ r, onClose, onConflict }: { r: RuleDetail; onClose: () => void; onConflict: () => void }) => {
+const VersionDialog = ({ r, onClose }: { r: RuleDetail; onClose: () => void }) => {
   const { workspace } = useWorkspace();
   const params = useFinanceParams();
   const [v, setV] = useState<VersionForm>(blankVersion(workspace.baseCurrency, r.currentVersion));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  // The new version is proposed against the rule as the dialog opened; a conflict keeps the input (T162).
+  const edit = useEditBase(r);
   const m = useFinanceMutation(F.rulesCreateVersion, { invalidate: ['finance.'], silentErrors: true, successMessage: 'Draft version created' });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="wide"
-      title="Create Version"
-      description="A new draft version. Once approved it takes over from its effective date; the previous version is not overwritten."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={m.isPending}
-            onClick={() =>
-              void m
-                .run({ params: { ...params, ruleId: r.id }, body: { version: versionBody(v) } }, { ifMatch: r.rowVersion })
-                .then(onClose)
-                .catch((e) => {
-                  if (isConflict(e)) return onConflict();
-                  setErrors(fieldErrorsOf(e));
-                  setError(apiMessage(e));
-                })
-            }
-          >
-            Create Version
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <VersionFields value={v} onChange={setV} errors={errors} />
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="wide"
+        title="Create Version"
+        description="A new draft version. Once approved it takes over from its effective date; the previous version is not overwritten."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={m.isPending}
+              onClick={() =>
+                void m
+                  .run({ params: { ...params, ruleId: r.id }, body: { version: versionBody(v) } }, { ifMatch: edit.version })
+                  .then(onClose)
+                  .catch((e) => {
+                    if (edit.catchConflict(e)) return;
+                    setErrors(fieldErrorsOf(e));
+                    setError(apiMessage(e));
+                  })
+              }
+            >
+              Create Version
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <VersionFields value={v} onChange={setV} errors={errors} />
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

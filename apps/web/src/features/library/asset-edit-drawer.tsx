@@ -8,6 +8,7 @@ import { isApiError } from '@castlane/api-client';
 import { isSafeUrl } from '@castlane/domain';
 import { Banner, Button, Drawer, Field, Input, Select, Textarea } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { applyFieldErrors, useApiMutation, useApiQuery } from '@/lib/hooks';
 import { useWorkspace } from '@/lib/workspace-context';
 import { splitTags } from './library-utils';
@@ -25,9 +26,8 @@ type Values = z.infer<typeof schema>;
 /** Edit Details (S37): metadata only — the stored file never changes (If-Match, conflict dialog). */
 export const AssetEditDrawer = ({ open, onOpenChange, asset }: { open: boolean; onOpenChange: (o: boolean) => void; asset: AssetDetail }) => {
   const { workspace } = useWorkspace();
-  const [conflict, setConflict] = useState(false);
   const folders = useApiQuery(folderEndpoints.list, { params: { workspaceId: workspace.id }, query: {} }, { enabled: open });
-  const defaults = (): Values => ({
+  const defaults = (asset: AssetDetail): Values => ({
     name: asset.name,
     description: asset.description ?? '',
     tags: asset.tags.join(', '),
@@ -35,11 +35,13 @@ export const AssetEditDrawer = ({ open, onOpenChange, asset }: { open: boolean; 
     sensitivity: asset.sensitivity,
     externalUrl: asset.externalUrl ?? '',
   });
-  const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: defaults() });
+  const form = useForm<Values>({ resolver: zodResolver(schema), defaultValues: defaults(asset) });
+  // Opened values and If-Match stay put while live updates refresh `asset` (T162); only dirty fields are sent.
+  const edit = useEditBase(asset, { open, onReload: (latest) => form.reset(defaults(latest)) });
   useEffect(() => {
-    if (open) form.reset(defaults());
+    if (open) form.reset(defaults(asset));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, asset.rowVersion]);
+  }, [open, asset.id]);
   const update = useApiMutation(mediaEndpoints.update, { invalidate: ['assets.'], silentErrors: true, successMessage: 'File details saved' });
   const sensitivity = form.watch('sensitivity');
   const submit = form.handleSubmit(async (v) => {
@@ -57,11 +59,11 @@ export const AssetEditDrawer = ({ open, onOpenChange, asset }: { open: boolean; 
       ...(d.externalUrl && asset.kind === 'external_link' ? { externalUrl: v.externalUrl } : {}),
     };
     try {
-      await update.run({ params: { workspaceId: workspace.id, assetId: asset.id }, body }, { ifMatch: asset.rowVersion });
+      await update.run({ params: { workspaceId: workspace.id, assetId: asset.id }, body }, { ifMatch: edit.version });
       onOpenChange(false);
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) form.setError('root', { message: isApiError(e) ? e.message : 'The details could not be saved.' });
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) form.setError('root', { message: isApiError(e) ? e.message : 'The details could not be saved.' });
     }
   });
   const folderOptions = [
@@ -133,7 +135,7 @@ export const AssetEditDrawer = ({ open, onOpenChange, asset }: { open: boolean; 
           ) : null}
         </form>
       </Drawer>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };

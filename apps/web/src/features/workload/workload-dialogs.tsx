@@ -4,8 +4,10 @@ import { taskEndpoints, workloadEndpoints, type AbsenceView } from '@castlane/ap
 import { isApiError } from '@castlane/api-client';
 import { ABSENCE_CATEGORIES, DateTime, LIMITS } from '@castlane/domain';
 import { Banner, Button, DateInput, Dialog, Field, Input, Select, Textarea, formatDate } from '@castlane/ui';
+import { ConflictDialog } from '@/components/common/conflict';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useWorkspace } from '@/lib/workspace-context';
@@ -133,6 +135,8 @@ export const AbsenceDialog = ({ open, onOpenChange, membershipId: fixed, absence
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [affected, setAffected] = useState<{ tasksDue: number; shiftsScheduled: number } | null>(null);
+  // `absence` is the row as the dialog opened; only changed fields are sent (T162).
+  const edit = useEditBase(absence, { open: open && !!absence });
   const create = useApiMutation(workloadEndpoints.createAbsence, { invalidate: WORKLOAD_INVALIDATE, silentErrors: true });
   const update = useApiMutation(workloadEndpoints.updateAbsence, { invalidate: WORKLOAD_INVALIDATE, successMessage: 'Absence updated', silentErrors: true });
   useEffect(() => {
@@ -148,74 +152,81 @@ export const AbsenceDialog = ({ open, onOpenChange, membershipId: fixed, absence
   }, [open]);
   const invalid = !member || !start || !end || end < start;
   return (
-    <Dialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title={absence ? 'Edit Absence' : 'Add Absence'}
-      description={member === me ? 'Your request goes to your manager or a workload manager.' : 'Recorded by a manager, the absence is approved directly.'}
-      footer={
-        affected ? (
-          <Button variant="primary" onClick={() => onOpenChange(false)}>
-            Close
-          </Button>
-        ) : (
-          <>
-            <Button onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button
-              variant="primary"
-              disabled={invalid}
-              loading={create.isPending || update.isPending}
-              onClick={async () => {
-                setError(null);
-                try {
-                  if (absence) {
-                    await update.run({ params: { workspaceId: workspace.id, absenceId: absence.id }, body: { startDate: start, endDate: end, category: category as never, privateReason: reason.trim() || null } }, { ifMatch: absence.rowVersion });
-                    onOpenChange(false);
-                  } else {
-                    const r = await create.run({ params: { workspaceId: workspace.id }, body: { membershipId: member!, startDate: start, endDate: end, category: category as never, privateReason: reason.trim() || null } });
-                    if (r.affected.tasksDue || r.affected.shiftsScheduled) setAffected(r.affected);
-                    else onOpenChange(false);
-                  }
-                } catch (e) {
-                  setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The absence was not saved.');
-                }
-              }}
-            >
-              {absence ? 'Save' : 'Add Absence'}
+    <>
+      <Dialog
+        open={open}
+        onOpenChange={onOpenChange}
+        title={absence ? 'Edit Absence' : 'Add Absence'}
+        description={member === me ? 'Your request goes to your manager or a workload manager.' : 'Recorded by a manager, the absence is approved directly.'}
+        footer={
+          affected ? (
+            <Button variant="primary" onClick={() => onOpenChange(false)}>
+              Close
             </Button>
-          </>
-        )
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {affected ? (
-          <Banner tone="warning">
-            Saved. During this absence {affected.tasksDue} task deadline(s) and {affected.shiftsScheduled} shift(s) are still scheduled for this member. Nothing was moved or cancelled; reassign or reschedule them if needed.
-          </Banner>
-        ) : (
-          <>
-            <Field label="Member" required>
-              <MemberSelect value={member} onChange={setMember} disabled={!!fixed || !!absence} />
-            </Field>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field label="First day" required>
-                <DateInput value={start} onChange={(e) => setStart(e.target.value)} />
+          ) : (
+            <>
+              <Button onClick={() => onOpenChange(false)}>Cancel</Button>
+              <Button
+                variant="primary"
+                disabled={invalid}
+                loading={create.isPending || update.isPending}
+                onClick={async () => {
+                  setError(null);
+                  try {
+                    if (absence) {
+                      const body = { startDate: start, endDate: end, category: category as never, privateReason: reason.trim() || null };
+                      const before = { startDate: absence.startDate, endDate: absence.endDate, category: absence.category as never, privateReason: absence.privateReason?.trim() || null };
+                      const changed = changedFields(before, body);
+                      if (changed.includes('startDate') || changed.includes('endDate')) changed.push('startDate', 'endDate');
+                      await update.run({ params: { workspaceId: workspace.id, absenceId: absence.id }, body: pickChanged(body, changed) }, { ifMatch: edit.version });
+                      onOpenChange(false);
+                    } else {
+                      const r = await create.run({ params: { workspaceId: workspace.id }, body: { membershipId: member!, startDate: start, endDate: end, category: category as never, privateReason: reason.trim() || null } });
+                      if (r.affected.tasksDue || r.affected.shiftsScheduled) setAffected(r.affected);
+                      else onOpenChange(false);
+                    }
+                  } catch (e) {
+                    if (!edit.catchConflict(e)) setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The absence was not saved.');
+                  }
+                }}
+              >
+                {absence ? 'Save' : 'Add Absence'}
+              </Button>
+            </>
+          )
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {affected ? (
+            <Banner tone="warning">
+              Saved. During this absence {affected.tasksDue} task deadline(s) and {affected.shiftsScheduled} shift(s) are still scheduled for this member. Nothing was moved or cancelled; reassign or reschedule them if needed.
+            </Banner>
+          ) : (
+            <>
+              <Field label="Member" required>
+                <MemberSelect value={member} onChange={setMember} disabled={!!fixed || !!absence} />
               </Field>
-              <Field label="Last day" required error={end && start && end < start ? 'The last day cannot be before the first.' : undefined}>
-                <DateInput value={end} onChange={(e) => setEnd(e.target.value)} min={start} />
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Field label="First day" required>
+                  <DateInput value={start} onChange={(e) => setStart(e.target.value)} />
+                </Field>
+                <Field label="Last day" required error={end && start && end < start ? 'The last day cannot be before the first.' : undefined}>
+                  <DateInput value={end} onChange={(e) => setEnd(e.target.value)} min={start} />
+                </Field>
+              </div>
+              <Field label="Category" required>
+                <Select value={category} onChange={(v) => setCategory(v ?? 'vacation')} options={ABSENCE_CATEGORIES.map((c) => ({ value: c, label: label('absenceCategory', c) }))} />
               </Field>
-            </div>
-            <Field label="Category" required>
-              <Select value={category} onChange={(v) => setCategory(v ?? 'vacation')} options={ABSENCE_CATEGORIES.map((c) => ({ value: c, label: label('absenceCategory', c) }))} />
-            </Field>
-            <Field label="Private reason" helper="Visible only to the member, their manager and workload managers.">
-              <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={LIMITS.reasonMax} className="min-h-[72px]" />
-            </Field>
-          </>
-        )}
-      </div>
-    </Dialog>
+              <Field label="Private reason" helper="Visible only to the member, their manager and workload managers.">
+                <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={LIMITS.reasonMax} className="min-h-[72px]" />
+              </Field>
+            </>
+          )}
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -323,6 +334,7 @@ export const EstimateDialog = ({ task, onOpenChange }: { task: { id: string; tit
   const { workspace } = useWorkspace();
   const [h, setH] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const edit = useEditBase(task, { open: !!task });
   const save = useApiMutation(taskEndpoints.update, { invalidate: WORKLOAD_INVALIDATE, successMessage: 'Estimate updated', silentErrors: true });
   useEffect(() => {
     if (task) {
@@ -332,41 +344,44 @@ export const EstimateDialog = ({ task, onOpenChange }: { task: { id: string; tit
   }, [task]);
   const minutes = h.trim() ? toMinutes(h) : null;
   return (
-    <Dialog
-      open={!!task}
-      onOpenChange={onOpenChange}
-      size="small"
-      title="Change Estimate"
-      description={task?.title}
-      footer={
-        <>
-          <Button onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={save.isPending}
-            disabled={minutes !== null && (minutes <= 0 || minutes > 1000 * 60)}
-            onClick={async () => {
-              setError(null);
-              try {
-                await save.run({ params: { workspaceId: workspace.id, taskId: task!.id }, body: { estimateMinutes: minutes } }, { ifMatch: task!.rowVersion });
-                onOpenChange(false);
-              } catch (e) {
-                setError(isApiError(e) ? (e.code === 'VERSION_CONFLICT' ? 'The task changed meanwhile. Close and try again.' : (e.fieldErrors[0]?.message ?? e.message)) : 'The estimate was not saved.');
-              }
-            }}
-          >
-            Save
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Estimate (hours)" helper="Leave empty for unestimated. Unestimated work is counted separately, never as zero.">
-          <HoursInput value={h} onChange={setH} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open={!!task}
+        onOpenChange={onOpenChange}
+        size="small"
+        title="Change Estimate"
+        description={task?.title}
+        footer={
+          <>
+            <Button onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={save.isPending}
+              disabled={minutes !== null && (minutes <= 0 || minutes > 1000 * 60)}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await save.run({ params: { workspaceId: workspace.id, taskId: task!.id }, body: { estimateMinutes: minutes } }, { ifMatch: edit.version });
+                  onOpenChange(false);
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The estimate was not saved.');
+                }
+              }}
+            >
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Estimate (hours)" helper="Leave empty for unestimated. Unestimated work is counted separately, never as zero.">
+            <HoursInput value={h} onChange={setH} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

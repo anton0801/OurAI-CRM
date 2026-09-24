@@ -23,6 +23,7 @@ import {
   formatMoney,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { useApiQuery } from '@/lib/hooks';
@@ -250,8 +251,9 @@ export const ProfileDialog = ({ profile, onClose }: { profile: OfmProfileRow; on
   const [supervisor, setSupervisor] = useState<string | null>(profile.supervisor?.membershipId ?? null);
   const [handover, setHandover] = useState(profile.settings.handoverRequired);
   const [labels, setLabels] = useState<Record<string, string>>(profile.settings.contactStageLabels);
-  const [conflict, setConflict] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // `profile` is the row as the dialog opened; after a conflict only the changed settings are sent.
+  const edit = useEditBase(profile, { key: profile.projectId });
   const m = useOfmMutation(E.updateProfile, { successMessage: 'OFM settings saved', silentErrors: true });
   return (
     <Dialog
@@ -268,21 +270,13 @@ export const ProfileDialog = ({ profile, onClose }: { profile: OfmProfileRow; on
             onClick={async () => {
               setError(null);
               try {
-                await m.run(
-                  {
-                    params: { workspaceId: workspace.id, projectId: profile.projectId },
-                    body: {
-                      supervisorMembershipId: supervisor,
-                      handoverRequired: handover,
-                      contactStageLabels: Object.fromEntries(Object.entries(labels).filter(([, v]) => v.trim().length >= 2).map(([k, v]) => [k, v.trim()])),
-                    },
-                  },
-                  { ifMatch: profile.rowVersion },
-                );
+                const clean = (l: Record<string, string>) => Object.fromEntries(Object.entries(l).filter(([, v]) => v.trim().length >= 2).map(([k, v]) => [k, v.trim()]));
+                const body = { supervisorMembershipId: supervisor, handoverRequired: handover, contactStageLabels: clean(labels) };
+                const before = { supervisorMembershipId: profile.supervisor?.membershipId ?? null, handoverRequired: profile.settings.handoverRequired, contactStageLabels: clean(profile.settings.contactStageLabels) };
+                await m.run({ params: { workspaceId: workspace.id, projectId: profile.projectId }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
                 onClose();
               } catch (e) {
-                if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-                else setError(errorMessage(e));
+                if (!edit.catchConflict(e)) setError(errorMessage(e));
               }
             }}
           >
@@ -308,7 +302,7 @@ export const ProfileDialog = ({ profile, onClose }: { profile: OfmProfileRow; on
           </div>
         </fieldset>
       </div>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Dialog>
   );
 };

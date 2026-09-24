@@ -1,6 +1,6 @@
 'use client';
 import { ArrowDown, ArrowUp, CheckCircle, Flask, Plus, Trash } from '@phosphor-icons/react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   automationEndpoints,
   peopleEndpoints,
@@ -15,6 +15,7 @@ import { isApiError } from '@castlane/api-client';
 import { AUTOMATION_LIMITS, AUTOMATION_PERSON_KINDS, AUTOMATION_SCOPE_TYPES, INCIDENT_SEVERITIES, OPERATORS_BY_FIELD_TYPE, OPERATOR_LABELS, TASK_PRIORITIES } from '@castlane/domain';
 import { Banner, Button, Field, IconButton, Input, MultiSelect, Panel, RadioGroup, Select, Switch, Textarea } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { EntitySelect, MultiEntitySelect } from '@/components/common/entity-select';
 import { DirectionSelect, MemberSelect, MultiMemberSelect } from '@/components/common/pickers';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
@@ -457,9 +458,20 @@ export const RuleEditor = ({
   const [errors, setErrors] = useState<Errors>({});
   const [validation, setValidation] = useState<{ ok: boolean; warnings: string[]; messages: string[] } | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
-  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(initial), [draft, initial]);
-  const configDirty = useMemo(() => JSON.stringify(draft.config) !== JSON.stringify(initial.config), [draft.config, initial.config]);
+  // The draft started from `start` (the rule as it was loaded): a background refresh neither remounts
+  // the editor nor moves If-Match; an untouched editor follows the latest version (T162).
+  const [start, setStart] = useState<RuleDraft>(initial);
+  const latestInitial = useRef(initial);
+  latestInitial.current = initial;
+  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(start), [draft, start]);
+  const configDirty = useMemo(() => JSON.stringify(draft.config) !== JSON.stringify(start.config), [draft.config, start.config]);
+  const edit = useEditBase(rule, {
+    clean: !dirty,
+    onReload: () => {
+      setDraft(latestInitial.current);
+      setStart(latestInitial.current);
+    },
+  });
   useUnsavedChangesGuard(dirty && !readOnly);
   useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
 
@@ -476,10 +488,7 @@ export const RuleEditor = ({
   const scopeLabel = draft.scopeType === 'workspace' ? 'the whole workspace' : rule && rule.scope.type === draft.scopeType && rule.scope.id === draft.scopeId ? `${label('automationScope', draft.scopeType)} ${rule.scope.label}` : `the selected ${label('automationScope', draft.scopeType).toLowerCase()}`;
 
   const applyApiError = (e: unknown, fallback: string) => {
-    if (isApiError(e) && e.code === 'VERSION_CONFLICT') {
-      setConflict(true);
-      return;
-    }
+    if (edit.catchConflict(e)) return;
     if (isApiError(e) && e.fieldErrors.length) {
       const map = toErrors(e.fieldErrors);
       setErrors(map);
@@ -501,9 +510,17 @@ export const RuleEditor = ({
 
   const save = () => {
     setSaveError(null);
-    const p = rule ? update.run({ params: { ...params, ruleId: rule.id }, body: body() }, { ifMatch: rule.rowVersion }) : create.run({ params, body: body() });
+    const now = body();
+    const bodyOf = (d: RuleDraft) => ({ ...d, scopeId: d.scopeType === 'workspace' ? null : d.scopeId });
+    const changed = changedFields(bodyOf(start), now);
+    if (changed.includes('scopeType') || changed.includes('scopeId')) changed.push('scopeType', 'scopeId');
+    const p = rule ? update.run({ params: { ...params, ruleId: rule.id }, body: pickChanged(now, changed) }, { ifMatch: edit.version }) : create.run({ params, body: now });
     void p
       .then((r) => {
+        if (rule) {
+          edit.rebase(r);
+          setStart(draft);
+        }
         setErrors({});
         setValidation(null);
         onSaved?.(r);
@@ -770,6 +787,8 @@ export const RuleEditor = ({
                   variant="ghost"
                   onClick={() => {
                     setDraft(initial);
+                    setStart(initial);
+                    edit.rebase();
                     setErrors({});
                     setValidation(null);
                   }}
@@ -784,7 +803,7 @@ export const RuleEditor = ({
           </div>
         ) : null}
       </aside>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </div>
   );
 };

@@ -10,7 +10,9 @@ import { useApiInfinite, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useUrlState } from '@/lib/url-state';
 import { useCan, useWorkspace } from '@/lib/workspace-context';
-import { CurrencySelect, FinanceNav, ReasonDialog, apiMessage, currencyOptions, isConflict, useFinanceParams, useFinanceMutation } from './common';
+import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
+import { CurrencySelect, FinanceNav, ReasonDialog, apiMessage, currencyOptions, useFinanceParams, useFinanceMutation } from './common';
 
 const fieldErrorsOf = (e: unknown) => (isApiError(e) ? Object.fromEntries(e.fieldErrors.map((x) => [x.field.replace(/^body\./, ''), x.message])) : {});
 
@@ -89,57 +91,66 @@ const FxRateDialog = ({ rate, onClose }: { rate?: FxRate; onClose: () => void })
   const [source, setSource] = useState(rate?.source ?? '');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  // `rate` is the row as the dialog opened; only the changed values are sent (T162).
+  const edit = useEditBase(rate);
   const create = useFinanceMutation(F.fxRatesCreate, { invalidate: ['finance.'], silentErrors: true, successMessage: 'FX rate added' });
   const update = useFinanceMutation(F.fxRatesUpdate, { invalidate: ['finance.'], silentErrors: true, successMessage: 'FX rate updated' });
   const valid = /^\d+(\.\d{1,10})?$/.test(value.trim()) && Number(value) > 0 && source.trim().length >= 2 && !!date && from !== to;
   const save = async () => {
     setError(null);
     try {
-      if (rate) await update.run({ params: { ...params, rateId: rate.id }, body: { rate: value.trim(), source: source.trim() } }, { ifMatch: rate.rowVersion });
+      if (rate) {
+        const body = { rate: value.trim(), source: source.trim() };
+        await update.run({ params: { ...params, rateId: rate.id }, body: pickChanged(body, changedFields({ rate: rate.rate, source: rate.source ?? '' }, body)) }, { ifMatch: edit.version });
+      }
       else await create.run({ params, body: { fromCurrency: from, toCurrency: to, rate: value.trim(), effectiveDate: date, source: source.trim() } });
       onClose();
     } catch (e) {
+      if (edit.catchConflict(e)) return;
       setErrors(fieldErrorsOf(e));
-      setError(isConflict(e) ? 'This rate changed or was used in the meantime. Close and reload.' : apiMessage(e));
+      setError(apiMessage(e));
     }
   };
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title={rate ? 'Edit FX Rate' : 'Add FX Rate'}
-      description="1 unit of the first currency equals the rate in the second currency."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" loading={create.isPending || update.isPending} disabled={!valid} onClick={() => void save()}>
-            {rate ? 'Save' : 'Add Rate'}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="From" required error={errors.fromCurrency}>
-            <CurrencySelect value={from} onChange={setFrom} disabled={!!rate} />
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title={rate ? 'Edit FX Rate' : 'Add FX Rate'}
+        description="1 unit of the first currency equals the rate in the second currency."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="primary" loading={create.isPending || update.isPending} disabled={!valid} onClick={() => void save()}>
+              {rate ? 'Save' : 'Add Rate'}
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="From" required error={errors.fromCurrency}>
+              <CurrencySelect value={from} onChange={setFrom} disabled={!!rate} />
+            </Field>
+            <Field label="To" required error={errors.toCurrency}>
+              <CurrencySelect value={to} onChange={setTo} disabled={!!rate} />
+            </Field>
+          </div>
+          <Field label="Rate" required error={errors.rate} helper="Up to 10 decimals.">
+            <Input inputMode="decimal" className="text-right font-mono" value={value} onChange={(e) => /^\d*(\.\d*)?$/.test(e.target.value) && setValue(e.target.value)} />
           </Field>
-          <Field label="To" required error={errors.toCurrency}>
-            <CurrencySelect value={to} onChange={setTo} disabled={!!rate} />
+          <Field label="Effective Date" required error={errors.effectiveDate}>
+            <DateInput value={date} onChange={(e) => setDate(e.target.value)} disabled={!!rate} />
+          </Field>
+          <Field label="Source" required error={errors.source} helper="Where the rate comes from, e.g. ECB reference rate, bank statement.">
+            <Input value={source} maxLength={200} onChange={(e) => setSource(e.target.value)} />
           </Field>
         </div>
-        <Field label="Rate" required error={errors.rate} helper="Up to 10 decimals.">
-          <Input inputMode="decimal" className="text-right font-mono" value={value} onChange={(e) => /^\d*(\.\d*)?$/.test(e.target.value) && setValue(e.target.value)} />
-        </Field>
-        <Field label="Effective Date" required error={errors.effectiveDate}>
-          <DateInput value={date} onChange={(e) => setDate(e.target.value)} disabled={!!rate} />
-        </Field>
-        <Field label="Source" required error={errors.source} helper="Where the rate comes from, e.g. ECB reference rate, bank statement.">
-          <Input value={source} maxLength={200} onChange={(e) => setSource(e.target.value)} />
-        </Field>
-      </div>
-    </Dialog>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -254,42 +265,46 @@ const CategoryDialog = ({ category, onClose }: { category?: FinanceCategory; onC
   const [name, setName] = useState(category?.name ?? '');
   const [cls, setCls] = useState<(typeof ACCOUNTING_CLASSES)[number]>(category?.accountingClass ?? 'operating_expense');
   const [error, setError] = useState<string | null>(null);
+  const edit = useEditBase(category);
   const create = useFinanceMutation(F.categoriesCreate, { invalidate: ['finance.', 'lookup.'], silentErrors: true, successMessage: 'Category created' });
   const update = useFinanceMutation(F.categoriesUpdate, { invalidate: ['finance.', 'lookup.'], silentErrors: true, successMessage: 'Category renamed' });
   const save = async () => {
     setError(null);
     try {
-      if (category) await update.run({ params: { ...params, categoryId: category.id }, body: { name: name.trim() } }, { ifMatch: category.rowVersion });
+      if (category) await update.run({ params: { ...params, categoryId: category.id }, body: { name: name.trim() } }, { ifMatch: edit.version });
       else await create.run({ params, body: { name: name.trim(), accountingClass: cls } });
       onClose();
     } catch (e) {
-      setError(apiMessage(e));
+      if (!edit.catchConflict(e)) setError(apiMessage(e));
     }
   };
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title={category ? 'Rename Category' : 'New Category'}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" loading={create.isPending || update.isPending} disabled={name.trim().length < 2} onClick={() => void save()}>
-            Save
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Name" required>
-          <Input value={name} maxLength={120} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field label="Accounting Class" required helper={category ? 'The class is fixed after creation.' : 'Cannot be changed later.'}>
-          <Select value={cls} onChange={(v) => v && setCls(v)} disabled={!!category} options={ACCOUNTING_CLASSES.map((c) => ({ value: c, label: label('accountingClass', c) }))} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title={category ? 'Rename Category' : 'New Category'}
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="primary" loading={create.isPending || update.isPending} disabled={name.trim().length < 2} onClick={() => void save()}>
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Name" required>
+            <Input value={name} maxLength={120} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="Accounting Class" required helper={category ? 'The class is fixed after creation.' : 'Cannot be changed later.'}>
+            <Select value={cls} onChange={(v) => v && setCls(v)} disabled={!!category} options={ACCOUNTING_CLASSES.map((c) => ({ value: c, label: label('accountingClass', c) }))} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };

@@ -31,6 +31,7 @@ import {
 } from '@castlane/ui';
 import { EntitySelect } from '@/components/common/entity-select';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { QueryState } from '@/components/common/query-state';
 import { AssetThumb, FileUploader } from '@/components/media/file-uploader';
 import { api } from '@/lib/api';
@@ -335,10 +336,8 @@ const IdeaDialog = ({ reference, open, onOpenChange }: { reference: ReferenceDet
 const ReferenceForm = ({ reference, defaultProjectId, onClose, onSaved }: { reference?: ReferenceDetail; defaultProjectId?: string; onClose: () => void; onSaved: (id: string) => void }) => {
   const { workspace } = useWorkspace();
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
-  const form = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    defaultValues: reference
+  const valuesOf = (reference?: ReferenceDetail): FormValues =>
+    reference
       ? {
           title: reference.title,
           sourceKind: reference.sourceUrl || !reference.sourceAsset ? 'link' : 'file',
@@ -351,8 +350,10 @@ const ReferenceForm = ({ reference, defaultProjectId, onClose, onSaved }: { refe
           tags: reference.tags,
           projectId: reference.project?.id ?? null,
         }
-      : { title: '', sourceKind: 'link', sourceUrl: '', sourceAssetId: null, sourceAssetName: null, previewAssetId: null, whatToReuse: '', notes: '', tags: [], projectId: defaultProjectId ?? null },
-  });
+      : { title: '', sourceKind: 'link', sourceUrl: '', sourceAssetId: null, sourceAssetName: null, previewAssetId: null, whatToReuse: '', notes: '', tags: [], projectId: defaultProjectId ?? null };
+  const form = useForm<FormValues>({ resolver: zodResolver(schema), defaultValues: valuesOf(reference) });
+  // Edits apply to the reference as it was opened; only changed fields are sent (T162).
+  const edit = useEditBase(reference, { onReload: (latest) => form.reset(valuesOf(latest)) });
   const create = useApiMutation(referenceEndpoints.create, { invalidate: ['references.'], silentErrors: true, successMessage: 'Reference added' });
   const update = useApiMutation(referenceEndpoints.update, { invalidate: ['references.'], silentErrors: true, successMessage: 'Reference saved' });
   const kind = form.watch('sourceKind');
@@ -362,7 +363,7 @@ const ReferenceForm = ({ reference, defaultProjectId, onClose, onSaved }: { refe
   const errors = form.formState.errors;
   const onSubmit = form.handleSubmit(async (v) => {
     setError(null);
-    const body = {
+    const bodyOf = (v: FormValues) => ({
       title: v.title.trim(),
       sourceUrl: v.sourceKind === 'link' ? v.sourceUrl?.trim() || null : null,
       sourceAssetId: v.sourceKind === 'file' ? v.sourceAssetId : null,
@@ -371,18 +372,20 @@ const ReferenceForm = ({ reference, defaultProjectId, onClose, onSaved }: { refe
       notes: v.notes?.trim() || null,
       tags: v.tags,
       projectId: v.projectId,
-    };
+    });
+    const body = bodyOf(v);
     try {
       if (reference) {
-        await update.run({ params: { workspaceId: workspace.id, referenceId: reference.id }, body }, { ifMatch: reference.rowVersion });
+        const before = bodyOf(valuesOf(edit.start ?? reference));
+        await update.run({ params: { workspaceId: workspace.id, referenceId: reference.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version });
         onSaved(reference.id);
       } else {
         const r = await create.run({ params: { workspaceId: workspace.id }, body });
         onSaved(r.id);
       }
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The reference could not be saved.');
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The reference could not be saved.');
     }
   });
   const pending = create.isPending || update.isPending;
@@ -496,7 +499,7 @@ const ReferenceForm = ({ reference, defaultProjectId, onClose, onSaved }: { refe
         </Field>
         {reference?.archivedAt ? <StatusBadge status="archived" /> : null}
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Drawer>
   );
 };

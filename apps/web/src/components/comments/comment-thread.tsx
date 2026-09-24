@@ -7,6 +7,7 @@ import { LIMITS } from '@castlane/domain';
 import { Avatar, Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, MultiSelect, Switch, Textarea, cn, formatDateTime, formatRelative, toast } from '@castlane/ui';
 import { QueryState } from '@/components/common/query-state';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { useWorkspace } from '@/lib/workspace-context';
 
@@ -111,10 +112,12 @@ const CommentItem = ({
   const { workspace, user } = useWorkspace();
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(c.body ?? '');
-  const [conflict, setConflict] = useState(false);
+  // Editing works against the comment as it was when Edit was pressed (T162).
+  const edit = useEditBase(c, { open: editing, onReload: (latest) => setText(latest.body ?? '') });
   const [removeOpen, setRemoveOpen] = useState(false);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reason, setReason] = useState('');
+  const reopenBase = useEditBase(c, { open: reopenOpen, onReload: () => setReason('') });
   const [historyOpen, setHistoryOpen] = useState(false);
   const params = { workspaceId: workspace.id, commentId: c.id };
   const update = useApiMutation(commentEndpoints.update, { invalidate: INVALIDATE, successMessage: 'Comment updated', silentErrors: true });
@@ -156,12 +159,11 @@ const CommentItem = ({
                 disabled={!text.trim()}
                 onClick={async () => {
                   try {
-                    await update.run({ params, body: { body: text.trim() } }, { ifMatch: c.rowVersion });
+                    await update.run({ params, body: { body: text.trim() } }, { ifMatch: edit.version });
                     setEditing(false);
                     onChanged();
                   } catch (e) {
-                    if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-                    else toast.error(isApiError(e) ? e.message : 'The comment was not saved.');
+                    if (!edit.catchConflict(e)) toast.error(isApiError(e) ? e.message : 'The comment was not saved.');
                   }
                 }}
               >
@@ -232,10 +234,14 @@ const CommentItem = ({
         loading={reopen.isPending}
         confirmDisabled={reason.trim().length < 3}
         onConfirm={async () => {
-          await reopen.run({ params, body: { reason: reason.trim() } }, { ifMatch: c.rowVersion });
-          setReopenOpen(false);
-          setReason('');
-          onChanged();
+          try {
+            await reopen.run({ params, body: { reason: reason.trim() } }, { ifMatch: reopenBase.version });
+            setReopenOpen(false);
+            setReason('');
+            onChanged();
+          } catch (e) {
+            reopenBase.catchConflict(e);
+          }
         }}
       >
         <Field label="Reason" required>
@@ -254,7 +260,8 @@ const CommentItem = ({
           </ol>
         </QueryState>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => { setConflict(false); setEditing(false); onChanged(); }} />
+      <ConflictDialog {...edit.conflictDialog} />
+      <ConflictDialog {...reopenBase.conflictDialog} />
     </article>
   );
 };

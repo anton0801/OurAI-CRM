@@ -26,6 +26,7 @@ import {
   type Column,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
@@ -52,21 +53,31 @@ export const TemplateEditor = ({ templateId }: { templateId: string }) => {
       <Link href={wsPath('/settings/templates')} className="inline-flex w-fit items-center gap-1 text-[13px] text-fg-2 hover:text-fg">
         <ArrowLeft size={14} aria-hidden /> All templates
       </Link>
-      <QueryState query={q}>{t ? <EditorBody key={`${t.id}:${t.draft?.id ?? 'none'}:${t.draft?.rowVersion ?? 0}`} t={t} onReload={() => void q.refetch()} /> : null}</QueryState>
+      <QueryState query={q}>{t ? <EditorBody key={`${t.id}:${t.draft?.id ?? 'none'}`} t={t} /> : null}</QueryState>
     </div>
   );
 };
 
-const EditorBody = ({ t, onReload }: { t: TemplateDetail; onReload: () => void }) => {
+const EditorBody = ({ t }: { t: TemplateDetail }) => {
   const { workspace, user } = useWorkspace();
   const params = { workspaceId: workspace.id, templateId: t.id };
   const manage = t.permissions.manage;
-  const base = useMemo(() => normalize(t.draft?.config ?? t.published?.config ?? {}), [t]);
-  const [config, setConfig] = useState<TemplateConfigInput>(base);
+  const latest = useMemo(() => normalize(t.draft?.config ?? t.published?.config ?? {}), [t]);
+  // The draft is edited from `start` (as loaded): a background refresh no longer remounts the editor
+  // or moves If-Match; an untouched editor follows the latest saved draft (T162).
+  const [start, setStart] = useState<TemplateConfigInput>(latest);
+  const [config, setConfig] = useState<TemplateConfigInput>(latest);
   const [errors, setErrors] = useState<{ field: string; message: string }[]>([]);
-  const [conflict, setConflict] = useState(false);
   const [dialog, setDialog] = useState<null | 'rename' | 'disable' | 'preview'>(null);
-  const dirty = !!t.draft && JSON.stringify(normalize(config)) !== JSON.stringify(base);
+  const dirty = !!t.draft && JSON.stringify(normalize(config)) !== JSON.stringify(start);
+  const edit = useEditBase(t.draft, {
+    clean: !dirty,
+    onReload: (d) => {
+      const c = normalize(d.config);
+      setConfig(c);
+      setStart(c);
+    },
+  });
   useUnsavedChangesGuard(dirty);
   const opts = { invalidate: INVALIDATE, silentErrors: true };
   const save = useApiMutation(templateEndpoints.saveDraft, { ...opts, successMessage: 'Draft saved' });
@@ -75,8 +86,8 @@ const EditorBody = ({ t, onReload }: { t: TemplateDetail; onReload: () => void }
   const enable = useApiMutation(templateEndpoints.enable, { ...opts, successMessage: 'Template enabled' });
   const [error, setError] = useState<string | null>(null);
   const handle = (e: unknown) => {
-    if (isApiError(e) && (e.code === 'VERSION_CONFLICT' || e.status === 412)) setConflict(true);
-    else if (isApiError(e) && e.fieldErrors.length) {
+    if (edit.catchConflict(e)) return;
+    if (isApiError(e) && e.fieldErrors.length) {
       setErrors(e.fieldErrors.map((f) => ({ field: f.field.replace(/^body\./, ''), message: f.message })));
       setError(null);
     } else setError(isApiError(e) ? e.message : 'The action failed.');
@@ -86,7 +97,9 @@ const EditorBody = ({ t, onReload }: { t: TemplateDetail; onReload: () => void }
     setError(null);
     setErrors([]);
     try {
-      await save.run({ params: { ...params, versionId: t.draft.id }, body: { config: normalize(config) } }, { ifMatch: t.draft.rowVersion });
+      const r = await save.run({ params: { ...params, versionId: t.draft.id }, body: { config: normalize(config) } }, { ifMatch: edit.version });
+      if (r.draft) edit.rebase(r.draft);
+      setStart(normalize(config));
       return true;
     } catch (e) {
       handle(e);
@@ -100,7 +113,7 @@ const EditorBody = ({ t, onReload }: { t: TemplateDetail; onReload: () => void }
     try {
       // Save first (so what is published is what is on screen), then publish with the template's version.
       if (dirty) {
-        const r = await save.run({ params: { ...params, versionId: t.draft.id }, body: { config: normalize(config) } }, { ifMatch: t.draft.rowVersion });
+        const r = await save.run({ params: { ...params, versionId: t.draft.id }, body: { config: normalize(config) } }, { ifMatch: edit.version });
         await publish.run({ params, body: { draftVersionId: t.draft.id } }, { ifMatch: r.rowVersion });
       } else await publish.run({ params, body: { draftVersionId: t.draft.id } }, { ifMatch: t.rowVersion });
     } catch (e) {
@@ -200,14 +213,7 @@ const EditorBody = ({ t, onReload }: { t: TemplateDetail; onReload: () => void }
       {dialog === 'rename' ? <RenameDialog t={t} onClose={() => setDialog(null)} /> : null}
       {dialog === 'disable' ? <DisableDialog t={t} onClose={() => setDialog(null)} /> : null}
       {dialog === 'preview' ? <PreviewDialog t={t} onClose={() => setDialog(null)} /> : null}
-      <ConflictDialog
-        open={conflict}
-        onOpenChange={setConflict}
-        onReload={() => {
-          setConflict(false);
-          onReload();
-        }}
-      />
+      <ConflictDialog {...edit.conflictDialog} />
     </div>
   );
 };
@@ -216,63 +222,82 @@ const RenameDialog = ({ t, onClose }: { t: TemplateDetail; onClose: () => void }
   const { workspace } = useWorkspace();
   const [name, setName] = useState(t.name);
   const [description, setDescription] = useState(t.description ?? '');
+  // Renamed against the template as the dialog opened (T162).
+  const edit = useEditBase(t, {
+    onReload: (x) => {
+      setName(x.name);
+      setDescription(x.description ?? '');
+    },
+  });
+  const s = edit.start ?? t;
   const update = useApiMutation(templateEndpoints.update, { invalidate: INVALIDATE, successMessage: 'Template updated' });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Rename template"
-      dirty={name !== t.name || description !== (t.description ?? '')}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            loading={update.isPending}
-            disabled={name.trim().length < 2}
-            onClick={() => void update.run({ params: { workspaceId: workspace.id, templateId: t.id }, body: { name: name.trim(), description: description.trim() || null } }, { ifMatch: t.rowVersion }).then(onClose, () => undefined)}
-          >
-            Save Changes
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        <Field label="Name" required>
-          <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
-        </Field>
-        <Field label="Description">
-          <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} maxLength={2000} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Rename template"
+        dirty={name !== s.name || description !== (s.description ?? '')}
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              loading={update.isPending}
+              disabled={name.trim().length < 2}
+              onClick={() => {
+                const body = { name: name.trim(), description: description.trim() || null };
+                const before = { name: s.name, description: s.description?.trim() || null };
+                void update.run({ params: { workspaceId: workspace.id, templateId: t.id }, body: pickChanged(body, changedFields(before, body)) }, { ifMatch: edit.version }).then(onClose, (e: unknown) => edit.catchConflict(e));
+              }}
+            >
+              Save Changes
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <Field label="Name" required>
+            <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} />
+          </Field>
+          <Field label="Description">
+            <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} maxLength={2000} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
 const DisableDialog = ({ t, onClose }: { t: TemplateDetail; onClose: () => void }) => {
   const { workspace } = useWorkspace();
   const [reason, setReason] = useState('');
+  const edit = useEditBase(t);
   const disable = useApiMutation(templateEndpoints.disable, { invalidate: INVALIDATE, successMessage: 'Template disabled' });
   return (
-    <Dialog
-      open
-      size="small"
-      onOpenChange={(o) => !o && onClose()}
-      title="Disable this template?"
-      description="It can no longer be applied. Tasks and content already created from it keep their version."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="danger" loading={disable.isPending} onClick={() => void disable.run({ params: { workspaceId: workspace.id, templateId: t.id }, body: { reason: reason.trim() || undefined } }, { ifMatch: t.rowVersion }).then(onClose, () => undefined)}>
-            Disable Template
-          </Button>
-        </>
-      }
-    >
-      <Field label="Reason">
-        <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
-      </Field>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        size="small"
+        onOpenChange={(o) => !o && onClose()}
+        title="Disable this template?"
+        description="It can no longer be applied. Tasks and content already created from it keep their version."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="danger" loading={disable.isPending} onClick={() => void disable.run({ params: { workspaceId: workspace.id, templateId: t.id }, body: { reason: reason.trim() || undefined } }, { ifMatch: edit.version }).then(onClose, (e: unknown) => edit.catchConflict(e))}>
+              Disable Template
+            </Button>
+          </>
+        }
+      >
+        <Field label="Reason">
+          <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
+        </Field>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

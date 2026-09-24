@@ -32,6 +32,7 @@ import {
 } from '@castlane/ui';
 import { EntitySelect } from '@/components/common/entity-select';
 import { ConflictDialog } from '@/components/common/conflict';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { MemberSelect } from '@/components/common/pickers';
 import { QueryState } from '@/components/common/query-state';
 import { AssetThumb, FileUploader } from '@/components/media/file-uploader';
@@ -383,30 +384,32 @@ const MergeDialog = ({ partner, open, onOpenChange, onMerged }: { partner: Partn
 const PartnerForm = ({ partner, onClose, onSaved }: { partner?: PartnerDetail; onClose: () => void; onSaved: (id: string) => void }) => {
   const { workspace, membershipId } = useWorkspace();
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const valuesOf = (partner: PartnerDetail): FormValues => ({
+    kind: partner.kind,
+    name: partner.name,
+    contactName: partner.contactName ?? '',
+    businessEmail: partner.businessEmail ?? '',
+    website: partner.website ?? '',
+    ownerMembershipId: partner.owner.membershipId,
+    tags: partner.tags.join(', '),
+    notes: partner.notes ?? '',
+    logoAssetId: partner.logoAssetId,
+  });
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
     defaultValues: partner
-      ? {
-          kind: partner.kind,
-          name: partner.name,
-          contactName: partner.contactName ?? '',
-          businessEmail: partner.businessEmail ?? '',
-          website: partner.website ?? '',
-          ownerMembershipId: partner.owner.membershipId,
-          tags: partner.tags.join(', '),
-          notes: partner.notes ?? '',
-          logoAssetId: partner.logoAssetId,
-        }
+      ? valuesOf(partner)
       : { kind: 'organization', name: '', ownerMembershipId: membershipId, logoAssetId: null },
   });
+  // The partner as the form opened; only the fields changed since then are sent (T162).
+  const edit = useEditBase(partner, { onReload: (x) => form.reset(valuesOf(x)) });
   const create = useApiMutation(partnerEndpoints.create, { invalidate: ['partners.'], silentErrors: true, successMessage: 'Partner added' });
   const update = useApiMutation(partnerEndpoints.update, { invalidate: ['partners.', 'deals.'], silentErrors: true, successMessage: 'Partner saved' });
   const logo = form.watch('logoAssetId');
   const errors = form.formState.errors;
   const onSubmit = form.handleSubmit(async (v) => {
     setError(null);
-    const body = {
+    const bodyOf = (v: FormValues) => ({
       kind: v.kind,
       name: v.name.trim(),
       contactName: v.contactName?.trim() || null,
@@ -419,18 +422,20 @@ const PartnerForm = ({ partner, onClose, onSaved }: { partner?: PartnerDetail; o
         .filter(Boolean),
       notes: v.notes?.trim() || null,
       logoAssetId: v.logoAssetId,
-    };
+    });
+    const body = bodyOf(v);
     try {
       if (partner) {
-        await update.run({ params: { workspaceId: workspace.id, partnerId: partner.id }, body }, { ifMatch: partner.rowVersion });
+        const changed = changedFields(bodyOf(valuesOf(edit.start ?? partner)), body);
+        await update.run({ params: { workspaceId: workspace.id, partnerId: partner.id }, body: pickChanged(body, changed) }, { ifMatch: edit.version });
         onSaved(partner.id);
       } else {
         const r = await create.run({ params: { workspaceId: workspace.id }, body });
         onSaved(r.id);
       }
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The partner could not be saved.');
+      if (edit.catchConflict(e)) return;
+      if (!applyFieldErrors(e, form.setError as never)) setError(isApiError(e) ? e.message : 'The partner could not be saved.');
     }
   });
   const pending = create.isPending || update.isPending;
@@ -504,7 +509,7 @@ const PartnerForm = ({ partner, onClose, onSaved }: { partner?: PartnerDetail; o
           />
         </div>
       </form>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </Drawer>
   );
 };

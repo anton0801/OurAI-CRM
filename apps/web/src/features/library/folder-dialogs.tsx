@@ -5,6 +5,7 @@ import { isApiError } from '@castlane/api-client';
 import { Banner, Button, ConfirmDialog, Dialog, Field, Input, RadioGroup, Select } from '@castlane/ui';
 import { EntitySelect } from '@/components/common/entity-select';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { useWorkspace } from '@/lib/workspace-context';
 import { subtreeOf } from './library-utils';
@@ -34,23 +35,26 @@ export const FolderFormDialog = ({
   const [scope, setScope] = useState<'workspace' | 'project'>('project');
   const [projectId, setProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  // A rename is saved against the folder as the dialog opened; a live refresh (a new `folder`
+  // object) no longer resets the typed name (T162).
+  const edit = useEditBase(mode === 'rename' ? folder : null, { open, onReload: (x) => setName(x.name) });
   useEffect(() => {
     if (!open) return;
     setName(mode === 'rename' ? (folder?.name ?? '') : '');
     setProjectId(defaultProjectId ?? null);
     setScope(defaultProjectId ? 'project' : 'workspace');
     setError(null);
-  }, [open, mode, folder, defaultProjectId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, mode, folder?.id, defaultProjectId]);
   const create = useApiMutation(folderEndpoints.create, { invalidate: INVALIDATE, silentErrors: true, successMessage: 'Folder created' });
   const rename = useApiMutation(folderEndpoints.update, { invalidate: INVALIDATE, silentErrors: true, successMessage: 'Folder renamed' });
   const pending = create.isPending || rename.isPending;
-  const dirty = mode === 'rename' ? name !== folder?.name : name.trim().length > 0;
+  const dirty = mode === 'rename' ? name !== (edit.start ?? folder)?.name : name.trim().length > 0;
   const submit = async () => {
     setError(null);
     try {
       if (mode === 'rename' && folder) {
-        const r = await rename.run({ params: { workspaceId: workspace.id, folderId: folder.id }, body: { name } }, { ifMatch: folder.rowVersion });
+        const r = await rename.run({ params: { workspaceId: workspace.id, folderId: folder.id }, body: { name } }, { ifMatch: edit.version });
         onSaved?.(r.id);
       } else {
         const r = await create.run({
@@ -61,8 +65,7 @@ export const FolderFormDialog = ({
       }
       onOpenChange(false);
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The folder could not be saved.');
+      if (!edit.catchConflict(e)) setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The folder could not be saved.');
     }
   };
   const valid = name.trim().length >= 2 && name.trim().length <= 120 && (mode === 'rename' || parent || scope === 'workspace' || !!projectId);
@@ -118,7 +121,7 @@ export const FolderFormDialog = ({
           {mode === 'create' && parent ? <p className="text-[13px] text-fg-2">{parent.projectName ? `Part of the ${parent.projectName} library.` : 'Part of the workspace library.'}</p> : null}
         </form>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };
@@ -128,12 +131,15 @@ export const MoveFolderDialog = ({ open, onOpenChange, folder, folders }: { open
   const { workspace } = useWorkspace();
   const [target, setTarget] = useState<string>('__root__');
   const [error, setError] = useState<string | null>(null);
+  // The move is applied to the folder as the dialog opened; a live refresh keeps the chosen target (T162).
+  const edit = useEditBase(folder, { open, onReload: (x) => setTarget(x.parentId ?? '__root__') });
   useEffect(() => {
     if (open) {
       setTarget(folder?.parentId ?? '__root__');
       setError(null);
     }
-  }, [open, folder]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, folder?.id]);
   const move = useApiMutation(folderEndpoints.move, { invalidate: INVALIDATE, silentErrors: true, successMessage: 'Folder moved' });
   const options = useMemo(() => {
     if (!folder) return [];
@@ -146,44 +152,47 @@ export const MoveFolderDialog = ({ open, onOpenChange, folder, folders }: { open
     ];
   }, [folder, folders]);
   return (
-    <Dialog
-      open={open}
-      onOpenChange={onOpenChange}
-      size="small"
-      title={folder ? `Move ${folder.name}` : 'Move Folder'}
-      description="Folders move within the same library. To move files to another project, select the files and use Move — the change of access is previewed first."
-      footer={
-        <>
-          <Button onClick={() => onOpenChange(false)} disabled={move.isPending}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            loading={move.isPending}
-            disabled={!folder || target === (folder.parentId ?? '__root__')}
-            onClick={async () => {
-              if (!folder) return;
-              setError(null);
-              try {
-                await move.run({ params: { workspaceId: workspace.id, folderId: folder.id }, body: { parentId: target === '__root__' ? null : target } }, { ifMatch: folder.rowVersion });
-                onOpenChange(false);
-              } catch (e) {
-                setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The folder could not be moved.');
-              }
-            }}
-          >
-            Move Folder
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Move to">
-          <Select value={target} onChange={(v) => setTarget(v ?? '__root__')} options={options} searchable />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open={open}
+        onOpenChange={onOpenChange}
+        size="small"
+        title={folder ? `Move ${folder.name}` : 'Move Folder'}
+        description="Folders move within the same library. To move files to another project, select the files and use Move — the change of access is previewed first."
+        footer={
+          <>
+            <Button onClick={() => onOpenChange(false)} disabled={move.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              loading={move.isPending}
+              disabled={!folder || target === (folder.parentId ?? '__root__')}
+              onClick={async () => {
+                if (!folder) return;
+                setError(null);
+                try {
+                  await move.run({ params: { workspaceId: workspace.id, folderId: folder.id }, body: { parentId: target === '__root__' ? null : target } }, { ifMatch: edit.version });
+                  onOpenChange(false);
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The folder could not be moved.');
+                }
+              }}
+            >
+              Move Folder
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Move to">
+            <Select value={target} onChange={(v) => setTarget(v ?? '__root__')} options={options} searchable />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

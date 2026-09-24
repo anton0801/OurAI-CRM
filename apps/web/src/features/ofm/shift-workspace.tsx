@@ -25,6 +25,7 @@ import {
   type MenuItem,
 } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { QueryState } from '@/components/common/query-state';
 import { useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
@@ -351,6 +352,8 @@ const StartDialog = ({ shift, onClose }: { shift: OfmShiftDetail; onClose: () =>
   const [ackId, setAckId] = useState<string | null>(null);
   const [ackedNow, setAckedNow] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(shift);
   const stillPending = pending.filter((h) => h.id !== ackedNow);
   const run = async () => {
     setError(null);
@@ -360,58 +363,61 @@ const StartDialog = ({ shift, onClose }: { shift: OfmShiftDetail; onClose: () =>
           params: { workspaceId: workspace.id, shiftId: shift.id },
           body: { handoverAcknowledgementId: ackedNow ?? acked?.id, noHandoverReason: stillPending.length ? reason.trim() : undefined },
         },
-        { ifMatch: shift.rowVersion },
+        { ifMatch: edit.version },
       );
       onClose();
     } catch (e) {
-      setError(errorMessage(e, 'The shift could not be started.'));
+      if (!edit.catchConflict(e)) setError(errorMessage(e, 'The shift could not be started.'));
     }
   };
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="Start shift"
-      description="The server records the actual start. The timer keeps running if you close or refresh the page."
-      footer={
-        <>
-          <Button onClick={onClose} disabled={start.isPending}>
-            Cancel
-          </Button>
-          <Button variant="primary" loading={start.isPending} disabled={stillPending.length > 0 && reason.trim().length < 3} onClick={() => void run()}>
-            {stillPending.length ? 'Start Without Acknowledgement' : 'Start'}
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4 text-[14px]">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {stillPending.length ? (
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="Start shift"
+        description="The server records the actual start. The timer keeps running if you close or refresh the page."
+        footer={
           <>
-            <Banner tone="warning">
-              {stillPending.length === 1 ? 'A handover is waiting for you.' : `${stillPending.length} handovers are waiting for you.`} Acknowledge it before starting, or explain why you start without it — your
-              supervisor is notified.
-            </Banner>
-            <div className="flex flex-wrap gap-2">
-              {stillPending.map((h) => (
-                <Button key={h.id} variant="primary" onClick={() => setAckId(h.id)}>
-                  Acknowledge Handover from {h.fromShift.member.displayName}
-                </Button>
-              ))}
-            </div>
-            <Field label="Reason to start without acknowledgement" helper="At least 3 characters.">
-              <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
-            </Field>
+            <Button onClick={onClose} disabled={start.isPending}>
+              Cancel
+            </Button>
+            <Button variant="primary" loading={start.isPending} disabled={stillPending.length > 0 && reason.trim().length < 3} onClick={() => void run()}>
+              {stillPending.length ? 'Start Without Acknowledgement' : 'Start'}
+            </Button>
           </>
-        ) : acked || ackedNow ? (
-          <p className="text-fg-2">The previous handover was acknowledged.</p>
-        ) : (
-          <p className="text-fg-2">No handover is waiting for this shift.</p>
-        )}
-      </div>
-      {ackId ? <AcknowledgeHandoverDialog handoverId={ackId} onClose={() => setAckId(null)} onDone={(h) => setAckedNow(h.id)} /> : null}
-    </Dialog>
+        }
+      >
+        <div className="flex flex-col gap-4 text-[14px]">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {stillPending.length ? (
+            <>
+              <Banner tone="warning">
+                {stillPending.length === 1 ? 'A handover is waiting for you.' : `${stillPending.length} handovers are waiting for you.`} Acknowledge it before starting, or explain why you start without it — your
+                supervisor is notified.
+              </Banner>
+              <div className="flex flex-wrap gap-2">
+                {stillPending.map((h) => (
+                  <Button key={h.id} variant="primary" onClick={() => setAckId(h.id)}>
+                    Acknowledge Handover from {h.fromShift.member.displayName}
+                  </Button>
+                ))}
+              </div>
+              <Field label="Reason to start without acknowledgement" helper="At least 3 characters.">
+                <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} />
+              </Field>
+            </>
+          ) : acked || ackedNow ? (
+            <p className="text-fg-2">The previous handover was acknowledged.</p>
+          ) : (
+            <p className="text-fg-2">No handover is waiting for this shift.</p>
+          )}
+        </div>
+        {ackId ? <AcknowledgeHandoverDialog handoverId={ackId} onClose={() => setAckId(null)} onDone={(h) => setAckedNow(h.id)} /> : null}
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -422,54 +428,59 @@ const EndDialog = ({ shift, onClose }: { shift: OfmShiftDetail; onClose: () => v
   const [aborted, setAborted] = useState(false);
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(shift);
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="End shift?"
-      description={shift.state === 'paused' ? 'The open break closes at the same instant.' : 'The server records the actual end and opens the report draft.'}
-      dirty={(note + reason).length > 0 && !end.isPending}
-      footer={
-        <>
-          <Button onClick={onClose} disabled={end.isPending}>
-            Cancel
-          </Button>
-          <Button
-            variant="danger"
-            loading={end.isPending}
-            disabled={aborted && reason.trim().length < 3}
-            onClick={async () => {
-              setError(null);
-              try {
-                await end.run(
-                  { params: { workspaceId: workspace.id, shiftId: shift.id }, body: { endNote: note.trim() || undefined, aborted, abortReason: aborted ? reason.trim() : undefined } },
-                  { ifMatch: shift.rowVersion },
-                );
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            End Shift
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="End Note">
-          <Textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
-        </Field>
-        <Switch label="End early (abort)" description="Use when the shift stops before its planned end for a reason." checked={aborted} onCheckedChange={setAborted} />
-        {aborted ? (
-          <Field label="Reason" required helper="At least 3 characters.">
-            <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="End shift?"
+        description={shift.state === 'paused' ? 'The open break closes at the same instant.' : 'The server records the actual end and opens the report draft.'}
+        dirty={(note + reason).length > 0 && !end.isPending}
+        footer={
+          <>
+            <Button onClick={onClose} disabled={end.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              loading={end.isPending}
+              disabled={aborted && reason.trim().length < 3}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await end.run(
+                    { params: { workspaceId: workspace.id, shiftId: shift.id }, body: { endNote: note.trim() || undefined, aborted, abortReason: aborted ? reason.trim() : undefined } },
+                    { ifMatch: edit.version },
+                  );
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              End Shift
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="End Note">
+            <Textarea value={note} onChange={(e) => setNote(e.target.value)} maxLength={2000} />
           </Field>
-        ) : null}
-      </div>
-    </Dialog>
+          <Switch label="End early (abort)" description="Use when the shift stops before its planned end for a reason." checked={aborted} onCheckedChange={setAborted} />
+          {aborted ? (
+            <Field label="Reason" required helper="At least 3 characters.">
+              <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
+            </Field>
+          ) : null}
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -486,7 +497,8 @@ const SimpleReasonCommand = ({ shift, kind, onClose }: { shift: OfmShiftDetail; 
       body={kind === 'early' ? 'The member may start more than 15 minutes before the scheduled start.' : 'Confirms that the shift did not take place. No time is recorded.'}
       confirmLabel={kind === 'early' ? 'Allow Early Start' : 'Mark Missed'}
       destructive={kind === 'missed'}
-      onConfirm={(reason) => (kind === 'early' ? early.run({ params, body: { reason } }, { ifMatch: shift.rowVersion }) : missed.run({ params, body: { reason } }, { ifMatch: shift.rowVersion }))}
+      record={shift}
+      onConfirm={(reason, ifMatch) => (kind === 'early' ? early.run({ params, body: { reason } }, { ifMatch }) : missed.run({ params, body: { reason } }, { ifMatch }))}
     />
   );
 };
@@ -499,85 +511,90 @@ const CorrectTimeDialog = ({ shift, onClose }: { shift: OfmShiftDetail; onClose:
   const [breaks, setBreaks] = useState(shift.breaks.map((b) => ({ id: b.id as string | undefined, start: toLocalInput(b.startedAt, zone), end: toLocalInput(b.endedAt, zone) })));
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(shift);
   const m = useOfmMutation(E.correctTime, { successMessage: 'Time corrected', also: ['myWork.', 'time.', 'finance.'] });
   const forcedEnd = (shift.state === 'active' || shift.state === 'paused') && !!end;
   const breaksValid = breaks.every((b) => b.start && b.end && b.end > b.start);
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Correct time"
-      description={`Times in the shift’s zone (${zone}). The change is audited and compensation based on this shift is flagged for recalculation.`}
-      dirty
-      footer={
-        <>
-          <Button onClick={onClose} disabled={m.isPending}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            loading={m.isPending}
-            disabled={reason.trim().length < 3 || !start || !breaksValid}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run(
-                  {
-                    params: { workspaceId: workspace.id, shiftId: shift.id },
-                    body: {
-                      actualStart: fromLocalInput(start, zone) ?? undefined,
-                      actualEnd: end ? (fromLocalInput(end, zone) ?? undefined) : undefined,
-                      breaks: breaks.map((b) => ({ id: b.id, startedAt: fromLocalInput(b.start, zone)!, endedAt: fromLocalInput(b.end, zone)! })),
-                      reason: reason.trim(),
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Correct time"
+        description={`Times in the shift’s zone (${zone}). The change is audited and compensation based on this shift is flagged for recalculation.`}
+        dirty
+        footer={
+          <>
+            <Button onClick={onClose} disabled={m.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              loading={m.isPending}
+              disabled={reason.trim().length < 3 || !start || !breaksValid}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await m.run(
+                    {
+                      params: { workspaceId: workspace.id, shiftId: shift.id },
+                      body: {
+                        actualStart: fromLocalInput(start, zone) ?? undefined,
+                        actualEnd: end ? (fromLocalInput(end, zone) ?? undefined) : undefined,
+                        breaks: breaks.map((b) => ({ id: b.id, startedAt: fromLocalInput(b.start, zone)!, endedAt: fromLocalInput(b.end, zone)! })),
+                        reason: reason.trim(),
+                      },
                     },
-                  },
-                  { ifMatch: shift.rowVersion },
-                );
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Save Correction
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Actual Start" required>
-            <DateTimeInput timezone={zone} value={start} onChange={(e) => setStart(e.target.value)} />
-          </Field>
-          <Field label="Actual End" helper={shift.actualEnd ? undefined : 'Leave empty to keep the shift running.'}>
-            <DateTimeInput timezone={zone} value={end} onChange={(e) => setEnd(e.target.value)} />
-          </Field>
-        </div>
-        {forcedEnd ? <Banner tone="warning">Setting an actual end on a running shift ends it (forced end).</Banner> : null}
-        <fieldset className="flex flex-col gap-2">
-          <legend className="mb-1 text-[13px] font-[550] text-fg">Breaks</legend>
-          {breaks.map((b, i) => (
-            <div key={b.id ?? `new-${i}`} className="grid grid-cols-1 items-start gap-2 sm:grid-cols-[1fr_1fr_auto]">
-              <DateTimeInput timezone={zone} aria-label={`Break ${i + 1} start`} value={b.start} onChange={(e) => setBreaks(breaks.map((x, n) => (n === i ? { ...x, start: e.target.value } : x)))} />
-              <DateTimeInput timezone={zone} aria-label={`Break ${i + 1} end`} value={b.end} onChange={(e) => setBreaks(breaks.map((x, n) => (n === i ? { ...x, end: e.target.value } : x)))} />
-              <Button size="sm" variant="ghost" onClick={() => setBreaks(breaks.filter((_, n) => n !== i))}>
-                Remove
+                    { ifMatch: edit.version },
+                  );
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Save Correction
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Actual Start" required>
+              <DateTimeInput timezone={zone} value={start} onChange={(e) => setStart(e.target.value)} />
+            </Field>
+            <Field label="Actual End" helper={shift.actualEnd ? undefined : 'Leave empty to keep the shift running.'}>
+              <DateTimeInput timezone={zone} value={end} onChange={(e) => setEnd(e.target.value)} />
+            </Field>
+          </div>
+          {forcedEnd ? <Banner tone="warning">Setting an actual end on a running shift ends it (forced end).</Banner> : null}
+          <fieldset className="flex flex-col gap-2">
+            <legend className="mb-1 text-[13px] font-[550] text-fg">Breaks</legend>
+            {breaks.map((b, i) => (
+              <div key={b.id ?? `new-${i}`} className="grid grid-cols-1 items-start gap-2 sm:grid-cols-[1fr_1fr_auto]">
+                <DateTimeInput timezone={zone} aria-label={`Break ${i + 1} start`} value={b.start} onChange={(e) => setBreaks(breaks.map((x, n) => (n === i ? { ...x, start: e.target.value } : x)))} />
+                <DateTimeInput timezone={zone} aria-label={`Break ${i + 1} end`} value={b.end} onChange={(e) => setBreaks(breaks.map((x, n) => (n === i ? { ...x, end: e.target.value } : x)))} />
+                <Button size="sm" variant="ghost" onClick={() => setBreaks(breaks.filter((_, n) => n !== i))}>
+                  Remove
+                </Button>
+              </div>
+            ))}
+            {!breaksValid ? <p className="text-[12px] text-danger">Every break needs a start and a later end.</p> : null}
+            <div>
+              <Button size="sm" icon={<Plus size={14} />} onClick={() => setBreaks([...breaks, { id: undefined, start: '', end: '' }])}>
+                Add Break
               </Button>
             </div>
-          ))}
-          {!breaksValid ? <p className="text-[12px] text-danger">Every break needs a start and a later end.</p> : null}
-          <div>
-            <Button size="sm" icon={<Plus size={14} />} onClick={() => setBreaks([...breaks, { id: undefined, start: '', end: '' }])}>
-              Add Break
-            </Button>
-          </div>
-        </fieldset>
-        <Field label="Reason" required helper="At least 3 characters. Shown in the shift history.">
-          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
-        </Field>
-      </div>
-    </Dialog>
+          </fieldset>
+          <Field label="Reason" required helper="At least 3 characters. Shown in the shift history.">
+            <Textarea value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -585,6 +602,8 @@ const AllocationDialog = ({ shift, onClose }: { shift: OfmShiftDetail; onClose: 
   const { workspace } = useWorkspace();
   const [shares, setShares] = useState<Record<string, string>>(Object.fromEntries(shift.accounts.map((a) => [a.account.id, a.timeAllocationShare ?? ''])));
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(shift);
   const m = useOfmMutation(E.setTimeAllocation, { successMessage: 'Time allocation saved' });
   const total = Object.values(shares).reduce((s, v) => s + (Number(v) || 0), 0);
   const valid = Math.abs(total - 100) < 0.001 && Object.values(shares).every((v) => /^\d{1,3}(\.\d{1,2})?$/.test(v));
@@ -593,44 +612,47 @@ const AllocationDialog = ({ shift, onClose }: { shift: OfmShiftDetail; onClose: 
     try {
       await m.run(
         { params: { workspaceId: workspace.id, shiftId: shift.id }, body: { shares: clear ? null : Object.entries(shares).map(([accountId, sharePercent]) => ({ accountId, sharePercent })) } },
-        { ifMatch: shift.rowVersion },
+        { ifMatch: edit.version },
       );
       onClose();
     } catch (e) {
-      setError(errorMessage(e));
+      if (!edit.catchConflict(e)) setError(errorMessage(e));
     }
   };
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="Time allocation"
-      description="Confirmed shares per account (sum exactly 100 %). The shift time itself is never multiplied by the number of accounts."
-      footer={
-        <>
-          {shift.accounts.some((a) => a.timeAllocationShare) ? (
-            <Button variant="ghost" onClick={() => void save(true)} disabled={m.isPending}>
-              Clear Allocation
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="Time allocation"
+        description="Confirmed shares per account (sum exactly 100 %). The shift time itself is never multiplied by the number of accounts."
+        footer={
+          <>
+            {shift.accounts.some((a) => a.timeAllocationShare) ? (
+              <Button variant="ghost" onClick={() => void save(true)} disabled={m.isPending}>
+                Clear Allocation
+              </Button>
+            ) : null}
+            <Button onClick={onClose}>Cancel</Button>
+            <Button variant="primary" disabled={!valid} loading={m.isPending} onClick={() => void save(false)}>
+              Save
             </Button>
-          ) : null}
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" disabled={!valid} loading={m.isPending} onClick={() => void save(false)}>
-            Save
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-3">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {shift.accounts.map((a) => (
-          <Field key={a.account.id} label={a.account.label}>
-            <Input inputMode="decimal" value={shares[a.account.id] ?? ''} onChange={(e) => setShares({ ...shares, [a.account.id]: e.target.value })} aria-label={`${a.account.label} share (percent)`} />
-          </Field>
-        ))}
-        <p className={total === 100 ? 'text-[13px] text-fg-2' : 'text-[13px] text-danger'}>Total: {total.toFixed(2)} %</p>
-      </div>
-    </Dialog>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {shift.accounts.map((a) => (
+            <Field key={a.account.id} label={a.account.label}>
+              <Input inputMode="decimal" value={shares[a.account.id] ?? ''} onChange={(e) => setShares({ ...shares, [a.account.id]: e.target.value })} aria-label={`${a.account.label} share (percent)`} />
+            </Field>
+          ))}
+          <p className={total === 100 ? 'text-[13px] text-fg-2' : 'text-[13px] text-danger'}>Total: {total.toFixed(2)} %</p>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -718,7 +740,8 @@ const ReportSection = ({ shift, report }: { shift: OfmShiftDetail; report: OfmRe
         body="The member revises the report in a new version; this version stays in history."
         confirmLabel="Request Changes"
         reasonLabel="Changes needed"
-        onConfirm={(summary) => requestChanges.run({ params: { workspaceId: workspace.id, reportId: report.id }, body: { versionId: v.id, summary } }, { ifMatch: v.rowVersion })}
+        record={v}
+        onConfirm={(summary, ifMatch) => requestChanges.run({ params: { workspaceId: workspace.id, reportId: report.id }, body: { versionId: v.id, summary } }, { ifMatch })}
       />
     </div>
   );
@@ -776,7 +799,19 @@ const ReportEditor = ({ shift, report }: { shift: OfmShiftDetail; report: OfmRep
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-  const [conflict, setConflict] = useState(false);
+  const load = (x: OfmReportVersion) => {
+    setSummary(x.summary);
+    setCompleted(x.completedWork ?? '');
+    setIssues(x.issues ?? '');
+    setNext(x.nextActions ?? '');
+    setSections(Object.fromEntries(x.accountSections.map((s) => [s.accountId, s.notes])));
+    setCounts(Object.fromEntries(COUNT_FIELDS.map((f) => [f.key, x.counts[f.key] === null ? '' : String(x.counts[f.key])])));
+    setRefs(x.sourceRefs.map((r) => ({ label: r.label, note: r.note ?? '' })));
+    setNoOpenItems(x.noOpenItems);
+    setDirty(false);
+  };
+  // The draft is saved against the version it was loaded at (T162); untouched, it follows the latest.
+  const edit = useEditBase(v, { key: report.id, clean: !dirty, onReload: load });
   const save = useOfmMutation(E.saveReportDraft);
   const submit = useOfmMutation(E.submitReport, { also: ['myWork.'] });
   const handover = shift.outgoingHandover;
@@ -796,7 +831,7 @@ const ReportEditor = ({ shift, report }: { shift: OfmShiftDetail; report: OfmRep
     handoverId: handover?.id ?? null,
   });
   const handleError = (e: unknown) => {
-    if (isApiError(e) && e.code === 'VERSION_CONFLICT') return setConflict(true);
+    if (edit.catchConflict(e)) return;
     if (isApiError(e) && e.fieldErrors.length) setFieldErrors(Object.fromEntries(e.fieldErrors.map((f) => [f.field.replace(/^body\./, ''), f.message])));
     setError(errorMessage(e, 'The report could not be saved.'));
   };
@@ -804,7 +839,8 @@ const ReportEditor = ({ shift, report }: { shift: OfmShiftDetail; report: OfmRep
     setError(null);
     setFieldErrors({});
     try {
-      const saved = await save.run({ params: { workspaceId: workspace.id, reportId: report.id }, body: body() }, { ifMatch: v.rowVersion });
+      const saved = await save.run({ params: { workspaceId: workspace.id, reportId: report.id }, body: body() }, { ifMatch: edit.version });
+      edit.rebase(saved.currentVersion);
       setDirty(false);
       return saved;
     } catch (e) {
@@ -906,7 +942,7 @@ const ReportEditor = ({ shift, report }: { shift: OfmShiftDetail; report: OfmRep
           Submit Report
         </Button>
       </div>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </form>
   );
 };

@@ -22,6 +22,8 @@ import {
   formatDateTime,
 } from '@castlane/ui';
 import { MemberSelect } from '@/components/common/pickers';
+import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { QueryState } from '@/components/common/query-state';
 import { useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
@@ -72,74 +74,79 @@ export const AcknowledgeHandoverDialog = ({ handoverId, onClose, onDone }: { han
   const [error, setError] = useState<string | null>(null);
   const m = useOfmMutation(E.acknowledgeHandover, { successMessage: 'Handover acknowledged', also: ['myWork.'] });
   const h = q.data;
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(q.data, { onReload: () => setAccepted(null) });
   const open = h?.items.filter((i) => i.state === 'open') ?? [];
   const chosen = accepted ?? open.map((i) => i.id);
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      title="Acknowledge Handover"
-      description="Acknowledging confirms you read it and take over the accepted items. It does not resolve or complete anything."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!h || !h.permissions.acknowledge}
-            loading={m.isPending}
-            onClick={async () => {
-              if (!h) return;
-              setError(null);
-              try {
-                const res = await m.run({ params: { workspaceId: workspace.id, handoverId: h.id }, body: { acceptedItemIds: chosen } }, { ifMatch: h.rowVersion });
-                onDone?.(res);
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Acknowledge Handover
-          </Button>
-        </>
-      }
-    >
-      <QueryState query={q}>
-        {h ? (
-          <div className="flex flex-col gap-4">
-            {error ? <Banner tone="danger">{error}</Banner> : null}
-            {!h.permissions.acknowledge ? <Banner tone="warning">Only the recipient can acknowledge this handover.</Banner> : null}
-            <DescriptionList
-              items={[
-                { label: 'From', value: <MemberChip member={h.fromShift.member} /> },
-                { label: 'From Shift', value: fmtRange(h.fromShift.scheduledStart, h.fromShift.scheduledEnd, user.timezone) },
-                { label: 'Account', value: <AccountChip account={h.account} /> },
-                { label: 'Submitted', value: h.submittedAt ? formatDateTime(h.submittedAt, user.timezone) : null },
-              ]}
-            />
-            <section>
-              <h3 className="mb-1 text-[14px] font-semibold text-fg">Summary</h3>
-              <p className="whitespace-pre-wrap text-[14px] leading-[22px] text-fg">{h.summary}</p>
-            </section>
-            {h.noOpenItems && !h.items.length ? <Banner tone="info">The sender confirmed there are no open items.</Banner> : null}
-            {open.length ? (
-              <fieldset className="flex flex-col gap-2">
-                <legend className="mb-1 text-[14px] font-semibold text-fg">Items to accept</legend>
-                {open.map((i) => (
-                  <Checkbox
-                    key={i.id}
-                    label={i.title}
-                    description={[label('priority', i.priority), i.dueAt ? `due ${formatDateTime(i.dueAt, user.timezone)}` : null, i.task ? 'linked task' : null, i.operation ? 'linked operation' : null].filter(Boolean).join(' · ')}
-                    checked={chosen.includes(i.id)}
-                    onCheckedChange={(c) => setAccepted(c ? [...chosen, i.id] : chosen.filter((x) => x !== i.id))}
-                  />
-                ))}
-              </fieldset>
-            ) : null}
-          </div>
-        ) : null}
-      </QueryState>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        title="Acknowledge Handover"
+        description="Acknowledging confirms you read it and take over the accepted items. It does not resolve or complete anything."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={!h || !h.permissions.acknowledge}
+              loading={m.isPending}
+              onClick={async () => {
+                if (!h) return;
+                setError(null);
+                try {
+                  const res = await m.run({ params: { workspaceId: workspace.id, handoverId: h.id }, body: { acceptedItemIds: chosen } }, { ifMatch: edit.version });
+                  onDone?.(res);
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Acknowledge Handover
+            </Button>
+          </>
+        }
+      >
+        <QueryState query={q}>
+          {h ? (
+            <div className="flex flex-col gap-4">
+              {error ? <Banner tone="danger">{error}</Banner> : null}
+              {!h.permissions.acknowledge ? <Banner tone="warning">Only the recipient can acknowledge this handover.</Banner> : null}
+              <DescriptionList
+                items={[
+                  { label: 'From', value: <MemberChip member={h.fromShift.member} /> },
+                  { label: 'From Shift', value: fmtRange(h.fromShift.scheduledStart, h.fromShift.scheduledEnd, user.timezone) },
+                  { label: 'Account', value: <AccountChip account={h.account} /> },
+                  { label: 'Submitted', value: h.submittedAt ? formatDateTime(h.submittedAt, user.timezone) : null },
+                ]}
+              />
+              <section>
+                <h3 className="mb-1 text-[14px] font-semibold text-fg">Summary</h3>
+                <p className="whitespace-pre-wrap text-[14px] leading-[22px] text-fg">{h.summary}</p>
+              </section>
+              {h.noOpenItems && !h.items.length ? <Banner tone="info">The sender confirmed there are no open items.</Banner> : null}
+              {open.length ? (
+                <fieldset className="flex flex-col gap-2">
+                  <legend className="mb-1 text-[14px] font-semibold text-fg">Items to accept</legend>
+                  {open.map((i) => (
+                    <Checkbox
+                      key={i.id}
+                      label={i.title}
+                      description={[label('priority', i.priority), i.dueAt ? `due ${formatDateTime(i.dueAt, user.timezone)}` : null, i.task ? 'linked task' : null, i.operation ? 'linked operation' : null].filter(Boolean).join(' · ')}
+                      checked={chosen.includes(i.id)}
+                      onCheckedChange={(c) => setAccepted(c ? [...chosen, i.id] : chosen.filter((x) => x !== i.id))}
+                    />
+                  ))}
+                </fieldset>
+              ) : null}
+            </div>
+          ) : null}
+        </QueryState>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -319,7 +326,7 @@ export const HandoverComposer = ({ shift }: { shift: OfmShiftDetail }) => {
             <SubmitHandoverDialog
               h={h}
               onClose={() => setSubmitting(false)}
-              run={(recipientId) => submit.run({ params: { workspaceId: workspace.id, handoverId: h.id }, body: { recipientMembershipId: recipientId } }, { ifMatch: h.rowVersion })}
+              run={(recipientId, ifMatch) => submit.run({ params: { workspaceId: workspace.id, handoverId: h.id }, body: { recipientMembershipId: recipientId } }, { ifMatch })}
             />
           ) : null}
         </div>
@@ -328,51 +335,56 @@ export const HandoverComposer = ({ shift }: { shift: OfmShiftDetail }) => {
   );
 };
 
-const SubmitHandoverDialog = ({ h, onClose, run }: { h: OfmHandoverDetail; onClose: () => void; run: (recipient: string | null) => Promise<unknown> }) => {
+const SubmitHandoverDialog = ({ h, onClose, run }: { h: OfmHandoverDetail; onClose: () => void; run: (recipient: string | null, ifMatch: number | undefined) => Promise<unknown> }) => {
   const [recipient, setRecipient] = useState<string | null>(h.recipient?.membershipId ?? null);
+  // Submitted as shown when the dialog opened (T162).
+  const edit = useEditBase(h, { onReload: (x) => setRecipient(x.recipient?.membershipId ?? null) });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="Submit handover?"
-      description={`${h.items.length} item(s). Items stay linked to their tasks and operations — nothing is copied.`}
-      footer={
-        <>
-          <Button onClick={onClose} disabled={pending}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            loading={pending}
-            onClick={async () => {
-              setPending(true);
-              setError(null);
-              try {
-                await run(recipient);
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              } finally {
-                setPending(false);
-              }
-            }}
-          >
-            Submit Handover
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        {!h.items.length ? <Banner tone="info">This handover has no items. The report must then confirm No Open Items.</Banner> : null}
-        <Field label="Recipient" helper="Empty: the next shift’s member on this account, otherwise the supervisor.">
-          <MemberSelect value={recipient} onChange={setRecipient} clearable />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="Submit handover?"
+        description={`${h.items.length} item(s). Items stay linked to their tasks and operations — nothing is copied.`}
+        footer={
+          <>
+            <Button onClick={onClose} disabled={pending}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              loading={pending}
+              onClick={async () => {
+                setPending(true);
+                setError(null);
+                try {
+                  await run(recipient, edit.version);
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                } finally {
+                  setPending(false);
+                }
+              }}
+            >
+              Submit Handover
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          {!h.items.length ? <Banner tone="info">This handover has no items. The report must then confirm No Open Items.</Banner> : null}
+          <Field label="Recipient" helper="Empty: the next shift’s member on this account, otherwise the supervisor.">
+            <MemberSelect value={recipient} onChange={setRecipient} clearable />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -478,7 +490,7 @@ export const HandoverDetailDrawer = ({ id, onClose }: { id: string; onClose: () 
         <SubmitHandoverDialog
           h={h}
           onClose={() => setSubmitting(false)}
-          run={(recipientId) => submit.run({ params: { workspaceId: workspace.id, handoverId: h.id }, body: { recipientMembershipId: recipientId } }, { ifMatch: h.rowVersion })}
+          run={(recipientId, ifMatch) => submit.run({ params: { workspaceId: workspace.id, handoverId: h.id }, body: { recipientMembershipId: recipientId } }, { ifMatch })}
         />
       ) : null}
       <ReasonDialog
@@ -489,7 +501,8 @@ export const HandoverDetailDrawer = ({ id, onClose }: { id: string; onClose: () 
         confirmLabel="Resolve Item"
         reasonLabel="Note"
         required={false}
-        onConfirm={(note) => resolve.run({ params: { workspaceId: workspace.id, itemId: resolving!.id }, body: { note: note || undefined } }, { ifMatch: resolving!.rowVersion })}
+        record={resolving}
+        onConfirm={(note, ifMatch) => resolve.run({ params: { workspaceId: workspace.id, itemId: resolving!.id }, body: { note: note || undefined } }, { ifMatch })}
       />
       {h && converting ? <ConvertItemDialog item={converting} projectId={h.account.projectId} onClose={() => setConverting(null)} /> : null}
     </Drawer>
@@ -501,46 +514,51 @@ const AssignRecipientDialog = ({ h, onClose }: { h: OfmHandoverDetail; onClose: 
   const [recipient, setRecipient] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(h);
   const m = useOfmMutation(E.assignHandoverRecipient, { successMessage: 'Recipient changed', also: ['myWork.'] });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="Assign Recipient"
-      description="Route this unacknowledged handover to another member. They are notified."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={!recipient}
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run({ params: { workspaceId: workspace.id, handoverId: h.id }, body: { recipientMembershipId: recipient!, reason: reason.trim().length >= 3 ? reason.trim() : undefined } }, { ifMatch: h.rowVersion });
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Assign Recipient
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Recipient" required>
-          <MemberSelect value={recipient} onChange={setRecipient} />
-        </Field>
-        <Field label="Reason">
-          <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="Assign Recipient"
+        description="Route this unacknowledged handover to another member. They are notified."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={!recipient}
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await m.run({ params: { workspaceId: workspace.id, handoverId: h.id }, body: { recipientMembershipId: recipient!, reason: reason.trim().length >= 3 ? reason.trim() : undefined } }, { ifMatch: edit.version });
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Assign Recipient
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Recipient" required>
+            <MemberSelect value={recipient} onChange={setRecipient} />
+          </Field>
+          <Field label="Reason">
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={2000} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 
@@ -550,52 +568,57 @@ const ConvertItemDialog = ({ item, projectId, onClose }: { item: Item; projectId
   const [assignee, setAssignee] = useState<string | null>(null);
   const [due, setDue] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // The version shown when the dialog opened (T162).
+  const edit = useEditBase(item);
   const m = useOfmMutation(E.convertHandoverItem, { successMessage: 'Task created and linked', also: ['tasks.', 'myWork.'] });
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => !o && onClose()}
-      size="small"
-      title="Convert Item to Task"
-      description="Creates one task and links it by ID. Later handovers reference the same task."
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button
-            variant="primary"
-            disabled={title.trim().length < 3}
-            loading={m.isPending}
-            onClick={async () => {
-              setError(null);
-              try {
-                await m.run(
-                  { params: { workspaceId: workspace.id, itemId: item.id }, body: { title: title.trim(), assigneeMembershipId: assignee, dueAt: due ? fromLocalInput(due, user.timezone) : (item.dueAt ?? null) } },
-                  { ifMatch: item.rowVersion },
-                );
-                onClose();
-              } catch (e) {
-                setError(errorMessage(e));
-              }
-            }}
-          >
-            Create Task
-          </Button>
-        </>
-      }
-    >
-      <div className="flex flex-col gap-4">
-        {error ? <Banner tone="danger">{error}</Banner> : null}
-        <Field label="Title" required>
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} />
-        </Field>
-        <Field label="Assignee" helper="Empty: you.">
-          <MemberSelect value={assignee} onChange={setAssignee} projectId={projectId} permission="tasks.read" clearable />
-        </Field>
-        <Field label="Due">
-          <DateTimeInput timezone={user.timezone} value={due} onChange={(e) => setDue(e.target.value)} />
-        </Field>
-      </div>
-    </Dialog>
+    <>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onClose()}
+        size="small"
+        title="Convert Item to Task"
+        description="Creates one task and links it by ID. Later handovers reference the same task."
+        footer={
+          <>
+            <Button onClick={onClose}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={title.trim().length < 3}
+              loading={m.isPending}
+              onClick={async () => {
+                setError(null);
+                try {
+                  await m.run(
+                    { params: { workspaceId: workspace.id, itemId: item.id }, body: { title: title.trim(), assigneeMembershipId: assignee, dueAt: due ? fromLocalInput(due, user.timezone) : (item.dueAt ?? null) } },
+                    { ifMatch: edit.version },
+                  );
+                  onClose();
+                } catch (e) {
+                  if (!edit.catchConflict(e)) setError(errorMessage(e));
+                }
+              }}
+            >
+              Create Task
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {error ? <Banner tone="danger">{error}</Banner> : null}
+          <Field label="Title" required>
+            <Input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={200} />
+          </Field>
+          <Field label="Assignee" helper="Empty: you.">
+            <MemberSelect value={assignee} onChange={setAssignee} projectId={projectId} permission="tasks.read" clearable />
+          </Field>
+          <Field label="Due">
+            <DateTimeInput timezone={user.timezone} value={due} onChange={(e) => setDue(e.target.value)} />
+          </Field>
+        </div>
+      </Dialog>
+      <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };
 

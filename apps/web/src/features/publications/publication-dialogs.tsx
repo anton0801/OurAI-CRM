@@ -5,6 +5,7 @@ import { isApiError } from '@castlane/api-client';
 import { PUBLICATION_AVAILABILITY } from '@castlane/domain';
 import { Banner, Button, Checkbox, DateTimeInput, Dialog, Field, Input, Select, Textarea, formatDateTime } from '@castlane/ui';
 import { ConflictDialog } from '@/components/common/conflict';
+import { useEditBase } from '@/lib/edit-base';
 import { useDebounced } from '@/components/common/use-debounced';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
@@ -53,20 +54,24 @@ export const ScheduleDialog = ({
   const [conflictReason, setConflictReason] = useState('');
   const [errors, setErrors] = useState<FieldErrors>({});
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
   const rescheduling = p.status === 'scheduled';
+  const load = (x: PublicationLike) => {
+    const zone = x.scheduleTimezone ?? user.timezone;
+    setTz(zone);
+    setLocal(toLocalInput(initialAt ?? x.scheduledAt, zone));
+    setVersionId(x.contentVersion?.approved ? x.contentVersion.id : null);
+  };
+  // Filled when the dialog opens; a live update neither resets the typing nor moves If-Match (T162).
+  const edit = useEditBase(p, { open, onReload: load });
   useEffect(() => {
     if (!open) return;
-    const zone = p.scheduleTimezone ?? user.timezone;
-    setTz(zone);
-    setLocal(toLocalInput(initialAt ?? p.scheduledAt, zone));
-    setVersionId(p.contentVersion?.approved ? p.contentVersion.id : null);
+    load(p);
     setReason('');
     setOverrideReason('');
     setConflictReason('');
     setErrors({});
     setError(null);
-  }, [open, p.id, p.rowVersion, initialAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, p.id, initialAt]); // eslint-disable-line react-hooks/exhaustive-deps
   const utc = local ? fromLocalInput(local, tz) : null;
   const debounced = useDebounced(utc, 300);
   const versions = useApiQuery(P.contentVersions, { params: { workspaceId: workspace.id }, query: { contentItemId: p.contentItemId, accountId: p.account.id } }, { enabled: open });
@@ -99,13 +104,12 @@ export const ScheduleDialog = ({
             conflictOverrideReason: conflictReason.trim() || undefined,
           },
         },
-        { ifMatch: p.rowVersion },
+        { ifMatch: edit.version },
       );
       onOpenChange(false);
       onDone?.();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else {
+      if (!edit.catchConflict(e)) {
         setErrors(fieldErrorsOf(e));
         const g = gateDetails(e);
         setError(g?.blockers?.[0]?.message ?? (isApiError(e) ? e.message : 'The publication could not be scheduled.'));
@@ -208,7 +212,7 @@ export const ScheduleDialog = ({
           ) : null}
         </div>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };
@@ -223,7 +227,7 @@ export const MarkPublishedDialog = ({ publication: p, open, onOpenChange, onDone
   const [reason, setReason] = useState('');
   const [errors, setErrors] = useState<FieldErrors>({});
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const edit = useEditBase(p, { open });
   useEffect(() => {
     if (!open) return;
     setLocal(toLocalInput(new Date().toISOString(), user.timezone));
@@ -249,13 +253,12 @@ export const MarkPublishedDialog = ({ publication: p, open, onOpenChange, onDone
     try {
       await mark.run(
         { params: { workspaceId: workspace.id, publicationId: p.id }, body: { actualPublishedAt: at!, ...(noUrl ? { noUrlReason: reason.trim() } : { externalUrl: url.trim() }) } },
-        { ifMatch: p.rowVersion },
+        { ifMatch: edit.version },
       );
       onOpenChange(false);
       onDone?.();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else {
+      if (!edit.catchConflict(e)) {
         setErrors(fieldErrorsOf(e));
         setError(isApiError(e) ? e.message : 'The publication could not be confirmed.');
       }
@@ -300,7 +303,7 @@ export const MarkPublishedDialog = ({ publication: p, open, onOpenChange, onDone
           )}
         </div>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };
@@ -323,7 +326,7 @@ export const ReasonDialog = ({
   const { workspace } = useWorkspace();
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const edit = useEditBase(p, { open });
   useEffect(() => {
     if (open) {
       setReason('');
@@ -339,12 +342,11 @@ export const ReasonDialog = ({
       return;
     }
     try {
-      await m.run({ params: { workspaceId: workspace.id, publicationId: p.id }, body: { reason: reason.trim() } }, { ifMatch: p.rowVersion });
+      await m.run({ params: { workspaceId: workspace.id, publicationId: p.id }, body: { reason: reason.trim() } }, { ifMatch: edit.version });
       onOpenChange(false);
       onDone?.();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else setError(isApiError(e) ? e.message : 'The change could not be saved.');
+      if (!edit.catchConflict(e)) setError(isApiError(e) ? e.message : 'The change could not be saved.');
     }
   };
   return (
@@ -378,7 +380,7 @@ export const ReasonDialog = ({
           </Field>
         </div>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };
@@ -396,30 +398,35 @@ export const CorrectDialog = ({ publication: p, open, onOpenChange, onDone, init
   const [reason, setReason] = useState('');
   const [errors, setErrors] = useState<FieldErrors>({});
   const [error, setError] = useState<string | null>(null);
-  const [conflict, setConflict] = useState(false);
+  const load = (x: PublicationLike) => {
+    setLocal(toLocalInput(initialAt ?? x.actualPublishedAt, user.timezone));
+    setUrl(x.externalPostUrl ?? '');
+    setRemoveUrl(false);
+    setNoUrlReason(x.noUrlReason ?? '');
+    setCaption(x.caption ?? '');
+  };
+  // Corrections are computed against the facts shown when the dialog opened (T162).
+  const edit = useEditBase(p, { open, onReload: load });
+  const shown = edit.start ?? p;
   useEffect(() => {
     if (!open) return;
-    setLocal(toLocalInput(initialAt ?? p.actualPublishedAt, user.timezone));
-    setUrl(p.externalPostUrl ?? '');
-    setRemoveUrl(false);
-    setNoUrlReason(p.noUrlReason ?? '');
-    setCaption(p.caption ?? '');
+    load(p);
     setRecalc(true);
     setReason('');
     setErrors({});
     setError(null);
-  }, [open, p.id, p.rowVersion, initialAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, p.id, initialAt]); // eslint-disable-line react-hooks/exhaustive-deps
   const correct = useApiMutation(P.correct, { invalidate: PUBLICATION_INVALIDATE, silentErrors: true, successMessage: 'Correction recorded' });
   const submit = async () => {
     setErrors({});
     setError(null);
     const changes: Record<string, unknown> = {};
     const at = local ? fromLocalInput(local, user.timezone) : null;
-    if (at && at !== p.actualPublishedAt) changes.actualPublishedAt = at;
+    if (at && at !== shown.actualPublishedAt) changes.actualPublishedAt = at;
     if (removeUrl) Object.assign(changes, { externalUrl: null, noUrlReason: noUrlReason.trim() });
-    else if (url.trim() && url.trim() !== p.externalPostUrl) changes.externalUrl = url.trim();
-    else if (!p.externalPostUrl && noUrlReason.trim() !== (p.noUrlReason ?? '')) changes.noUrlReason = noUrlReason.trim();
-    if (caption !== (p.caption ?? '')) changes.caption = caption || null;
+    else if (url.trim() && url.trim() !== shown.externalPostUrl) changes.externalUrl = url.trim();
+    else if (!shown.externalPostUrl && noUrlReason.trim() !== (shown.noUrlReason ?? '')) changes.noUrlReason = noUrlReason.trim();
+    if (caption !== (shown.caption ?? '')) changes.caption = caption || null;
     if (!Object.keys(changes).length) {
       setError('Change at least one value.');
       return;
@@ -431,13 +438,12 @@ export const CorrectDialog = ({ publication: p, open, onOpenChange, onDone, init
     try {
       await correct.run(
         { params: { workspaceId: workspace.id, publicationId: p.id }, body: { changes: changes as never, reason: reason.trim(), recalculateCheckpoints: recalc } },
-        { ifMatch: p.rowVersion },
+        { ifMatch: edit.version },
       );
       onOpenChange(false);
       onDone?.();
     } catch (e) {
-      if (isApiError(e) && e.code === 'VERSION_CONFLICT') setConflict(true);
-      else {
+      if (!edit.catchConflict(e)) {
         setErrors(fieldErrorsOf(e));
         setError(isApiError(e) ? e.message : 'The correction could not be saved.');
       }
@@ -487,7 +493,7 @@ export const CorrectDialog = ({ publication: p, open, onOpenChange, onDone, init
           </Field>
         </div>
       </Dialog>
-      <ConflictDialog open={conflict} onOpenChange={setConflict} onReload={() => window.location.reload()} />
+      <ConflictDialog {...edit.conflictDialog} />
     </>
   );
 };
@@ -500,6 +506,7 @@ export const AvailabilityDialog = ({ publication: p, open, onOpenChange }: { pub
   const [local, setLocal] = useState('');
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const edit = useEditBase(p, { open, onReload: (x) => setValue(x.availability === 'available' ? 'removed' : 'available') });
   useEffect(() => {
     if (!open) return;
     setValue(p.availability === 'available' ? 'removed' : 'available');
@@ -516,14 +523,15 @@ export const AvailabilityDialog = ({ publication: p, open, onOpenChange }: { pub
     try {
       await m.run(
         { params: { workspaceId: workspace.id, publicationId: p.id }, body: { availability: value, effectiveAt: local ? (fromLocalInput(local, user.timezone) ?? undefined) : undefined, reason: reason.trim() } },
-        { ifMatch: p.rowVersion },
+        { ifMatch: edit.version },
       );
       onOpenChange(false);
     } catch (e) {
-      setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The change could not be saved.');
+      if (!edit.catchConflict(e)) setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The change could not be saved.');
     }
   };
   return (
+    <>
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
@@ -554,5 +562,7 @@ export const AvailabilityDialog = ({ publication: p, open, onOpenChange }: { pub
         </Field>
       </div>
     </Dialog>
+    <ConflictDialog {...edit.conflictDialog} />
+    </>
   );
 };

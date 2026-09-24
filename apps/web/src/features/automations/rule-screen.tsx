@@ -192,7 +192,7 @@ const RuleView = ({ rule: r }: { rule: AutomationRuleDetail }) => {
           <TabPanel value="rule">
             {state.tab === 'rule' || !state.tab ? (
               <RuleEditor
-                key={`${r.id}:${r.rowVersion}`}
+                key={r.id}
                 initial={initial}
                 rule={r}
                 readOnly={!r.permissions.edit}
@@ -257,7 +257,9 @@ export const DuplicateDialog = ({ rule, open, onOpenChange, onCreated }: { rule:
       setName(`${rule.name} (copy)`.slice(0, 120));
       setError(null);
     }
-  }, [open, rule.name]);
+    // Only when the dialog opens: a live rename of the rule must not replace the typed name.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
   const m = useApiMutation(automationEndpoints.duplicate, { invalidate: ['automations.'], successMessage: 'Copy saved as disabled', silentErrors: true });
   return (
     <Dialog

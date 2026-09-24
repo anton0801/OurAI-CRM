@@ -29,9 +29,11 @@ import {
   type MenuItem,
 } from '@castlane/ui';
 import { EntitySelect } from '@/components/common/entity-select';
+import { ConflictDialog } from '@/components/common/conflict';
 import { QueryState } from '@/components/common/query-state';
 import { AssetThumb, FileUploader } from '@/components/media/file-uploader';
 import { useApiMutation, useApiQuery } from '@/lib/hooks';
+import { changedFields, pickChanged, useEditBase } from '@/lib/edit-base';
 import { label } from '@/lib/labels';
 import { EPISODE_PANELS } from '@/lib/slots';
 import { useUrlState } from '@/lib/url-state';
@@ -162,6 +164,7 @@ const SeasonPanel = ({ season: s, canWrite, first, last, onOpenEpisode }: { seas
   const restore = useApiMutation(seriesEndpoints.restoreSeason, { invalidate: ['series.'], successMessage: 'Season restored' });
   const [renameOpen, setRenameOpen] = useState(false);
   const [name, setName] = useState(s.name);
+  const renameBase = useEditBase(s, { open: renameOpen, onReload: (latest) => setName(latest.name) });
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [episodeOpen, setEpisodeOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -244,10 +247,10 @@ const SeasonPanel = ({ season: s, canWrite, first, last, onOpenEpisode }: { seas
               loading={rename.isPending}
               onClick={async () => {
                 try {
-                  await rename.run({ params: { workspaceId: workspace.id, seasonId: s.id }, body: { name: name.trim() } }, { ifMatch: s.rowVersion });
+                  await rename.run({ params: { workspaceId: workspace.id, seasonId: s.id }, body: { name: name.trim() } }, { ifMatch: renameBase.version });
                   setRenameOpen(false);
                 } catch (e) {
-                  setError(errorText(e, 'The season could not be renamed.'));
+                  if (!renameBase.catchConflict(e)) setError(errorText(e, 'The season could not be renamed.'));
                 }
               }}
             >
@@ -263,6 +266,7 @@ const SeasonPanel = ({ season: s, canWrite, first, last, onOpenEpisode }: { seas
           </Field>
         </div>
       </Dialog>
+      <ConflictDialog {...renameBase.conflictDialog} />
       <ConfirmDialog
         open={archiveOpen}
         onOpenChange={setArchiveOpen}
@@ -406,19 +410,25 @@ const EpisodeDrawer = ({ episodeId, projectId, onClose }: { episodeId: string; p
   const move = useApiMutation(seriesEndpoints.moveScene, { invalidate: ['series.'] });
   const archiveScene = useApiMutation(seriesEndpoints.archiveScene, { invalidate: ['series.'], successMessage: 'Scene archived' });
   const e = q.data;
+  const valuesOf = (x: NonNullable<typeof e>): EpisodeFormState => ({
+    number: String(x.number),
+    title: x.title,
+    synopsis: x.synopsis ?? '',
+    duration: x.targetDurationSeconds ? String(x.targetDurationSeconds) : '',
+    language: x.language,
+    contentItemId: x.contentItem?.id ?? null,
+    thumbnailAssetId: x.thumbnailAssetId,
+  });
+  // Edits work against the episode as loaded (If-Match, changed fields); a background refresh never
+  // resets the typing — an untouched form just follows the latest version (T162).
+  const [clean, setClean] = useState(true);
+  const edit = useEditBase(e, { clean, onReload: (latest) => setValue(valuesOf(latest)) });
+  const startBody = edit.start ? episodeBody(valuesOf(edit.start)) : null;
   useEffect(() => {
-    if (e)
-      setValue({
-        number: String(e.number),
-        title: e.title,
-        synopsis: e.synopsis ?? '',
-        duration: e.targetDurationSeconds ? String(e.targetDurationSeconds) : '',
-        language: e.language,
-        contentItemId: e.contentItem?.id ?? null,
-        thumbnailAssetId: e.thumbnailAssetId,
-      });
-  }, [e?.id, e?.rowVersion]); // eslint-disable-line react-hooks/exhaustive-deps
-  const dirty = !!e && !!value && JSON.stringify(episodeBody(value)) !== JSON.stringify(episodeBody({ number: String(e.number), title: e.title, synopsis: e.synopsis ?? '', duration: e.targetDurationSeconds ? String(e.targetDurationSeconds) : '', language: e.language, contentItemId: e.contentItem?.id ?? null, thumbnailAssetId: e.thumbnailAssetId }));
+    if (e) setValue(valuesOf(e));
+  }, [e?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const dirty = !!startBody && !!value && JSON.stringify(episodeBody(value)) !== JSON.stringify(startBody);
+  useEffect(() => setClean(!dirty), [dirty]);
   const writable = !!e?.permissions.write && !e?.archivedAt;
   const activeScenes = (e?.scenes ?? []).filter((s) => !s.archivedAt);
   const slotProps = { episodeId, projectId };
@@ -445,8 +455,12 @@ const EpisodeDrawer = ({ episodeId, projectId, onClose }: { episodeId: string; p
                 if (Object.keys(v).length || !e) return;
                 setError(null);
                 try {
-                  await update.run({ params: { workspaceId: workspace.id, episodeId }, body: episodeBody(value) }, { ifMatch: e.rowVersion });
+                  const body = episodeBody(value);
+                  const saved = await update.run({ params: { workspaceId: workspace.id, episodeId }, body: startBody ? pickChanged(body, changedFields(startBody, body)) : body }, { ifMatch: edit.version });
+                  edit.rebase(saved);
+                  setValue(valuesOf(saved));
                 } catch (err) {
+                  if (edit.catchConflict(err)) return;
                   if (isApiError(err) && err.fieldErrors.length) setErrors(Object.fromEntries(err.fieldErrors.map((f) => [f.field, f.message])));
                   else setError(errorText(err, 'The episode could not be saved.'));
                 }
@@ -594,6 +608,7 @@ const EpisodeDrawer = ({ episodeId, projectId, onClose }: { episodeId: string; p
           </div>
         ) : null}
       </QueryState>
+      <ConflictDialog {...edit.conflictDialog} />
     </Drawer>
   );
 };
@@ -607,6 +622,16 @@ const SceneDialog = ({ episodeId, projectId, scene, onClose }: { episodeId: stri
   const [deliverables, setDeliverables] = useState<{ label: string; format?: string; done?: boolean }[]>(scene?.deliverables ?? []);
   const [thumb, setThumb] = useState<string | null>(scene?.thumbnailAssetId ?? null);
   const [error, setError] = useState<string | null>(null);
+  // `scene` is the row as it was when the dialog opened; only the fields changed here are sent.
+  const edit = useEditBase(scene, {
+    onReload: (latest) => {
+      setTitle(latest.title);
+      setScript(latest.script ?? '');
+      setVersionIds(latest.characters.map((c) => c.characterVersionId));
+      setDeliverables(latest.deliverables);
+      setThumb(latest.thumbnailAssetId);
+    },
+  });
   const create = useApiMutation(seriesEndpoints.createScene, { invalidate: ['series.'], silentErrors: true, successMessage: 'Scene added' });
   const update = useApiMutation(seriesEndpoints.updateScene, { invalidate: ['series.'], silentErrors: true, successMessage: 'Scene saved' });
   // Scenes link frozen character versions: the approved version, or the open draft if none is approved yet.
@@ -642,11 +667,21 @@ const SceneDialog = ({ episodeId, projectId, scene, onClose }: { episodeId: stri
             onClick={async () => {
               setError(null);
               try {
-                if (scene) await update.run({ params: { workspaceId: workspace.id, sceneId: scene.id }, body }, { ifMatch: scene.rowVersion });
-                else await create.run({ params: { workspaceId: workspace.id, episodeId }, body });
+                if (scene) {
+                  const s0 = edit.start ?? scene;
+                  const before = {
+                    title: s0.title,
+                    script: s0.script ?? null,
+                    characterVersionIds: s0.characters.map((c) => c.characterVersionId),
+                    deliverables: s0.deliverables.map((d) => ({ label: d.label, ...(d.format ? { format: d.format as never } : {}), ...(d.done ? { done: true } : {}) })),
+                    thumbnailAssetId: s0.thumbnailAssetId,
+                  };
+                  const patch = pickChanged(body, changedFields(before, body));
+                  if (Object.keys(patch).length) await update.run({ params: { workspaceId: workspace.id, sceneId: scene.id }, body: patch }, { ifMatch: edit.version });
+                } else await create.run({ params: { workspaceId: workspace.id, episodeId }, body });
                 onClose();
               } catch (e) {
-                setError(errorText(e, 'The scene could not be saved.'));
+                if (!edit.catchConflict(e)) setError(errorText(e, 'The scene could not be saved.'));
               }
             }}
           >
@@ -701,6 +736,7 @@ const SceneDialog = ({ episodeId, projectId, scene, onClose }: { episodeId: stri
           <FileUploader workspaceId={workspace.id} purpose="content" projectId={projectId} accept="image/jpeg,image/png,image/webp" multiple={false} label="Upload Thumbnail" compact onUploaded={(i) => i.assetId && setThumb(i.assetId)} />
         </div>
       </div>
+      <ConflictDialog {...edit.conflictDialog} />
     </Dialog>
   );
 };
