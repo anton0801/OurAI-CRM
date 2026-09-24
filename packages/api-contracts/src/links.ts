@@ -40,6 +40,8 @@ export const ENTITY_ROUTES: Record<string, (id: string, ctx?: { projectId?: stri
   export_job: (id) => `/exports?open=${id}`,
   incident: (id) => `/operations/health?open=${id}`,
   template: (id) => `/settings/templates?open=${id}`,
+  folder: (id) => `/library?folder=${id}`,
+  article_category: (id) => `/knowledge?category=${id}`,
 };
 
 export const entityHref = (workspaceId: string, entityType: string, entityId: string, ctx?: { projectId?: string | null }): string => {

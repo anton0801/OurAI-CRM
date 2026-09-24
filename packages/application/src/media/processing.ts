@@ -5,15 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
-import { and, eq, lt, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import sharp from 'sharp';
-import { assetDerivatives, assetLinks, assets, assetVersions, uploadSessions, withTransaction } from '@castlane/database';
+import { assetDerivatives, assetLinks, assets, assetVersions, uploadSessions, withTransaction, workspaces } from '@castlane/database';
 import { newId } from '@castlane/domain';
 import type { AppServices } from '../core/context';
 import { streamEvent } from '../core/events';
 import { defineJob, defineSchedule } from '../core/jobs-registry';
-import { indexSearchDocument } from '../core/search';
-import { releaseReservation } from './uploads';
+import { indexAsset } from './assets';
+import { discardEmptyAsset, releaseReservation } from './uploads';
 import { pixelLimit, sizeLimit, sniff, type UploadPurpose } from './sniff';
 
 const THUMB_SIZES = [64, 128, 256];
@@ -28,9 +28,12 @@ const run = (cmd: string, args: string[], timeoutMs = 120_000) =>
     execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => (err ? reject(err) : resolve(stdout))),
   );
 
-const reject = async (app: AppServices, s: typeof uploadSessions.$inferSelect, reason: string) => {
+/** Attempts of `media.process` (first run + 5 retries, section 19); the last one fails honestly. */
+const FINAL_ATTEMPT = 6;
+
+const reject = async (app: AppServices, s: typeof uploadSessions.$inferSelect, reason: string, status: 'rejected' | 'failed' = 'rejected') => {
   await withTransaction(app.db, async (tx) => {
-    await tx.update(assetVersions).set({ status: 'rejected', rejectionReason: reason, processedAt: app.clock.now() }).where(eq(assetVersions.id, s.assetVersionId!));
+    await tx.update(assetVersions).set({ status, rejectionReason: reason, processedAt: app.clock.now() }).where(eq(assetVersions.id, s.assetVersionId!));
     await tx.update(uploadSessions).set({ state: 'completed', completedAt: app.clock.now() }).where(eq(uploadSessions.id, s.id));
     await releaseReservation(tx, s.workspaceId, s.reservedBytes);
   });
@@ -103,9 +106,19 @@ defineJob(
         }
       }
 
-      // 4. Malware scan of the exact bytes that will be stored.
+      // 4. Malware scan of the exact bytes that will be stored. When the scanner is unavailable the
+      //    file stays "Checking" while the job retries, and fails honestly after the last attempt
+      //    — it never becomes Available unscanned (T077).
       await app.db.update(assetVersions).set({ status: 'checking' }).where(eq(assetVersions.id, version.id));
-      const scan = await app.scanner.scan(createReadStream(tmp));
+      let scan: Awaited<ReturnType<typeof app.scanner.scan>>;
+      try {
+        scan = await app.scanner.scan(createReadStream(tmp));
+      } catch (e) {
+        app.logger.warn('malware_scan_unavailable', { uploadId, attempt: job.attempts, error: (e as Error).message });
+        if (job.attempts >= FINAL_ATTEMPT)
+          return reject(app, s, 'The malware scan service was unavailable, so the file could not be checked. Upload it again later.', 'failed');
+        throw Object.assign(new Error('Malware scan service unavailable; the check will be retried.'), { code: 'DEPENDENCY_UNAVAILABLE' });
+      }
       if (!scan.clean) return reject(app, s, `The file was rejected by the malware scan (${scan.signature ?? 'threat detected'}).`);
       await heartbeat(50, 'scanned');
 
@@ -214,20 +227,8 @@ defineJob(
             })
             .onConflictDoNothing();
         }
-        if (asset)
-          await indexSearchDocument(tx, {
-            workspaceId: s.workspaceId,
-            entityType: 'asset',
-            entityId: asset.id,
-            title: asset.name,
-            body: asset.tags.join(' '),
-            projectId: asset.projectId,
-            permission: 'assets.read',
-            ownerMembershipId: asset.ownerMembershipId,
-            restricted: asset.sensitivity === 'restricted',
-            thumbnailAssetId: derivatives.length && asset.sensitivity !== 'restricted' ? asset.id : null,
-            at: app.clock.now(),
-          });
+        // Restricted media is never indexed for global search.
+        if (asset) await indexAsset(tx, asset, app.clock.now());
       });
       try {
         await app.storage.deleteObject(s.quarantineKey);
@@ -257,9 +258,54 @@ defineJob('media.expireUploads', 'light', async ({ app }) => {
       await tx.update(uploadSessions).set({ state: 'expired' }).where(eq(uploadSessions.id, s.id));
       await tx.update(assetVersions).set({ status: 'failed', rejectionReason: 'The upload session expired before completion.' }).where(eq(assetVersions.id, s.assetVersionId!));
       await releaseReservation(tx, s.workspaceId, s.reservedBytes);
+      if (s.assetId) await discardEmptyAsset(tx, s.assetId, now, null);
     });
   }
   return { expired: stale.length };
 });
 
 defineSchedule({ name: 'media.expireUploads', everySeconds: 3600, jobType: 'media.expireUploads' });
+
+/**
+ * Purge the stored file of deleted versions once the workspace trash period has passed: the
+ * original and its derivatives are removed from storage and the usage is released. The version
+ * row stays (history, audit) with purgedAt set. Idempotent.
+ */
+defineJob('media.purgeDeletedVersions', 'media', async ({ app }) => {
+  const now = app.clock.now();
+  const due = await app.db
+    .select({ v: assetVersions, trashDays: sql<number | null>`(${workspaces.settings} -> 'retention' ->> 'trashDays')::int` })
+    .from(assetVersions)
+    .innerJoin(workspaces, eq(workspaces.id, assetVersions.workspaceId))
+    .where(and(isNotNull(assetVersions.deletedAt), isNull(assetVersions.purgedAt)))
+    .limit(200);
+  let purged = 0;
+  for (const { v, trashDays } of due) {
+    const days = trashDays ?? 30;
+    if (!v.deletedAt || v.deletedAt.getTime() + days * 86_400_000 > now.getTime()) continue;
+    const derivs = await app.db.select().from(assetDerivatives).where(eq(assetDerivatives.assetVersionId, v.id));
+    for (const key of [v.storageKey, ...derivs.map((d) => d.storageKey)]) {
+      if (!key) continue;
+      try {
+        await app.storage.deleteObject(key);
+      } catch {
+        /* already gone — purge stays idempotent */
+      }
+    }
+    await withTransaction(app.db, async (tx) => {
+      const [row] = await tx
+        .update(assetVersions)
+        .set({ purgedAt: now })
+        .where(and(eq(assetVersions.id, v.id), isNull(assetVersions.purgedAt)))
+        .returning({ id: assetVersions.id });
+      if (!row) return;
+      await tx.delete(assetDerivatives).where(eq(assetDerivatives.assetVersionId, v.id));
+      if (v.status === 'available' && v.byteSize)
+        await tx.execute(sql`UPDATE workspaces SET storage_used_bytes = GREATEST(0, storage_used_bytes - ${v.byteSize}) WHERE id = ${v.workspaceId}`);
+    });
+    purged++;
+  }
+  return { purged };
+});
+
+defineSchedule({ name: 'media.purgeDeletedVersions', everySeconds: 6 * 3600, jobType: 'media.purgeDeletedVersions' });
