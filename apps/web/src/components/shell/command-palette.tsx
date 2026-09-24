@@ -4,7 +4,7 @@ import { ArrowRight, MagnifyingGlass } from '@phosphor-icons/react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { shellEndpoints, type SearchResult } from '@castlane/api-contracts';
-import { humanize, Spinner, cn } from '@castlane/ui';
+import { humanize, Spinner, cn, useOverlayFocusReturn } from '@castlane/ui';
 import { api } from '@/lib/api';
 import { useCan, useWorkspace, useWsPath } from '@/lib/workspace-context';
 import { NAV, QUICK_CREATE } from './nav';
@@ -28,6 +28,7 @@ export const CommandPalette = ({ open, onOpenChange }: { open: boolean; onOpenCh
   const router = useRouter();
   const [q, setQ] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
+  const focus = useOverlayFocusReturn();
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(0);
 
@@ -84,7 +85,7 @@ export const CommandPalette = ({ open, onOpenChange }: { open: boolean; onOpenCh
     <D.Root open={open} onOpenChange={onOpenChange}>
       <D.Portal>
         <D.Overlay className="fixed inset-0 z-50 bg-black/35" />
-        <D.Content className="fixed left-1/2 top-[12vh] z-50 w-[calc(100vw-32px)] max-w-[640px] -translate-x-1/2 overflow-hidden rounded-[16px] border border-line bg-surface shadow-[var(--shadow-overlay)]">
+        <D.Content {...focus} className="fixed left-1/2 top-[12vh] z-50 w-[calc(100vw-32px)] max-w-[640px] -translate-x-1/2 overflow-hidden rounded-[16px] border border-line bg-surface shadow-[var(--shadow-overlay)]">
           <D.Title className="sr-only">Search and commands</D.Title>
           <D.Description className="sr-only">Type at least two characters to search records you can access.</D.Description>
           <div className="flex items-center gap-2 border-b border-line px-4">
