@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
-import { archiveEndpoints, commentEndpoints, lookupEndpoints, referenceEndpoints, templateEndpoints } from '@castlane/api-contracts';
-import { auditEvents, contentStageEvents, notifications, publications, searchDocuments, tasks } from '@castlane/database';
+import { archiveEndpoints, commentEndpoints, financeEndpoints, lookupEndpoints, metricsEndpoints, referenceEndpoints, templateEndpoints } from '@castlane/api-contracts';
+import { auditEvents, contentStageEvents, financialAllocations, metricObservations, notifications, publications, reviews, searchDocuments, socialAccounts, tasks } from '@castlane/database';
 import { newId } from '@castlane/domain';
-import { C, V, contentInProduction, db, getContent, member, move, newContent, prodFixture, uploadPng, versionWithFile } from './helpers';
+import { createAccount } from '../../support';
+import { C, R, V, contentInProduction, contentInReview, db, getContent, member, move, newContent, prodFixture, review } from './helpers';
 
 describe('content items (S22–S24, §10.1)', () => {
-  it('creates an Idea draft with the minimum fields, replays idempotently and audits', async () => {
+  it('creates an Idea draft with the minimum fields, replays idempotently and audits; same key with another body is 409 with no second effect (T163)', async () => {
     const f = await prodFixture();
     const key = newId();
     const body = { title: 'Morning Routine Reel', projectId: f.projectId, format: 'short_video' as const };
@@ -170,32 +171,67 @@ describe('content items (S22–S24, §10.1)', () => {
     expect(lead2.status).toBe(403);
   });
 
-  it('Duplicate as New Draft copies chosen fields only — no versions, approvals, publications or tasks (T047)', async () => {
+  it('Duplicate as New Draft inherits no metrics, approvals, payouts, publications, versions or tasks (T047)', async () => {
     const f = await prodFixture();
     const reviewer = await member(f, 'project_lead', { projects: [f.projectId] });
-    const c = await contentInProduction(f.owner, f, { ownerMembershipId: f.ws.owner.membershipId, reviewerMembershipId: reviewer.membershipId });
-    const up = await uploadPng(f.owner, f);
-    const v = await versionWithFile(f.owner, f, c.id, up.assetVersionId);
-    await db().insert(publications).values({ id: newId(), workspaceId: f.ws.workspaceId, contentItemId: c.id, accountId: (await (await import('../../support')).createAccount(db(), f.ws, { projectId: f.projectId })), projectId: f.projectId, ownerMembershipId: f.ws.owner.membershipId, status: 'draft' });
-    const cur = await getContent(f.owner, f, c.id);
-    await f.owner.call(C.update, { params: { ...f.params, contentId: c.id }, body: { tags: ['morning'] } }, { ifMatch: cur.rowVersion });
-    const dup = await f.owner.call(C.duplicate, { params: { ...f.params, contentId: c.id }, body: { targetProjectId: f.projectId, copiedFieldSet: ['brief', 'tags'], attachmentAssetVersionIds: [up.assetVersionId] } });
+    // The source has an approved version, a published placement with metrics and a payout allocated to it.
+    const src = await contentInReview(f.owner, f, { ownerMembershipId: f.ws.owner.membershipId, reviewerMembershipId: reviewer.membershipId });
+    const rv = await review(reviewer.client, f, src.reviewId);
+    await reviewer.client.call(R.approve, { params: { ...f.params, reviewId: src.reviewId }, body: { versionId: src.versionId } }, { ifMatch: rv.rowVersion });
+    const accountId = await createAccount(db(), f.ws, { projectId: f.projectId });
+    const longAgo = new Date(Date.now() - 30 * 86_400_000);
+    await db().update(socialAccounts).set({ createdAt: longAgo }).where(eq(socialAccounts.id, accountId));
+    const publicationId = newId();
+    const publishedAt = new Date(Date.now() - 2 * 86_400_000);
+    await db().insert(publications).values({ id: publicationId, workspaceId: f.ws.workspaceId, contentItemId: src.contentId, accountId, projectId: f.projectId, ownerMembershipId: f.ws.owner.membershipId, status: 'published', actualPublishedAt: publishedAt, format: 'image' });
+    await f.owner.call(metricsEndpoints.create, {
+      params: f.params,
+      body: { entityType: 'publication', entityId: publicationId, kind: 'cumulative', observedAt: new Date(Date.now() - 3_600_000).toISOString(), sourceType: 'manual', sourceNote: 'Post insights', values: [{ metricKey: 'publication.views', availability: 'known', value: '500' }] },
+    });
+    const fm = await member(f, 'finance_manager');
+    const cats = await f.owner.call(financeEndpoints.categoriesList, { params: f.params, query: {} });
+    const payout = await fm.client.call(financeEndpoints.entriesCreate, {
+      params: f.params,
+      body: {
+        type: 'expense',
+        title: 'Creator payout for the reel',
+        recognitionDate: new Date().toISOString().slice(0, 10),
+        lines: [{ categoryId: cats.find((x) => x.key === 'contractors')!.id, amount: '80.00', currency: 'EUR' }],
+        allocation: { mode: 'weights', rows: [{ projectId: f.projectId, contentItemId: src.contentId, value: '1' }] },
+      },
+    });
+    const submitted = await fm.client.call(financeEndpoints.entriesSubmit, { params: { ...f.params, entryId: payout.id }, body: {} }, { ifMatch: payout.rowVersion });
+    await f.owner.call(financeEndpoints.entriesPost, { params: { ...f.params, entryId: payout.id }, body: {} }, { ifMatch: submitted.rowVersion });
+    const c = await getContent(f.owner, f, src.contentId);
+    expect(c.approvedVersion?.id).toBe(src.versionId);
+    expect(c.counts.publications).toBe(1);
+    await f.owner.call(C.update, { params: { ...f.params, contentId: c.id }, body: { tags: ['morning'] } }, { ifMatch: c.rowVersion });
+
+    const dup = await f.owner.call(C.duplicate, { params: { ...f.params, contentId: c.id }, body: { targetProjectId: f.projectId, copiedFieldSet: ['brief', 'tags'], attachmentAssetVersionIds: [src.assetVersionId] } });
     expect(dup.stage).toBe('idea');
     expect(dup.duplicatedFrom).toEqual({ id: c.id, title: c.title });
     expect(dup.brief.summary).toBe(c.brief.summary);
     expect(dup.tags).toEqual(['morning']);
     expect(dup.currentVersion).toBeNull();
     expect(dup.approvedVersion).toBeNull();
+    expect(dup.activeReview).toBeNull();
     expect(dup.publicationCount).toBe(0);
-    expect(dup.counts.versions).toBe(0);
+    expect(dup.counts).toMatchObject({ versions: 0, tasks: 0, publications: 0 });
     expect(dup.reviewer).toBeNull();
     expect(dup.dueAt).toBeNull();
-    const dupTasks = await db().select().from(tasks).where(eq(tasks.contentItemId, dup.id));
-    expect(dupTasks).toEqual([]);
+    // Server state: nothing that belongs to the source's history points at the copy.
+    expect(await db().select().from(tasks).where(eq(tasks.contentItemId, dup.id))).toEqual([]);
+    expect(await db().select().from(reviews).where(eq(reviews.subjectId, dup.id))).toEqual([]);
+    expect(await db().select().from(publications).where(eq(publications.contentItemId, dup.id))).toEqual([]);
+    expect(await db().select().from(financialAllocations).where(eq(financialAllocations.contentItemId, dup.id))).toEqual([]);
+    const observations = await db().select().from(metricObservations).where(eq(metricObservations.workspaceId, f.ws.workspaceId));
+    expect(observations.map((o) => o.publicationId ?? o.entityId)).toEqual([publicationId]);
+    // ...and the source keeps all of it.
+    expect((await db().select().from(financialAllocations).where(eq(financialAllocations.contentItemId, c.id))).map((a) => a.amountMinor)).toEqual([8000n]);
+    expect((await getContent(f.owner, f, c.id)).approvedVersion?.id).toBe(src.versionId);
     // Other projects cannot receive characters; a version file from another content is refused.
     const bad = await f.owner.attempt(C.duplicate, { params: { ...f.params, contentId: c.id }, body: { targetProjectId: f.otherProjectId, copiedFieldSet: ['characters'] } });
     expect(bad.status).toBe(422);
-    void v;
   });
 
   it('Reference → Idea uses the content create use case: one linked draft, usage visible (T035)', async () => {

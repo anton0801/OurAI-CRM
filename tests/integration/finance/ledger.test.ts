@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { newIdempotencyKey } from '@castlane/api-client';
-import { financeEndpoints as F, projectEndpoints } from '@castlane/api-contracts';
-import { financialAllocations, financialEntries, financialEntryLines, fxRates } from '@castlane/database';
+import { exportEndpoints, financeEndpoints as F, overviewEndpoints, projectEndpoints, shellEndpoints } from '@castlane/api-contracts';
+import { auditEvents, financialAllocations, financialEntries, financialEntryLines, fxRates, periodLocks } from '@castlane/database';
 import { addMember, assignToProject, clientFor, createProject, createWorkspace, sessionFor } from '../../support';
 import { MARCH, db, expenseBody, financeSetup, onProject, postedEntry, statementBody } from './helpers';
 
@@ -70,7 +70,7 @@ describe('financial entries: lifecycle and immutability', () => {
     expect(p2.selfApprovalReason).toBe('No second finance approver yet');
   });
 
-  it('create is idempotent; same key with a different body is rejected (T163)', async () => {
+  it('create is idempotent; same key with a different body is 409 and has no second effect (T163)', async () => {
     const { fmc, project, p, cat } = await financeSetup();
     const key = newIdempotencyKey();
     const body = expenseBody(cat, project.id);
@@ -78,7 +78,11 @@ describe('financial entries: lifecycle and immutability', () => {
     const b = await fmc.call(F.entriesCreate, { params: p, body }, { idempotencyKey: key });
     expect(b.id).toBe(a.id);
     const c = await fmc.attempt(F.entriesCreate, { params: p, body: { ...body, title: 'Different' } }, { idempotencyKey: key });
+    expect(c.status).toBe(409);
     expect(c.code).toBe('IDEMPOTENCY_PAYLOAD_MISMATCH');
+    const rows = await db().select().from(financialEntries).where(eq(financialEntries.workspaceId, p.workspaceId));
+    expect(rows.map((r) => [r.id, r.title])).toEqual([[a.id, 'Production services']]);
+    expect(await db().select().from(financialEntryLines).where(eq(financialEntryLines.workspaceId, p.workspaceId))).toHaveLength(1);
   });
 });
 
@@ -209,7 +213,7 @@ describe('financial arithmetic rules', () => {
   });
 
   it('closed periods block posting; audited reopen allows it (T136)', async () => {
-    const { owner, fmc, project, p, cat } = await financeSetup();
+    const { ws, owner, fmc, project, p, cat } = await financeSetup();
     const draft = await fmc.call(F.entriesCreate, { params: p, body: expenseBody(cat, project.id) });
     const preview = await owner.call(F.periodsClosePreview, { params: p, query: MARCH });
     expect(preview.issues.map((i) => i.kind)).toContain('unreviewed_entries');
@@ -223,8 +227,19 @@ describe('financial arithmetic rules', () => {
     expect((blocked.error as { details?: { reason?: string } }).details?.reason).toBe('period_closed');
     // Overlapping close is refused; reopen needs a reason and is recorded.
     expect((await owner.attempt(F.periodsClose, { params: p, body: { periodStart: '2024-03-15', periodEnd: '2024-04-15', unresolvedAcknowledgements: [] } })).status).toBe(409);
+    // A reopen without a reason is refused and leaves the period closed.
+    for (const reason of ['', '   ']) {
+      const noReason = await owner.attempt(F.periodsReopen, { params: p, body: { periodId: lock.id, reason } });
+      expect(noReason.status, JSON.stringify(reason)).toBe(422);
+    }
+    expect((await db().select().from(periodLocks).where(eq(periodLocks.id, lock.id)))[0]?.state).toBe('locked');
+    expect((await owner.attempt(F.entriesPost, { params: { ...p, entryId: draft.id }, body: {} }, { ifMatch: s.rowVersion })).status).toBe(409);
     const reopened = await owner.call(F.periodsReopen, { params: p, body: { periodId: lock.id, reason: 'Late supplier invoice' } });
     expect(reopened.state).toBe('reopened');
+    const trail = await db().select().from(auditEvents).where(and(eq(auditEvents.workspaceId, p.workspaceId), eq(auditEvents.action, 'finance.period_reopened')));
+    expect(trail).toHaveLength(1);
+    expect(trail[0]).toMatchObject({ entityId: lock.id, reason: 'Late supplier invoice' });
+    expect(trail[0]!.actorUserId).toBe(ws.owner.userId);
     const posted = await owner.call(F.entriesPost, { params: { ...p, entryId: draft.id }, body: {} }, { ifMatch: s.rowVersion });
     expect(posted.state).toBe('posted');
     // Members without the close-period right get 403.
@@ -304,10 +319,16 @@ describe('settlements', () => {
   });
 });
 
-describe('finance access (T016, scope isolation)', () => {
-  it('leads without finance rights get 403 on finance and no amounts elsewhere', async () => {
-    const { ws, owner, fmc, project, p, cat } = await financeSetup();
-    const e = await postedEntry(fmc, owner, p, statementBody(cat, project.id));
+describe('finance access (scope isolation)', () => {
+  it('a normal Lead gets no finance data: 403 on finance, no budget in API, export, search or Overview (T016)', async () => {
+    const { ws, owner, fm, fmc, project, p, cat } = await financeSetup();
+    const e = await postedEntry(fmc, owner, p, statementBody(cat, project.id, { title: 'Quarterly platform statement' }));
+    const b = await fmc.call(F.budgetsCreate, {
+      params: p,
+      // The current budget (its period covers today) is what project views and exports show.
+      body: { name: 'Alpha production budget', scopeType: 'project', scopeId: project.id, periodStart: `${new Date().getUTCFullYear()}-01-01`, periodEnd: `${new Date().getUTCFullYear()}-12-31`, currency: 'EUR', ownerMembershipId: fm.membershipId, lines: [{ categoryId: cat('production_services'), planned: '4321.00' }] },
+    });
+    await owner.call(F.budgetsApprove, { params: { ...p, budgetId: b.id }, body: { versionId: b.versions[0]!.id } }, { ifMatch: b.rowVersion });
     const lead = await addMember(db(), ws, { roleKey: 'project_lead', scopeType: 'assigned_projects' });
     await assignToProject(db(), ws, project.id, lead.membershipId);
     const lc = await clientFor(await sessionFor(db(), lead.userId));
@@ -317,8 +338,59 @@ describe('finance access (T016, scope isolation)', () => {
     expect((await lc.attempt(F.projectSummary, { params: { ...p, projectId: project.id }, query: MARCH })).status).toBe(403);
     expect((await lc.attempt(F.settlementsList, { params: p, query: {} })).status).toBe(403);
     expect((await lc.attempt(F.runsList, { params: p, query: {} })).status).toBe(403);
+    expect((await lc.attempt(F.budgetsGet, { params: { ...p, budgetId: b.id } })).ok).toBe(false);
+
+    // Project API: the budget field is absent for the Lead (the Owner sees it — the fixture has one).
+    expect((await owner.call(projectEndpoints.get, { params: { ...p, projectId: project.id } })).budget?.planned.amount).toBe('4321.00');
     const pd = await lc.call(projectEndpoints.get, { params: { ...p, projectId: project.id } });
     expect('budget' in pd).toBe(false);
+    const pl = await lc.call(projectEndpoints.list, { params: p, query: {} });
+    expect(pl.items.map((i) => i.id)).toEqual([project.id]);
+    expect('budget' in pl.items[0]!).toBe(false);
+
+    // Export Center: no finance datasets; budget columns of Projects are unavailable and refused.
+    const datasets = await lc.call(exportEndpoints.datasets, { params: p });
+    expect(datasets.filter((d) => d.classification === 'finance')).toEqual([]);
+    expect(datasets.map((d) => d.key)).not.toContain('finance_ledger_lines');
+    expect(datasets.map((d) => d.key)).not.toContain('compensation_lines');
+    const projectsSet = datasets.find((d) => d.key === 'projects')!;
+    expect(projectsSet.columns.filter((c) => c.key.startsWith('budget')).map((c) => [c.key, c.available])).toEqual([
+      ['budgetPlanned', false],
+      ['budgetCurrency', false],
+    ]);
+    for (const d of datasets.filter((x) => ['projects', 'tasks', 'overview_projects'].includes(x.key)))
+      expect(d.columns.filter((c) => c.available && (c.type === 'amount' || c.type === 'currency')), d.key).toEqual([]);
+    const refused = await lc.attempt(exportEndpoints.preview, { params: p, body: { dataset: 'projects', fields: ['name', 'budgetPlanned'], filters: {} } });
+    expect(refused.status).toBe(403);
+    const refusedJob = await lc.attempt(exportEndpoints.create, { params: p, body: { dataset: 'projects', format: 'csv', fields: ['name', 'budgetCurrency'], filters: {} } });
+    expect(refusedJob.status).toBe(403);
+    const refusedLedger = await lc.attempt(exportEndpoints.preview, { params: p, body: { dataset: 'finance_ledger_lines', fields: ['entry_id'], filters: {} } });
+    expect(refusedLedger.status).toBe(403);
+    const allColumns = projectsSet.columns.filter((c) => c.available).map((c) => c.key);
+    const preview = await lc.call(exportEndpoints.preview, { params: p, body: { dataset: 'projects', fields: allColumns, filters: {} } });
+    expect(preview.rows).toHaveLength(1);
+    expect(Object.keys(preview.rows[0]!).filter((k) => k.startsWith('budget'))).toEqual([]);
+    expect(JSON.stringify(preview)).not.toContain('4321');
+    // Control: with finance rights the same column carries the value.
+    const ownerPreview = await owner.call(exportEndpoints.preview, { params: p, body: { dataset: 'projects', fields: ['name', 'budgetPlanned'], filters: {} } });
+    expect(ownerPreview.rows[0]!.budgetPlanned).toBe('4321.00');
+
+    // Global search: finance records and budgets are never results or snippets.
+    for (const q of ['Quarterly platform statement', 'Alpha production budget', '4321', e.id, b.id]) {
+      const found = await lc.call(shellEndpoints.search, { params: p, query: { q } });
+      expect(found.results, q).toEqual([]);
+    }
+    // Control: the project itself is found once indexed (as any edit through the API does).
+    const detail = await owner.call(projectEndpoints.get, { params: { ...p, projectId: project.id } });
+    await owner.call(projectEndpoints.update, { params: { ...p, projectId: project.id }, body: { description: 'Lifestyle model project' } }, { ifMatch: detail.rowVersion });
+    const byProject = await lc.call(shellEndpoints.search, { params: p, query: { q: 'Model Alpha' } });
+    expect(byProject.results.map((r) => r.entityId)).toEqual([project.id]);
+    expect(JSON.stringify(byProject)).not.toMatch(/4321|720\.00|budget/i);
+
+    // Overview: the finance block is absent, not null-filled.
+    const ov = await lc.call(overviewEndpoints.get, { params: p, query: { period: 'custom', from: MARCH.periodStart, to: MARCH.periodEnd } });
+    expect('finance' in ov).toBe(false);
+    expect((await owner.call(overviewEndpoints.get, { params: p, query: { period: 'custom', from: MARCH.periodStart, to: MARCH.periodEnd } })).finance).toBeDefined();
   });
 
   it('project-scoped finance readers see only their projects, in lists and aggregates', async () => {
