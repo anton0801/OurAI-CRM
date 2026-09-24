@@ -1,6 +1,6 @@
 import { and, eq, inArray, max, sql } from 'drizzle-orm';
 import { hasAnywhere } from '@castlane/authorization';
-import { buckets, compareValues, groupRecords, hasValue, type MetricValue, type TimeGrain } from '@castlane/analytics';
+import { bucketLocator, buckets, compareValues, groupRecords, hasValue, type MetricValue, type TimeGrain } from '@castlane/analytics';
 import {
   budgets,
   compensationRuns,
@@ -201,7 +201,6 @@ const breakdownTable = async (ctx: Ctx, key: string, title: string, description:
 
 const stageAgingTable = async (ctx: Ctx, q: InsightQuery): Promise<AnalyticsTable | null> => {
   if (!metricOk(ctx, 'M03')) return null;
-  const c = contentItems;
   const rows = await dbOf(ctx).execute<{ stage: string; n: string; median_days: string | null; oldest_days: string | null; blocked: string }>(sql`
     SELECT c.stage, count(*)::text AS n,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM (${ctx.app.clock.now()}::timestamptz - coalesce(ev.entered, c.updated_at))) / 86400)::numeric(10,1)::text AS median_days,
@@ -211,7 +210,8 @@ const stageAgingTable = async (ctx: Ctx, q: InsightQuery): Promise<AnalyticsTabl
     LEFT JOIN LATERAL (SELECT max(e.occurred_at) AS entered FROM content_stage_events e WHERE e.workspace_id = c.workspace_id AND e.content_item_id = c.id AND e.to_stage = c.stage) ev ON true
     WHERE c.workspace_id = ${ctx.actor.workspaceId} AND c.deleted_at IS NULL AND c.archived_at IS NULL AND c.stage IN ('ready', 'production', 'review', 'changes_requested')
       ${(() => {
-        const s = scopePredicate(ctx, 'analytics.production.read', { projectId: c.projectId });
+        // The query aliases content_items as c: scope on the aliased column (a table-qualified column breaks scoped members).
+        const s = scopePredicate(ctx, 'analytics.production.read', { projectId: sql`c.project_id` as never });
         return s ? sql`AND ${s}` : sql``;
       })()}
       ${q.filters.projectIds?.length ? sql`AND c.project_id IN (${sql.join(q.filters.projectIds.map((x) => sql`${x}::uuid`), sql`, `)})` : sql``}
@@ -523,7 +523,8 @@ const followersChart = async (ctx: Ctx, q: InsightQuery, grain: TimeGrain): Prom
   const g = grainFor(d, grain)!;
   const rows = await d.load(ctx, { ...q, grain: g });
   const dirs = await projectDirections(ctx);
-  const perAccount = groupRecords(rows, ['account', 'period'], (r, dim) => dimensionValue(r, dim as DimKey, g, q.period.zone, dirs), (rs) => d.reduce(rs, q));
+  const locate = bucketLocator(q.period, g);
+  const perAccount = groupRecords(rows, ['account', 'period'], (r, dim) => dimensionValue(r, dim as DimKey, g, q.period.zone, dirs, locate), (rs) => d.reduce(rs, q));
   const latest = new Map<string, number>();
   for (const x of perAccount) if (x.dims.account && x.dims.period && hasValue(x.value)) latest.set(x.dims.account, Math.max(latest.get(x.dims.account) ?? 0, Number(x.value.value)));
   const top = [...latest.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k]) => k);

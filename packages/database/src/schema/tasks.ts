@@ -92,6 +92,14 @@ export const tasks = pgTable(
     index('tasks_list_idx').on(t.workspaceId, t.status, t.updatedAt, t.id),
     index('tasks_assignee_due_idx').on(t.workspaceId, t.assigneeMembershipId, t.dueAt),
     index('tasks_project_idx').on(t.workspaceId, t.projectId, t.status),
+    /** Default list order of open tasks (deadline first, no deadline last); see T170 load profile. */
+    index('tasks_open_due_idx')
+      .on(t.workspaceId, sql`coalesce(${t.dueAt}, 'infinity'::timestamptz)`, t.id)
+      .where(sql`deleted_at IS NULL AND archived_at IS NULL AND status IN ('draft', 'backlog', 'ready', 'in_progress', 'in_review')`),
+    /** Subtask counts and required-subtask checks of a page of tasks. */
+    index('tasks_parent_idx').on(t.workspaceId, t.parentTaskId).where(sql`parent_task_id IS NOT NULL`),
+    /** Tasks of a content item (content list/detail counters). */
+    index('tasks_content_item_idx').on(t.workspaceId, t.contentItemId).where(sql`content_item_id IS NOT NULL`),
     enumCheck('tasks_status_ck', 'status', TASK_STATUSES),
     enumCheck('tasks_priority_ck', 'priority', TASK_PRIORITIES),
     rawCheck('tasks_dates_ck', '"start_at" IS NULL OR "due_at" IS NULL OR "start_at" <= "due_at"'),

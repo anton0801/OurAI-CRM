@@ -18,7 +18,7 @@ import { dbOf } from '../../core/context';
 import { activePolicy } from '../catalog';
 import { filterSql, memo, type Ctx } from '../common';
 import { loadPeriodObservations, usablePeriods } from './accounts';
-import { loadPublished, qKey, type PubRec } from './production';
+import { loadPublished, periodKey, qKey, type PubRec } from './production';
 import { defineInsightMetric, type BaseRec, type InsightQuery } from './registry';
 import { inWindow, preferTotals, scopeFor } from './sources';
 
@@ -55,40 +55,101 @@ export interface PubCheckpointRec extends PubRec {
 
 const chunk = <T>(xs: T[], n: number) => Array.from({ length: Math.ceil(xs.length / n) }, (_, i) => xs.slice(i * n, i * n + n));
 
+interface PubObservationRow {
+  id: string;
+  pubId: string;
+  observedAt: Date;
+  enteredAt: Date;
+  quality: string;
+  revisionNo: number;
+  segment: string;
+  /** At least one known value (observations without values are never chosen). */
+  hasValue: boolean;
+}
+
+/**
+ * The period's published cohort and the totals-segment observations of those publications, loaded
+ * once per request and shared by every checkpoint (24 h / 7 d) and metric of a dashboard.
+ */
+const loadCohortObservations = (ctx: Ctx, q: InsightQuery, permission: string) =>
+  memo(ctx, `cohortObservations:${permission}:${periodKey(q)}`, async () => {
+    const cohort = await loadPublished(ctx, q, permission);
+    const db = dbOf(ctx);
+    const ws = ctx.actor.workspaceId;
+    const o = metricObservations;
+    const obsRows: PubObservationRow[] = [];
+    for (const ids of chunk(cohort.map((c) => c.id), 5000)) {
+      const rows = await db
+        .select({
+          id: o.id,
+          pubId: o.entityId,
+          observedAt: o.observedAt,
+          enteredAt: o.enteredAt,
+          quality: o.qualityState,
+          revisionNo: o.revisionNo,
+          segment: o.segment,
+          // Explicit qualification: drizzle renders selected columns unqualified, which would bind to
+          // the subquery's own table.
+          hasValue: sql<boolean>`EXISTS (SELECT 1 FROM metric_values mv WHERE mv.observation_id = "metric_observations"."id" AND mv.availability = 'known')`,
+        })
+        .from(o)
+        .where(
+          and(
+            eq(o.workspaceId, ws),
+            eq(o.entityType, 'publication'),
+            inArray(o.entityId, ids),
+            eq(o.canonical, true),
+            sql`${o.qualityState} IN ('unverified', 'reviewed')`,
+            inArray(o.segment, ['unknown', 'combined']),
+          ),
+        );
+      for (const r of rows) obsRows.push(r);
+    }
+    const byPub = new Map<string, PubObservationRow[]>();
+    for (const t of preferTotals(obsRows.map((r) => ({ ...r, entityKey: r.pubId })))) {
+      const list = byPub.get(t.pubId);
+      if (list) list.push(t);
+      else byPub.set(t.pubId, [t]);
+    }
+    return { cohort, byPub };
+  });
+
+/**
+ * Known values of observations, cached per request: each observation is read at most once, and
+ * concurrent callers (several checkpoints of one dashboard) wait for the same pending read.
+ */
+const loadObservationValues = async (ctx: Ctx, ids: string[]): Promise<Map<string, Record<string, string | null>>> => {
+  const cache = await memo(ctx, 'observationValues', async () => ({ values: new Map<string, Record<string, string | null>>(), pending: new Map<string, Promise<void>>() }));
+  const wanted = [...new Set(ids)];
+  const missing = wanted.filter((id) => !cache.values.has(id) && !cache.pending.has(id));
+  const db = dbOf(ctx);
+  for (const part of chunk(missing, 5000)) {
+    const load = (async () => {
+      const vs = await db
+        .select({ id: metricValues.observationId, key: metricValues.metricKey, value: metricValues.value })
+        .from(metricValues)
+        .where(and(eq(metricValues.workspaceId, ctx.actor.workspaceId), inArray(metricValues.observationId, part), eq(metricValues.availability, 'known')));
+      const byId = new Map<string, Record<string, string | null>>(part.map((id) => [id, {}]));
+      for (const v of vs) byId.get(v.id)![v.key] = v.value;
+      for (const [id, rec] of byId) cache.values.set(id, rec);
+    })();
+    for (const id of part) cache.pending.set(id, load);
+  }
+  await Promise.all([...new Set(wanted.map((id) => cache.pending.get(id)).filter((x): x is Promise<void> => !!x))]);
+  return cache.values;
+};
+
 /**
  * Publications published in the window with their canonical checkpoint observation: the on-time
  * observation closest to the expected time (ties → reviewed, latest revision), totals segment only.
  */
 export const loadCheckpointData = (ctx: Ctx, q: InsightQuery, permission = PERM) =>
-  memo(ctx, `checkpointData:${permission}:${qKey(q)}`, async (): Promise<PubCheckpointRec[]> => {
-    const cohort = await loadPublished(ctx, q, permission);
+  memo(ctx, `checkpointData:${permission}:${periodKey(q)}:${q.checkpointKey ?? 'pub_24h'}`, async (): Promise<PubCheckpointRec[]> => {
+    const { cohort, byPub } = await loadCohortObservations(ctx, q, permission);
     const policy = await activePolicy(ctx);
     const key = q.checkpointKey ?? 'pub_24h';
     const rule = policy.config.publication.find((r) => r.key === key) ?? { key, offsetHours: key === 'pub_7d' ? 168 : 24, toleranceHours: key === 'pub_7d' ? 12 : 2, requiredMetrics: [] };
-    const db = dbOf(ctx);
-    const ws = ctx.actor.workspaceId;
-    const o = metricObservations;
-    const obsRows: { id: string; pubId: string; observedAt: Date; enteredAt: Date; quality: string; revisionNo: number; segment: string }[] = [];
-    for (const ids of chunk(cohort.map((c) => c.id), 5000)) {
-      obsRows.push(
-        ...(await db
-          .select({ id: o.id, pubId: o.entityId, observedAt: o.observedAt, enteredAt: o.enteredAt, quality: o.qualityState, revisionNo: o.revisionNo, segment: o.segment })
-          .from(o)
-          .where(and(eq(o.workspaceId, ws), eq(o.entityType, 'publication'), inArray(o.entityId, ids), eq(o.canonical, true), sql`${o.qualityState} IN ('unverified', 'reviewed')`, inArray(o.segment, ['unknown', 'combined'])))),
-      );
-    }
-    const totals = preferTotals(obsRows.map((r) => ({ ...r, entityKey: r.pubId })));
-    const values = new Map<string, Record<string, string | null>>();
-    for (const ids of chunk(totals.map((t) => t.id), 5000)) {
-      const vs = await db
-        .select({ id: metricValues.observationId, key: metricValues.metricKey, value: metricValues.value })
-        .from(metricValues)
-        .where(and(eq(metricValues.workspaceId, ws), inArray(metricValues.observationId, ids), eq(metricValues.availability, 'known')));
-      for (const v of vs) values.set(v.id, { ...(values.get(v.id) ?? {}), [v.key]: v.value });
-    }
-    const byPub = new Map<string, typeof totals>();
-    for (const t of totals) byPub.set(t.pubId, [...(byPub.get(t.pubId) ?? []), t]);
-    return cohort.map((p) => {
+    const picks = cohort.map((p) => {
       const expectedAt = new Date(p.at!.getTime() + rule.offsetHours * 3_600_000);
       const tol = rule.toleranceHours * 3_600_000;
       const window = { start: new Date(expectedAt.getTime() - tol), end: new Date(expectedAt.getTime() + tol) };
@@ -98,16 +159,21 @@ export const loadCheckpointData = (ctx: Ctx, q: InsightQuery, permission = PERM)
         enteredAt: x.enteredAt,
         reviewed: x.quality === 'reviewed',
         revisionNo: x.revisionNo,
-        value: Object.keys(values.get(x.id) ?? {}).length ? '1' : null,
+        value: x.hasValue ? '1' : null,
       }));
-      const pick = pickCheckpointObservation(candidates, expectedAt, window);
-      return {
-        ...p,
-        expectedAt,
-        obs: pick.chosen && pick.timing ? { id: pick.chosen.id, observedAt: pick.chosen.observedAt, timing: pick.timing, values: values.get(pick.chosen.id) ?? {} } : null,
-        outOfWindow: pick.outOfWindow.length,
-      };
+      return { p, expectedAt, pick: pickCheckpointObservation(candidates, expectedAt, window) };
     });
+    // Values are read only for the chosen observation of each publication.
+    const values = await loadObservationValues(
+      ctx,
+      picks.flatMap((x) => (x.pick.chosen ? [x.pick.chosen.id] : [])),
+    );
+    return picks.map(({ p, expectedAt, pick }) => ({
+      ...p,
+      expectedAt,
+      obs: pick.chosen && pick.timing ? { id: pick.chosen.id, observedAt: pick.chosen.observedAt, timing: pick.timing, values: values.get(pick.chosen.id) ?? {} } : null,
+      outOfWindow: pick.outOfWindow.length,
+    }));
   });
 
 const v = (r: PubCheckpointRec, key: string) => r.obs?.values[`publication.${key}`] ?? null;

@@ -125,6 +125,12 @@ export const publications = pgTable(
     index('publications_account_schedule_idx').on(t.workspaceId, t.accountId, t.scheduledAt),
     index('publications_account_published_idx').on(t.accountId, t.actualPublishedAt),
     index('publications_schedule_idx').on(t.workspaceId, t.status, t.scheduledAt),
+    /** Default list order (actual, else planned, else creation time); see T170 load profile. */
+    index('publications_when_idx').on(t.workspaceId, sql`coalesce(${t.actualPublishedAt}, ${t.scheduledAt}, ${t.createdAt})`, t.id),
+    /** Placements of a content item (content list/detail counters, results). */
+    index('publications_content_item_idx').on(t.workspaceId, t.contentItemId),
+    /** Next scheduled placement per project (project list/detail). */
+    index('publications_project_schedule_idx').on(t.workspaceId, t.projectId, t.status, t.scheduledAt),
     enumCheck('publications_status_ck', 'status', PUBLICATION_STATUSES),
   ],
 );

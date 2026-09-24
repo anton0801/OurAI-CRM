@@ -20,13 +20,23 @@ export interface DatabaseHandle {
   close(): Promise<void>;
 }
 
-export const createDatabase = (url: string, opts: { max?: number; applicationName?: string } = {}): DatabaseHandle => {
+/** Default wait for a free pool connection before a query fails (DATABASE_POOL_ACQUIRE_TIMEOUT_MS). */
+const acquireTimeoutMs = () => Number(process.env.DATABASE_POOL_ACQUIRE_TIMEOUT_MS ?? 15_000);
+
+export const createDatabase = (
+  url: string,
+  opts: { max?: number; applicationName?: string; acquireTimeoutMs?: number } = {},
+): DatabaseHandle => {
   const pool = new pg.Pool({
     connectionString: url,
     max: opts.max ?? 10,
     application_name: opts.applicationName ?? 'castlane',
     idleTimeoutMillis: 30_000,
     statement_timeout: 30_000,
+    // Never wait forever for a connection: if every connection is held (for example by
+    // transactions that themselves wait for the pool), the waiting request fails, its
+    // transaction rolls back and the pool recovers instead of hanging the process.
+    connectionTimeoutMillis: opts.acquireTimeoutMs ?? acquireTimeoutMs(),
   });
   // An idle client can be terminated by the server (restart, failover, admin command). Without a
   // listener the 'error' event would crash the process; the pool discards the client and the next

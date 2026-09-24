@@ -13,6 +13,8 @@ import { asOfOf, hoursBetween, inWindow, scopeFor, toDate } from './sources';
 
 const PERM = 'analytics.production.read';
 export const qKey = (q: InsightQuery) => JSON.stringify([q.period.start, q.period.end, q.asOf, q.filters, q.checkpointKey ?? null]);
+/** Window, as-of and filters only: sources that do not depend on the checkpoint share one load per request. */
+export const periodKey = (q: InsightQuery) => JSON.stringify([q.period.start, q.period.end, q.asOf, q.filters]);
 
 // ——— Publications ———
 
@@ -21,7 +23,7 @@ export interface PubRec extends BaseRec {
 }
 
 export const loadPublished = (ctx: Ctx, q: InsightQuery, permission = PERM) =>
-  memo(ctx, `published:${permission}:${qKey(q)}`, async (): Promise<PubRec[]> => {
+  memo(ctx, `published:${permission}:${periodKey(q)}`, async (): Promise<PubRec[]> => {
     const p = publications;
     const a = socialAccounts;
     const c = contentItems;

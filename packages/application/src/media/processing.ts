@@ -308,4 +308,4 @@ defineJob('media.purgeDeletedVersions', 'media', async ({ app }) => {
   return { purged };
 });
 
-defineSchedule({ name: 'media.purgeDeletedVersions', everySeconds: 6 * 3600, jobType: 'media.purgeDeletedVersions' });
+defineSchedule({ name: 'media.purgeDeletedVersions', everySeconds: 6 * 3600, jobType: 'media.purgeDeletedVersions', pool: 'media' });

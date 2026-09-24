@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, isNull, lte, or, sql, type SQL } from 'drizzle-orm';
-import type { PgColumn } from 'drizzle-orm/pg-core';
+import { PgTransaction, type PgColumn } from 'drizzle-orm/pg-core';
 import {
   can,
   hasAnywhere,
@@ -24,6 +24,20 @@ import { AppError, forbidden, notFound } from '@castlane/domain';
 import type { QueryContext } from './context';
 
 /**
+ * Run independent reads concurrently on the pool, one after another inside a transaction: a single
+ * connection never runs overlapping queries, and a transaction never waits for a second pool
+ * connection (that would exhaust the pool under concurrent writes).
+ */
+const concurrently = async <T extends readonly (() => Promise<unknown>)[]>(db: DbOrTx, fns: T): Promise<{ -readonly [K in keyof T]: Awaited<ReturnType<T[K]>> }> => {
+  if (db instanceof PgTransaction) {
+    const out: unknown[] = [];
+    for (const f of fns) out.push(await f());
+    return out as never;
+  }
+  return (await Promise.all(fns.map((f) => f()))) as never;
+};
+
+/**
  * Build a fresh access snapshot for (workspace, user). Called on every request so a revoked
  * role or membership takes effect on the next API call.
  */
@@ -42,67 +56,74 @@ export const loadAccessSnapshot = async (
 
   const activeInterval = (from: PgColumn, to: PgColumn) => and(lte(from, at), or(isNull(to), gt(to, at)));
 
-  const [grantRows, denyRows, projectRows, accountRows, ofmRows, structure, accountsMap] = await Promise.all([
-    db
-      .select({
-        roleId: roles.id,
-        roleKey: roles.key,
-        permissions: roles.permissions,
-        scopeType: roleAssignments.scopeType,
-        scopeId: roleAssignments.scopeId,
-      })
-      .from(roleAssignments)
-      .innerJoin(roles, and(eq(roles.id, roleAssignments.roleId), eq(roles.workspaceId, roleAssignments.workspaceId)))
-      .where(
-        and(
-          eq(roleAssignments.workspaceId, workspaceId),
-          eq(roleAssignments.membershipId, m.id),
-          isNull(roleAssignments.revokedAt),
-          isNull(roles.archivedAt),
-          activeInterval(roleAssignments.validFrom, roleAssignments.validTo),
+  const [grantRows, denyRows, projectRows, accountRows, ofmRows, structure, accountsMap] = await concurrently(db, [
+    () =>
+      db
+        .select({
+          roleId: roles.id,
+          roleKey: roles.key,
+          permissions: roles.permissions,
+          scopeType: roleAssignments.scopeType,
+          scopeId: roleAssignments.scopeId,
+        })
+        .from(roleAssignments)
+        .innerJoin(roles, and(eq(roles.id, roleAssignments.roleId), eq(roles.workspaceId, roleAssignments.workspaceId)))
+        .where(
+          and(
+            eq(roleAssignments.workspaceId, workspaceId),
+            eq(roleAssignments.membershipId, m.id),
+            isNull(roleAssignments.revokedAt),
+            isNull(roles.archivedAt),
+            activeInterval(roleAssignments.validFrom, roleAssignments.validTo),
+          ),
         ),
-      ),
-    db
-      .select({ permission: accessDenies.permission, objectType: accessDenies.objectType, objectId: accessDenies.objectId })
-      .from(accessDenies)
-      .where(and(eq(accessDenies.workspaceId, workspaceId), eq(accessDenies.membershipId, m.id), isNull(accessDenies.revokedAt))),
-    db
-      .select({ projectId: projectMemberships.projectId })
-      .from(projectMemberships)
-      .where(
-        and(
-          eq(projectMemberships.workspaceId, workspaceId),
-          eq(projectMemberships.membershipId, m.id),
-          activeInterval(projectMemberships.validFrom, projectMemberships.validTo),
+    () =>
+      db
+        .select({ permission: accessDenies.permission, objectType: accessDenies.objectType, objectId: accessDenies.objectId })
+        .from(accessDenies)
+        .where(and(eq(accessDenies.workspaceId, workspaceId), eq(accessDenies.membershipId, m.id), isNull(accessDenies.revokedAt))),
+    () =>
+      db
+        .select({ projectId: projectMemberships.projectId })
+        .from(projectMemberships)
+        .where(
+          and(
+            eq(projectMemberships.workspaceId, workspaceId),
+            eq(projectMemberships.membershipId, m.id),
+            activeInterval(projectMemberships.validFrom, projectMemberships.validTo),
+          ),
         ),
-      ),
-    db
-      .select({ accountId: accountAssignments.accountId })
-      .from(accountAssignments)
-      .where(
-        and(
-          eq(accountAssignments.workspaceId, workspaceId),
-          eq(accountAssignments.membershipId, m.id),
-          activeInterval(accountAssignments.validFrom, accountAssignments.validTo),
+    () =>
+      db
+        .select({ accountId: accountAssignments.accountId })
+        .from(accountAssignments)
+        .where(
+          and(
+            eq(accountAssignments.workspaceId, workspaceId),
+            eq(accountAssignments.membershipId, m.id),
+            activeInterval(accountAssignments.validFrom, accountAssignments.validTo),
+          ),
         ),
-      ),
-    db
-      .select({ accountId: ofmAssignments.accountId })
-      .from(ofmAssignments)
-      .where(
-        and(
-          eq(ofmAssignments.workspaceId, workspaceId),
-          eq(ofmAssignments.membershipId, m.id),
-          isNull(ofmAssignments.endedAt),
-          activeInterval(ofmAssignments.validFrom, ofmAssignments.validTo),
+    () =>
+      db
+        .select({ accountId: ofmAssignments.accountId })
+        .from(ofmAssignments)
+        .where(
+          and(
+            eq(ofmAssignments.workspaceId, workspaceId),
+            eq(ofmAssignments.membershipId, m.id),
+            isNull(ofmAssignments.endedAt),
+            activeInterval(ofmAssignments.validFrom, ofmAssignments.validTo),
+          ),
         ),
-      ),
-    db.select({ id: projects.id, directionId: projects.directionId }).from(projects).where(eq(projects.workspaceId, workspaceId)),
-    db
-      .select({ id: socialAccounts.id, projectId: socialAccounts.projectId })
-      .from(socialAccounts)
-      .where(eq(socialAccounts.workspaceId, workspaceId)),
-  ]);
+    () =>
+      db.select({ id: projects.id, directionId: projects.directionId }).from(projects).where(eq(projects.workspaceId, workspaceId)),
+    () =>
+      db
+        .select({ id: socialAccounts.id, projectId: socialAccounts.projectId })
+        .from(socialAccounts)
+        .where(eq(socialAccounts.workspaceId, workspaceId)),
+  ] as const);
 
   const grants = grantRows.map((g) => ({
     roleId: g.roleId,

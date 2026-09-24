@@ -15,6 +15,13 @@
       "when": 1790241352434,
       "tag": "0001_mail_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790266624420,
+      "tag": "0002_perf_indexes",
+      "breakpoints": true
     }
   ]
 }

@@ -236,6 +236,10 @@ describe('semantic layer: comparison, scope and finance', () => {
     const drill = await lead.client.call(A.drillDown, { params: f.p, query: { metric: 'M01', preset: 'custom', from: isoDay(10), to: isoDay(1) } });
     expect(drill).toMatchObject({ total: 1, hidden: 0, truncated: false });
     expect(drill.items[0]!.entityType).toBe('publication');
+    // The production dashboard opens for a scoped member: the stage-aging table applies the scope to
+    // its aliased content table (found by the T170 load profile, where it failed for every project lead).
+    const production = await lead.client.call(A.dashboard, { params: { ...f.p, tab: 'production' }, query: { preset: 'last_30_days' } });
+    expect(production.tables.map((t) => t.key)).toContain('stage_aging');
     // Finance and OFM dashboards are not available to a project lead.
     expect((await lead.client.attempt(A.dashboard, { params: { ...f.p, tab: 'finance' }, query: {} })).status).toBe(403);
     expect((await lead.client.attempt(A.query, { params: f.p, body: { metrics: ['M33'], period: { preset: 'last_30_days' }, compare: false, filters: {} } })).status).toBe(403);

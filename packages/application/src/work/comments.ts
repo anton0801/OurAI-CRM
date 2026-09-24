@@ -175,7 +175,7 @@ const validateMentions = async (ctx: CommandContext, def: CommentParentDefinitio
   const unique = [...new Set(ids)];
   const denied: string[] = [];
   for (const m of unique) {
-    const r = await memberCan(ctx.app.db, ctx.actor.workspaceId, m, def.readPermission, scope, ctx.app.clock.now());
+    const r = await memberCan(ctx.tx, ctx.actor.workspaceId, m, def.readPermission, scope, ctx.app.clock.now());
     if (!r.ok) denied.push(r.name ?? 'A member');
   }
   if (denied.length) throw fieldFail('mentions', 'NO_ACCESS', `${denied.join(', ')} cannot see this record and cannot be mentioned.`);
@@ -195,7 +195,7 @@ const notifyComment = async (ctx: CommandContext, c: CommentRow, scope: CommentP
     await notify(ctx.tx, { ...base, recipientMembershipIds: [replyTo], eventType: 'comment.reply', eventKey: `comment.reply:${c.id}`, kind: 'general', title: `${ctx.actor.displayName} replied to your comment${where}` });
   const watchers = (scope.watcherMembershipIds ?? []).filter((w): w is string => !!w && !mentions.includes(w) && w !== replyTo);
   const readable: string[] = [];
-  for (const w of new Set(watchers)) if ((await memberCan(ctx.app.db, ctx.actor.workspaceId, w, parentDef(c.parentType).readPermission, scope, at)).ok) readable.push(w);
+  for (const w of new Set(watchers)) if ((await memberCan(ctx.tx, ctx.actor.workspaceId, w, parentDef(c.parentType).readPermission, scope, at)).ok) readable.push(w);
   if (readable.length)
     await notify(ctx.tx, { ...base, recipientMembershipIds: readable, eventType: 'comment.created', eventKey: `comment.new:${c.id}`, kind: 'general', title: `New comment${where}` });
 };

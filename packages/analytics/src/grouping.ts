@@ -23,6 +23,31 @@ export const bucketKeyOf = (at: Date, grain: TimeGrain, zone: string): string =>
     .toISODate()!;
 
 /**
+ * Bucket keys for many instants of one period: a binary search over the period's buckets (exactly
+ * the keys of `bucketKeyOf`), with the calendar computation only for instants outside the period.
+ * Grouping tens of thousands of records by period no longer builds a calendar date per record.
+ */
+export const bucketLocator = (period: Period, grain: TimeGrain): ((at: Date) => string) => {
+  const bs = buckets(period, grain);
+  const starts = bs.map((b) => b.start.getTime());
+  const ends = bs.map((b) => b.end.getTime());
+  return (at: Date) => {
+    const t = at.getTime();
+    let lo = 0;
+    let hi = starts.length - 1;
+    let found = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (starts[mid]! <= t) {
+        found = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    return found >= 0 && t < ends[found]! ? bs[found]!.key : bucketKeyOf(at, grain, period.zone);
+  };
+};
+
+/**
  * Group records by the given dimensions and reduce each group to one metric value. `dimOf`
  * returns the dimension value of a record (null = none); a record may belong to several values of
  * a multi-valued dimension (tags) by returning an array.
