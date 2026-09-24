@@ -52,7 +52,13 @@ export const MyShiftsSection = () => {
   const d = q.data;
   const active = useApiQuery(E.getShift, { params: { workspaceId: workspace.id, shiftId: d?.active?.id ?? '' } }, { enabled: !!d?.active, refetchInterval: 60_000 });
   return (
-    <Panel title="My Shifts" actions={<Link className="text-[13px] font-medium text-primary hover:underline" href={wsPath('/ofm/shifts?view=list')}>Open Schedule</Link>}>
+    // Rendered inside the My Work section panel (title "My Shifts" comes from the slot).
+    <div className="flex flex-col gap-3 p-4">
+      <div className="flex justify-end">
+        <Link className="text-[13px] font-medium text-primary hover:underline" href={wsPath('/ofm/shifts?view=list')}>
+          Open Schedule
+        </Link>
+      </div>
       <QueryState query={q}>
         {d ? (
           d.active || d.upcoming.length || d.reportsPending.length || d.handoversToAcknowledge.length || d.swapRequests.length ? (
@@ -107,7 +113,7 @@ export const MyShiftsSection = () => {
         ) : null}
       </QueryState>
       {ack ? <AcknowledgeHandoverDialog handoverId={ack} onClose={() => setAck(null)} /> : null}
-    </Panel>
+    </div>
   );
 };
 

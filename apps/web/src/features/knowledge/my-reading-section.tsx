@@ -15,7 +15,7 @@ export const MyReadingSection = () => {
   return (
     <QueryState query={q}>
       {q.items.length === 0 ? (
-        <EmptyState icon={<Books size={24} />} title="No required reading" description="Articles you are asked to read appear here until you acknowledge them." />
+        <EmptyState className="border-0" icon={<Books size={24} />} title="No required reading" description="Articles you are asked to read appear here until you acknowledge them." />
       ) : (
         <div className="flex flex-col gap-3">
           <ul className="flex flex-col divide-y divide-line rounded-[12px] border border-line bg-surface">

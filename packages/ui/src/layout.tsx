@@ -115,7 +115,12 @@ export const KpiStrip = ({ items }: { items: Kpi[] }) => (
       const inner = (
         <>
           <span className="text-[12px] font-[550] leading-[18px] text-fg-2">{k.label}</span>
-          <span className="mt-1 font-mono text-[24px] font-semibold leading-8 tabular-nums text-fg md:text-[28px] md:leading-9">{k.value}</span>
+          {typeof k.value === 'string' && !/\d/.test(k.value) ? (
+            // Availability states ("Not applicable", "No data recorded", "—") are words, not numbers.
+            <span className="mt-1 text-[16px] font-[550] leading-8 text-fg-2 md:leading-9">{k.value}</span>
+          ) : (
+            <span className="mt-1 font-mono text-[24px] font-semibold leading-8 tabular-nums text-fg md:text-[28px] md:leading-9">{k.value}</span>
+          )}
           {k.delta && k.delta.tone !== 'none' ? (
             <span className={cn('text-[12px] leading-[18px]', k.delta.tone === 'up' ? 'text-primary' : k.delta.tone === 'down' ? 'text-danger' : 'text-fg-2')}>
               {k.delta.text}
