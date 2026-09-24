@@ -256,9 +256,9 @@ const OverviewTotals = ({ data, basis, onBasis, onDrafts }: { data: FinanceOverv
           />
           <KpiStrip
             items={[
-              { label: 'Receivables', value: <MoneyList values={data.receivables} empty="None" />, hint: 'Posted, not yet received' },
-              { label: 'Payables', value: <MoneyList values={data.payables} empty="None" />, hint: 'Posted, not yet paid' },
-              { label: 'Outstanding Compensation', value: <MoneyList values={data.outstandingCompensation} empty="None" />, href: wsPath('/finance/compensation/runs?state=approved,partially_paid') },
+              { label: 'Receivables', value: data.receivables?.length ? <MoneyList values={data.receivables} /> : 'None', hint: 'Posted, not yet received' },
+              { label: 'Payables', value: data.payables?.length ? <MoneyList values={data.payables} /> : 'None', hint: 'Posted, not yet paid' },
+              { label: 'Outstanding Compensation', value: data.outstandingCompensation?.length ? <MoneyList values={data.outstandingCompensation} /> : 'None', href: wsPath('/finance/compensation/runs?state=approved,partially_paid') },
               {
                 label: 'Unallocated Costs',
                 value: <Money value={data.unallocatedCosts} />,
