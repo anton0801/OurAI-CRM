@@ -13,7 +13,7 @@ import { TaskList } from './task-list';
 type Keys = 'tab' | 'open' | 'create';
 
 /**
- * S27 Tasks: table / board of every task in the member's scope, recurring rules, and the task drawer
+ * S27 Tasks: table / board / timeline of every task in the member's scope, recurring rules, and the task drawer
  * (`?open=<id>`, deep-linkable) and create drawer (`?create=1`, used by Quick Create).
  */
 export const TasksScreen = () => {

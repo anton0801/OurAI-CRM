@@ -34,18 +34,13 @@ import { useUrlState } from '@/lib/url-state';
 import { useWorkspace, useWsPath } from '@/lib/workspace-context';
 import { reportError, useRecentAuth } from '@/features/team/recent-auth';
 import { SecurityTab } from './security-settings';
+import { timeZoneList } from '@/lib/timezones';
 
 const TABS = ['profile', 'notifications', 'security', 'data'] as const;
 const WORKSPACE_TZ = '__workspace';
 const AVATAR_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
 
-const zones = (): string[] => {
-  try {
-    return (Intl as unknown as { supportedValuesOf(k: string): string[] }).supportedValuesOf('timeZone');
-  } catch {
-    return ['UTC'];
-  }
-};
+const zones = timeZoneList;
 
 /** Apply the theme without a reload (same mechanism as the shell: data-theme + stored preference). */
 export const applyTheme = (t: 'system' | 'light' | 'dark') => {

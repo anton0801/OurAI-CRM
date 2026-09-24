@@ -4,6 +4,7 @@ import { MultiSelect, Select } from '@castlane/ui';
 import { useApiQuery } from '@/lib/hooks';
 import { label } from '@/lib/labels';
 import { useWorkspace } from '@/lib/workspace-context';
+import { timeZoneList } from '@/lib/timezones';
 
 type Common = { id?: string; 'aria-describedby'?: string; 'aria-invalid'?: boolean; 'aria-label'?: string; disabled?: boolean; placeholder?: string; clearable?: boolean };
 
@@ -75,13 +76,7 @@ export const OfmAccountMultiSelect = ({
 export const projectOfAccount = (models: OfmProfileRow[] | undefined, accountId: string | null | undefined) =>
   accountId ? (models ?? []).find((m) => m.accounts.some((a) => a.id === accountId))?.projectId ?? null : null;
 
-const zoneList = (): string[] => {
-  try {
-    return (Intl as unknown as { supportedValuesOf(k: string): string[] }).supportedValuesOf('timeZone');
-  } catch {
-    return [];
-  }
-};
+const zoneList = timeZoneList;
 
 /** IANA time zone picker (the shift's zone drives DST handling and local-time display). */
 export const TimeZoneSelect = ({ value, onChange, ...rest }: Common & { value: string; onChange: (v: string) => void }) => {

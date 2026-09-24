@@ -1,5 +1,5 @@
 'use client';
-import { ArrowsLeftRight, BookmarkSimple, CheckSquare, DotsThree, Kanban as KanbanIcon, Table, Trash } from '@phosphor-icons/react';
+import { ArrowsLeftRight, BookmarkSimple, ChartBarHorizontal, CheckSquare, DotsThree, Kanban as KanbanIcon, Table, Trash } from '@phosphor-icons/react';
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
 import { peopleEndpoints, taskEndpoints, type TaskListQuery, type TaskRow } from '@castlane/api-contracts';
@@ -38,6 +38,7 @@ import { useCan, useWorkspace, useWsPath } from '@/lib/workspace-context';
 import { BulkDialog, type BulkSelection } from './bulk-dialog';
 import { DueText, Person, PriorityBadge, TaskStatusBadge, formatMinutes } from './format';
 import { TASK_INVALIDATE } from './task-actions';
+import { TaskTimeline } from './task-timeline';
 
 export type TaskFilterKey = 'q' | 'status' | 'priority' | 'projectId' | 'assignee' | 'reviewer' | 'following' | 'overdue' | 'blocked' | 'tag' | 'closed' | 'sort' | 'dir' | 'view' | 'group' | 'open' | 'create';
 const FILTER_KEYS: TaskFilterKey[] = ['q', 'status', 'priority', 'projectId', 'assignee', 'reviewer', 'following', 'overdue', 'blocked', 'tag', 'closed'];
@@ -170,7 +171,7 @@ export interface TaskListProps {
   onCreate?: () => void;
 }
 
-/** Tasks table / board with URL filters, Select Visible / Select All Matching and bulk actions (S27). */
+/** Tasks table / board / timeline with URL filters, Select Visible / Select All Matching and bulk actions (S27). */
 export const TaskList = ({ fixedProjectId, onOpen, onCreate }: TaskListProps) => {
   const { workspace, user } = useWorkspace();
   const can = useCan();
@@ -181,6 +182,7 @@ export const TaskList = ({ fixedProjectId, onOpen, onCreate }: TaskListProps) =>
   const [selection, setSelection] = useState<SelectionState>({ ids: new Set(), allMatching: false });
   const [bulkOpen, setBulkOpen] = useState(false);
   const board = state.view === 'board';
+  const timeline = state.view === 'timeline';
   const filter: Omit<TaskListQuery, 'cursor' | 'pageSize' | 'sort' | 'direction'> = {
     q: q.length >= 2 ? q : undefined,
     status: list('status') as TaskListQuery['status'],
@@ -194,7 +196,7 @@ export const TaskList = ({ fixedProjectId, onOpen, onCreate }: TaskListProps) =>
     tag: state.tag || undefined,
     includeClosed: state.closed === '1' || board ? true : undefined,
   };
-  const query = { ...filter, sort: (state.sort ?? 'dueAt') as TaskListQuery['sort'], direction: (state.dir ?? 'asc') as 'asc' | 'desc', pageSize: board ? 200 : 50 };
+  const query = { ...filter, sort: (state.sort ?? 'dueAt') as TaskListQuery['sort'], direction: (state.dir ?? 'asc') as 'asc' | 'desc', pageSize: board || timeline ? 200 : 50 };
   const data = useApiInfinite(taskEndpoints.list, { params: { workspaceId: workspace.id }, query });
   const count = useApiQuery(taskEndpoints.count, { params: { workspaceId: workspace.id }, query: filter }, { enabled: selection.allMatching || selection.ids.size > 0 });
   const filtered = FILTER_KEYS.some((k) => k !== 'closed' && state[k]) || (!!q && q.length >= 2);
@@ -320,7 +322,7 @@ export const TaskList = ({ fixedProjectId, onOpen, onCreate }: TaskListProps) =>
         <Switch label="Following" checked={state.following === '1'} onCheckedChange={(v) => set({ following: v ? '1' : null })} />
         {!board ? <Switch label="Show closed" checked={state.closed === '1'} onCheckedChange={(v) => set({ closed: v ? '1' : null })} /> : null}
         <div className="ml-auto flex flex-wrap items-center gap-1">
-          {!board ? (
+          {!board && !timeline ? (
             <div className="w-[150px]">
               <Select
                 aria-label="Group by"
@@ -338,11 +340,14 @@ export const TaskList = ({ fixedProjectId, onOpen, onCreate }: TaskListProps) =>
           ) : null}
           <SavedViews current={Object.fromEntries(Object.entries(state).filter(([k, v]) => v && !['open', 'create'].includes(k))) as Record<string, string>} apply={(f) => set({ ...Object.fromEntries(FILTER_KEYS.map((k) => [k, null])), ...f } as never)} />
           <div role="group" aria-label="Layout" className="flex items-center gap-1">
-            <Button size="sm" variant={!board ? 'secondary' : 'ghost'} icon={<Table size={14} />} aria-pressed={!board} onClick={() => set({ view: 'table' })}>
+            <Button size="sm" variant={!board && !timeline ? 'secondary' : 'ghost'} icon={<Table size={14} />} aria-pressed={!board && !timeline} onClick={() => set({ view: 'table' })}>
               Table
             </Button>
             <Button size="sm" variant={board ? 'secondary' : 'ghost'} icon={<KanbanIcon size={14} />} aria-pressed={board} onClick={() => set({ view: 'board' })}>
               Board
+            </Button>
+            <Button size="sm" variant={timeline ? 'secondary' : 'ghost'} icon={<ChartBarHorizontal size={14} />} aria-pressed={timeline} onClick={() => set({ view: 'timeline' })}>
+              Timeline
             </Button>
           </div>
         </div>
@@ -367,6 +372,17 @@ export const TaskList = ({ fixedProjectId, onOpen, onCreate }: TaskListProps) =>
               action={can('tasks.create') && onCreate ? <Button variant="primary" onClick={onCreate}>New Task</Button> : undefined}
             />
           )
+        ) : timeline ? (
+          <TaskTimeline
+            items={data.items}
+            tz={user.timezone}
+            canEdit={can('tasks.edit')}
+            showProject={!fixedProjectId}
+            onOpen={onOpen}
+            hasMore={!!data.hasNextPage}
+            loadingMore={data.isFetchingNextPage}
+            onLoadMore={() => void data.fetchNextPage()}
+          />
         ) : board ? (
           <Kanban
             label="Task board"

@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import { reminderEndpoints, taskEndpoints, type TaskDetail } from '@castlane/api-contracts';
+import { reminderEndpoints, taskEndpoints, type DueInputBody, type TaskDetail } from '@castlane/api-contracts';
 import { isApiError } from '@castlane/api-client';
 import { LIMITS } from '@castlane/domain';
 import { Banner, Button, Checkbox, ConfirmDialog, DateInput, DateTimeInput, Dialog, Field, RadioGroup, Select, Textarea, formatDateTime, toast } from '@castlane/ui';
@@ -238,8 +238,23 @@ export const BlockDialog = ({ open, onOpenChange, task }: { open: boolean; onOpe
   );
 };
 
-/** Reschedule with a computed preview of dependent tasks; nothing moves before Apply. */
-export const RescheduleDialog = ({ open, onOpenChange, task }: { open: boolean; onOpenChange: (o: boolean) => void; task: TaskDetail }) => {
+type DueBody = DueInputBody;
+
+/**
+ * Reschedule with a computed preview of dependent tasks; nothing moves before Apply. The Timeline
+ * passes `proposedDueDate` (a bar moved to a new day): the preview then runs immediately.
+ */
+export const RescheduleDialog = ({
+  open,
+  onOpenChange,
+  task,
+  proposedDueDate,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  task: Pick<TaskDetail, 'id' | 'title' | 'due' | 'rowVersion'>;
+  proposedDueDate?: string;
+}) => {
   const { workspace, user } = useWorkspace();
   const [mode, setMode] = useState<'none' | 'date' | 'datetime'>('date');
   const [date, setDate] = useState('');
@@ -252,17 +267,43 @@ export const RescheduleDialog = ({ open, onOpenChange, task }: { open: boolean; 
   const preview = useApiMutation(taskEndpoints.reschedulePreview, { silentErrors: true });
   const apply = useApiMutation(taskEndpoints.reschedule, { invalidate: TASK_INVALIDATE, successMessage: 'New dates applied' });
   const [error, setError] = useState<string | null>(null);
+  const runPreview = async (body: { due: DueBody | null; propagate: boolean }) => {
+    setError(null);
+    try {
+      const r = await preview.run({ params: { workspaceId: workspace.id, taskId: task.id }, body });
+      setSelected(new Set(r.changes.filter((c) => c.task.id !== task.id && c.canApply).map((c) => c.task.id)));
+    } catch (e) {
+      setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The preview failed.');
+    }
+  };
   useEffect(() => {
     if (!open) return;
-    setMode(!task.due ? 'none' : task.due.date ? 'date' : 'datetime');
-    setDate(task.due?.date ?? '');
-    setDt(task.due && !task.due.date ? toLocalInput(task.due.at, task.due.timezone ?? user.timezone) : '');
-    setTz(task.due?.timezone ?? user.timezone);
+    const zone = task.due?.timezone ?? user.timezone;
+    setTz(zone);
     setReason('');
     setError(null);
+    setPropagate(true);
     preview.reset();
+    if (proposedDueDate && task.due && !task.due.date) {
+      // Keep the time of day, move the calendar day.
+      const time = toLocalInput(task.due.at, zone).slice(11);
+      const local = `${proposedDueDate}T${time}`;
+      setMode('datetime');
+      setDate('');
+      setDt(local);
+      void runPreview({ due: { kind: 'datetime', at: fromLocalInput(local, zone)!, timezone: zone }, propagate: true });
+    } else if (proposedDueDate) {
+      setMode('date');
+      setDate(proposedDueDate);
+      setDt('');
+      void runPreview({ due: { kind: 'date', date: proposedDueDate, timezone: zone }, propagate: true });
+    } else {
+      setMode(!task.due ? 'none' : task.due.date ? 'date' : 'datetime');
+      setDate(task.due?.date ?? '');
+      setDt(task.due && !task.due.date ? toLocalInput(task.due.at, zone) : '');
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  }, [open, proposedDueDate]);
   const due = mode === 'none' ? null : mode === 'date' ? (date ? { kind: 'date' as const, date, timezone: tz } : undefined) : dt ? { kind: 'datetime' as const, at: fromLocalInput(dt, tz)!, timezone: tz } : undefined;
   const changes = preview.data?.changes ?? [];
   return (
@@ -270,7 +311,7 @@ export const RescheduleDialog = ({ open, onOpenChange, task }: { open: boolean; 
       open={open}
       onOpenChange={onOpenChange}
       size="wide"
-      title="Reschedule"
+      title={proposedDueDate ? `Move “${task.title}”` : 'Reschedule'}
       description="Preview how dependent tasks move. Tasks you cannot edit are shown but never moved silently."
       footer={
         <>
@@ -278,15 +319,7 @@ export const RescheduleDialog = ({ open, onOpenChange, task }: { open: boolean; 
           <Button
             loading={preview.isPending}
             disabled={due === undefined}
-            onClick={async () => {
-              setError(null);
-              try {
-                const r = await preview.run({ params: { workspaceId: workspace.id, taskId: task.id }, body: { due, propagate } });
-                setSelected(new Set(r.changes.filter((c) => c.task.id !== task.id && c.canApply).map((c) => c.task.id)));
-              } catch (e) {
-                setError(isApiError(e) ? (e.fieldErrors[0]?.message ?? e.message) : 'The preview failed.');
-              }
-            }}
+            onClick={() => void runPreview({ due: due ?? null, propagate })}
           >
             Preview
           </Button>

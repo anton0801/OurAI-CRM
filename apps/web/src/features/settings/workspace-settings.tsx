@@ -40,6 +40,7 @@ import { useUnsavedChangesGuard } from '@/lib/unsaved';
 import { useCan, useWorkspace, useWsPath } from '@/lib/workspace-context';
 import '@/features/team/labels';
 import { reportError, useRecentAuth } from '@/features/team/recent-auth';
+import { timeZoneList } from '@/lib/timezones';
 
 type View = WorkspaceSettingsView;
 type GroupKey = 'workingTime' | 'metrics' | 'files' | 'retention' | 'security' | 'notifications' | 'modules';
@@ -49,15 +50,7 @@ type Draft = { general: General } & Pick<View, 'workingTime' | 'metrics' | 'rete
 const GROUPS: GroupKey[] = ['workingTime', 'metrics', 'files', 'retention', 'security', 'notifications', 'modules'];
 const GB = 1024 ** 3;
 
-const zones = (): string[] => {
-  let list: string[] = [];
-  try {
-    list = (Intl as unknown as { supportedValuesOf(k: string): string[] }).supportedValuesOf('timeZone');
-  } catch {
-    list = [];
-  }
-  return list.includes('UTC') ? list : ['UTC', ...list];
-};
+const zones = timeZoneList;
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 

@@ -6,6 +6,7 @@ import type { MemberRef } from '@castlane/api-contracts';
 import { label } from '@/lib/labels';
 import { PRIORITY_TONE } from './labels';
 import './labels';
+import { timeZoneList } from '@/lib/timezones';
 
 /** `YYYY-MM-DDTHH:mm` for a datetime-local input showing the moment in `tz`. */
 export const toLocalInput = (isoValue: string | null | undefined, tz: string) =>
@@ -38,13 +39,7 @@ export const formatElapsed = (s: number) => {
   return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 };
 
-export const timezones = (): string[] => {
-  try {
-    return (Intl as unknown as { supportedValuesOf: (k: string) => string[] }).supportedValuesOf('timeZone');
-  } catch {
-    return ['UTC'];
-  }
-};
+export const timezones = timeZoneList;
 
 type Due = { at: string; date: string | null; timezone: string | null } | null;
 

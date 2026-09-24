@@ -85,13 +85,13 @@ const rows = scenarios.map((s) => {
   if (ev.some((e) => e.status === 'failed')) {
     status = '❌ failing';
     failing++;
-  } else if (ev.length) {
+  } else if (ev.some((e) => e.status === 'passed')) {
     status = '✅ automated';
     covered++;
   } else if (m) {
     status = m.status === 'verified' ? '✅ verified manually' : '📋 operational procedure';
     manualOnly++;
-  } else status = '⚠️ no evidence';
+  } else status = ev.length ? '⚠️ tests skipped' : '⚠️ no evidence';
   const refs = ev.length
     ? ev
         .slice(0, 4)
