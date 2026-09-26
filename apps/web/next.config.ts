@@ -10,6 +10,18 @@ if (existsSync(join(root, '.env'))) process.loadEnvFile(join(root, '.env'));
 
 const isDev = process.env.NODE_ENV !== 'production';
 
+/**
+ * `next dev` serves its own scripts only to localhost. When APP_ORIGIN is another address (an ngrok
+ * tunnel or a LAN host that teammates open), allow that one host too, or the page never hydrates.
+ */
+const appHost = (() => {
+  try {
+    return new URL(process.env.APP_ORIGIN ?? '').hostname;
+  } catch {
+    return null;
+  }
+})();
+
 /** Content Security Policy: no unsafe-eval in production, same-origin connections only. */
 const csp = [
   "default-src 'self'",
@@ -30,6 +42,7 @@ const nextConfig: NextConfig = {
   // Do not generate AGENTS.md / CLAUDE.md into the app directory.
   agentRules: false,
   poweredByHeader: false,
+  allowedDevOrigins: appHost && appHost !== 'localhost' ? [appHost] : [],
   // A separate build directory lets the e2e server run next to a development server.
   distDir: process.env.NEXT_DIST_DIR || '.next',
   output: 'standalone',
